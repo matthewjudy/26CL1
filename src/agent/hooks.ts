@@ -333,6 +333,32 @@ This is a scheduled cron job — ${owner} is NOT watching. Restrictions apply:
 `;
 }
 
+// ── Tool output validation ────────────────────────────────────────────
+
+const INJECTION_IN_OUTPUT_PATTERNS = [
+  /ignore (?:all |previous )?instructions/i,
+  /you are now/i,
+  /new instructions:/i,
+  /<\/?system>/i,
+];
+
+/**
+ * Validate MCP tool output for credential leaks and injection payloads.
+ * Available for use when tool output interception is added to the SDK streaming loop.
+ */
+export function validateToolOutput(
+  _toolName: string,
+  output: string,
+): { safe: boolean; reason?: string } {
+  if (matchesAny(output, CREDENTIAL_CONTENT_PATTERNS)) {
+    return { safe: false, reason: 'Tool output contains credential-like content' };
+  }
+  if (matchesAny(output, INJECTION_IN_OUTPUT_PATTERNS)) {
+    return { safe: false, reason: 'Tool output contains injection-like content' };
+  }
+  return { safe: true };
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function summarizeToolCall(toolName: string, toolInput: Record<string, unknown>): string {
