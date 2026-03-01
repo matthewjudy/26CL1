@@ -6,7 +6,7 @@
  * heartbeat/cron commands, and autonomous notifications.
  */
 
-import { Client, Events, GatewayIntentBits, Message } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials, Message } from 'discord.js';
 import pino from 'pino';
 import {
   DISCORD_TOKEN,
@@ -163,6 +163,7 @@ export async function startDiscord(
       GatewayIntentBits.DirectMessages,
       GatewayIntentBits.MessageContent,
     ],
+    partials: [Partials.Channel],
   });
 
   client.once(Events.ClientReady, (readyClient) => {
