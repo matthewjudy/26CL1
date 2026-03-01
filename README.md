@@ -287,7 +287,7 @@ Secrets can also be stored in macOS Keychain (`security find-generic-password`) 
 | `sonnet` | `claude-sonnet-4-6` | Default conversation model (1M context) |
 | `opus` | `claude-opus-4-6` | Available via config or agent profiles |
 
-Change the default with `clementine config set DEFAULT_MODEL_TIER opus`.
+Change the default with `clementine config set DEFAULT_MODEL_TIER opus`, then `clementine restart`.
 
 ---
 
