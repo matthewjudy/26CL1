@@ -65,7 +65,7 @@ The result: Clementine gets better the more you talk to it.
 ```bash
 git clone https://github.com/Natebreynolds/Clementine-AI-Assistant.git clementine
 cd clementine
-npm install && npm run build && npm install -g .
+npm install --loglevel=error --no-audit && npm run build && npm install -g . --loglevel=error --no-audit
 ```
 
 Then configure and launch:
