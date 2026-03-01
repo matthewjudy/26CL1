@@ -213,6 +213,10 @@ function cmdLaunch(options: { foreground?: boolean; install?: boolean; uninstall
     } catch (err) {
       console.error(`  Failed to load LaunchAgent: ${err}`);
     }
+
+    // Also install the cron scheduler alongside the daemon
+    console.log();
+    cmdCronInstall();
     return;
   }
 
