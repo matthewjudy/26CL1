@@ -164,14 +164,16 @@ function formatTime(d: Date): string {
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
+/** Local-time YYYY-MM-DD (avoids UTC date mismatch late at night). */
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function yesterdayISO(): string {
   const d = new Date();
   d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // ── PersonalAssistant ───────────────────────────────────────────────
@@ -328,6 +330,7 @@ export class PersonalAssistant {
 
 - **Date:** ${formatDate(now)}
 - **Time:** ${formatTime(now)}
+- **Timezone:** ${Intl.DateTimeFormat().resolvedOptions().timeZone}
 - **Vault:** ${vault}
 
 ## Vault Structure & Tool Instructions

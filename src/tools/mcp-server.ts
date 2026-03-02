@@ -103,14 +103,16 @@ async function getStore(): Promise<MemoryStoreType> {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
+/** Local-time YYYY-MM-DD (avoids UTC date mismatch late at night). */
 function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function yesterdayStr(): string {
   const d = new Date();
   d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function nowTime(): string {
@@ -389,7 +391,7 @@ function nextDueDate(currentDue: string, recurrence: string): string {
       next.setDate(next.getDate() + 7);
   }
 
-  return next.toISOString().slice(0, 10);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`;
 }
 
 // ── Glob all .md files recursively (excluding .obsidian) ──────────────
