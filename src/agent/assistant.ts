@@ -6,7 +6,7 @@
  *   - canUseTool: SDK-level security enforcement (blocks dangerous operations)
  *   - Auto-memory: background Haiku pass extracts facts after every exchange
  *   - Session rotation: auto-clears sessions before hitting context limits
- *   - Session expiry: sessions expire after 4 hours of inactivity
+ *   - Session expiry: sessions expire after 24 hours of inactivity
  *   - Env isolation: Claude subprocess doesn't see credential env vars
  */
 
@@ -61,7 +61,7 @@ const logger = pino({ name: 'clementine.assistant' });
 
 const SESSIONS_FILE = path.join(BASE_DIR, '.sessions.json');
 const MAX_SESSION_EXCHANGES = 40;
-const SESSION_EXPIRY_MS = 4 * 60 * 60 * 1000;
+const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const AUTO_MEMORY_MIN_LENGTH = 80;
 const AUTO_MEMORY_MODEL = MODELS.haiku;
 const OWNER = OWNER_NAME || 'the user';
@@ -183,6 +183,7 @@ export class PersonalAssistant {
   private exchangeCounts = new Map<string, number>();
   private sessionTimestamps = new Map<string, Date>();
   private lastExchanges = new Map<string, Array<{ user: string; assistant: string }>>();
+  private restoredSessions = new Set<string>();
   private profileManager: ProfileManager;
   private memoryStore: any = null; // Typed as any — MemoryStore may not be available yet
 
@@ -225,6 +226,8 @@ export class PersonalAssistant {
             assistant: ex.assistant,
           })),
         );
+        // Mark as restored so first post-restart message injects context
+        this.restoredSessions.add(key);
       }
     } catch {
       // Starting fresh
@@ -596,6 +599,21 @@ important facts in real-time rather than relying on the background pass.
         effectivePrompt =
           `[Conversation context (our recent messages):\n${historyLines.join('\n')}]\n\n${effectivePrompt}`;
       }
+    }
+
+    // Inject context on first message after a daemon restart (session restored from disk)
+    if (key && this.restoredSessions.has(key)) {
+      const exchanges = this.lastExchanges.get(key) ?? [];
+      if (exchanges.length > 0) {
+        const historyLines: string[] = [];
+        for (const ex of exchanges.slice(-5)) {
+          historyLines.push(`You said: ${ex.user.slice(0, 800)}`);
+          historyLines.push(`I replied: ${ex.assistant.slice(0, 800)}`);
+        }
+        effectivePrompt =
+          `[Conversation context from before restart (our recent messages):\n${historyLines.join('\n')}]\n\n${effectivePrompt}`;
+      }
+      this.restoredSessions.delete(key); // Only inject once per restored session
     }
 
     let [responseText, sessionId] = await this.runQuery(

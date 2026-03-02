@@ -101,6 +101,8 @@ export class Gateway {
           { sessionKey, verdict: scan.verdict, reasons: scan.reasons, score: scan.score },
           'Message blocked by injection scanner',
         );
+        // Re-baseline so legitimate vault changes don't cascade-block all future messages
+        scanner.refreshIntegrity();
         return "I can't process that message. It was flagged by my security system.";
       }
 
