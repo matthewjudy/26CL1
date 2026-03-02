@@ -197,7 +197,7 @@ function cmdLaunch(options: { foreground?: boolean; install?: boolean; uninstall
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <string>${buildLaunchdPath()}</string>
     <key>CLEMENTINE_HOME</key>
     <string>${BASE_DIR}</string>
   </dict>
@@ -874,6 +874,31 @@ function getCronPlistPath(): string {
   return path.join(home, 'Library', 'LaunchAgents', `${CRON_LAUNCHD_LABEL}.plist`);
 }
 
+/**
+ * Build a PATH string for launchd plists that includes all directories needed
+ * to find node, claude CLI, and standard system binaries.
+ */
+function buildLaunchdPath(): string {
+  const dirs = new Set<string>();
+
+  // Include the directory containing the current node binary (nvm, homebrew, etc.)
+  dirs.add(path.dirname(process.execPath));
+
+  // Include directories where claude CLI might live
+  const home = process.env.HOME ?? '';
+  if (home) {
+    dirs.add(path.join(home, '.local', 'bin'));  // common claude CLI location
+  }
+
+  // Standard system paths
+  dirs.add('/usr/local/bin');
+  dirs.add('/opt/homebrew/bin');
+  dirs.add('/usr/bin');
+  dirs.add('/bin');
+
+  return [...dirs].join(':');
+}
+
 function cmdCronInstall(): void {
   const cliEntry = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
   const nodePath = process.execPath;
@@ -900,6 +925,11 @@ function cmdCronInstall(): void {
       }
     }
 
+    // Generate StartCalendarInterval entries for every 5th minute (wall-clock aligned)
+    const calendarEntries = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]
+      .map((m) => `    <dict>\n      <key>Minute</key>\n      <integer>${m}</integer>\n    </dict>`)
+      .join('\n');
+
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -913,8 +943,10 @@ function cmdCronInstall(): void {
     <string>cron</string>
     <string>run-due</string>
   </array>
-  <key>StartInterval</key>
-  <integer>300</integer>
+  <key>StartCalendarInterval</key>
+  <array>
+${calendarEntries}
+  </array>
   <key>StandardOutPath</key>
   <string>${cronLog}</string>
   <key>StandardErrorPath</key>
@@ -922,7 +954,7 @@ function cmdCronInstall(): void {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <string>${buildLaunchdPath()}</string>
     <key>CLEMENTINE_HOME</key>
     <string>${BASE_DIR}</string>
   </dict>

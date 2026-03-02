@@ -310,17 +310,22 @@ function isJobDue(
 ): boolean {
   if (!cron.validate(job.schedule)) return false;
 
-  // Check if this job already ran recently (within 10 minutes)
+  // Determine how far back to look: since last run, or up to 24 hours
   const lastRun = lastRuns[job.name];
+  let lookbackMinutes: number;
+
   if (lastRun) {
     const lastRunDate = new Date(lastRun);
     const elapsedMs = now.getTime() - lastRunDate.getTime();
-    if (elapsedMs < 10 * 60 * 1000) return false; // ran <10min ago
+    if (elapsedMs < 2 * 60 * 1000) return false; // ran <2min ago, skip
+    lookbackMinutes = Math.min(Math.ceil(elapsedMs / 60_000), 1440); // cap at 24h
+  } else {
+    // Never run — look back up to 24 hours for any scheduled time
+    lookbackMinutes = 1440;
   }
 
-  // Check if the cron schedule matches any minute in the last 5 minutes
-  // (the OS scheduler runs every 5 minutes)
-  for (let offsetMin = 0; offsetMin < 5; offsetMin++) {
+  // Check if the cron schedule matches any minute in the lookback window
+  for (let offsetMin = 0; offsetMin < lookbackMinutes; offsetMin++) {
     const checkTime = new Date(now.getTime() - offsetMin * 60 * 1000);
     if (cronMatchesTime(job.schedule, checkTime)) return true;
   }
