@@ -456,6 +456,7 @@ important facts in real-time rather than relying on the background pass.
       mcpTool('rss_fetch'),
       mcpTool('github_prs'),
       mcpTool('browser_screenshot'),
+      mcpTool('set_timer'),
     ];
 
     if (enableTeams) {

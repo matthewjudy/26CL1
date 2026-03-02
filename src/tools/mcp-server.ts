@@ -1393,6 +1393,65 @@ server.tool(
   },
 );
 
+// ── 16. set_timer ──────────────────────────────────────────────────────
+
+const TIMERS_FILE = path.join(BASE_DIR, '.timers.json');
+
+interface TimerEntry {
+  id: string;
+  message: string;
+  fireAt: number;
+  createdAt: number;
+}
+
+function readTimers(): TimerEntry[] {
+  if (!existsSync(TIMERS_FILE)) return [];
+  try {
+    return JSON.parse(readFileSync(TIMERS_FILE, 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+
+function writeTimers(timers: TimerEntry[]): void {
+  writeFileSync(TIMERS_FILE, JSON.stringify(timers, null, 2));
+}
+
+server.tool(
+  'set_timer',
+  'Set a short-term reminder/timer. Fires in N minutes and sends a notification. Use this instead of cron for reminders under 24 hours.',
+  {
+    minutes: z.number().describe('Minutes from now to fire the reminder'),
+    message: z.string().describe('The reminder message to send'),
+  },
+  async ({ minutes, message }) => {
+    if (minutes < 1 || minutes > 1440) {
+      return textResult('Timer must be between 1 and 1440 minutes (24 hours). Use cron for longer schedules.');
+    }
+
+    const now = Date.now();
+    const fireAt = now + minutes * 60 * 1000;
+    const timer: TimerEntry = {
+      id: `timer-${now}`,
+      message,
+      fireAt,
+      createdAt: now,
+    };
+
+    const timers = readTimers();
+    timers.push(timer);
+    writeTimers(timers);
+
+    const fireTime = new Date(fireAt).toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    return textResult(`Timer set. Reminder in ${minutes} minute${minutes !== 1 ? 's' : ''} (~${fireTime}): "${message}"`);
+  },
+);
+
 // ── Main ───────────────────────────────────────────────────────────────
 
 async function main() {

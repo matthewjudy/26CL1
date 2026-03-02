@@ -283,6 +283,47 @@ function ensureVaultDirs(): void {
   }
 }
 
+// ── Timer checker ─────────────────────────────────────────────────────
+
+interface TimerEntry {
+  id: string;
+  message: string;
+  fireAt: number;
+  createdAt: number;
+}
+
+const TIMERS_FILE = path.join(config.BASE_DIR, '.timers.json');
+const TIMER_CHECK_INTERVAL = 30_000; // 30 seconds
+
+function startTimerChecker(dispatcher: import('./gateway/notifications.js').NotificationDispatcher): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    try {
+      if (!existsSync(TIMERS_FILE)) return;
+      const timers: TimerEntry[] = JSON.parse(readFileSync(TIMERS_FILE, 'utf-8'));
+      if (timers.length === 0) return;
+
+      const now = Date.now();
+      const due = timers.filter((t) => t.fireAt <= now);
+      const remaining = timers.filter((t) => t.fireAt > now);
+
+      if (due.length === 0) return;
+
+      // Update file first (remove fired timers)
+      writeFileSync(TIMERS_FILE, JSON.stringify(remaining, null, 2));
+
+      // Dispatch notifications
+      for (const timer of due) {
+        logger.info({ id: timer.id, message: timer.message }, 'Timer fired');
+        dispatcher.send(`⏰ **Reminder:** ${timer.message}`).catch((err) => {
+          logger.error({ err, id: timer.id }, 'Failed to dispatch timer notification');
+        });
+      }
+    } catch {
+      // Non-fatal — will retry next interval
+    }
+  }, TIMER_CHECK_INTERVAL);
+}
+
 // ── Async main ───────────────────────────────────────────────────────
 
 async function asyncMain(): Promise<void> {
@@ -348,9 +389,10 @@ async function asyncMain(): Promise<void> {
     return;
   }
 
-  // Start heartbeat + cron
+  // Start heartbeat + cron + timers
   heartbeat.start();
   cronScheduler.start();
+  const timerInterval = startTimerChecker(dispatcher);
 
   // ── Banner ───────────────────────────────────────────────────────
   const profileCount = 0; // ProfileManager can be loaded later if needed
@@ -374,6 +416,7 @@ async function asyncMain(): Promise<void> {
 
   // ── Graceful cleanup ──────────────────────────────────────────
   logger.info('Shutdown signal received — cleaning up');
+  clearInterval(timerInterval);
   heartbeat.stop();
   cronScheduler.stop();
 }
