@@ -457,6 +457,11 @@ important facts in real-time rather than relying on the background pass.
       mcpTool('github_prs'),
       mcpTool('browser_screenshot'),
       mcpTool('set_timer'),
+      mcpTool('outlook_inbox'),
+      mcpTool('outlook_search'),
+      mcpTool('outlook_calendar'),
+      mcpTool('outlook_draft'),
+      mcpTool('outlook_send'),
     ];
 
     if (enableTeams) {

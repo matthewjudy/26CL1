@@ -1452,6 +1452,208 @@ server.tool(
   },
 );
 
+// ── Microsoft Graph API ────────────────────────────────────────────────
+
+let graphToken: { accessToken: string; expiresAt: number } | null = null;
+
+async function getGraphToken(): Promise<string> {
+  const tenantId = env['MS_TENANT_ID'] ?? '';
+  const clientId = env['MS_CLIENT_ID'] ?? '';
+  const clientSecret = env['MS_CLIENT_SECRET'] ?? '';
+
+  if (!tenantId || !clientId || !clientSecret) {
+    throw new Error('Outlook not configured — set MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET in .env');
+  }
+
+  // Return cached token if still valid (with 5-min buffer)
+  if (graphToken && Date.now() < graphToken.expiresAt - 300_000) {
+    return graphToken.accessToken;
+  }
+
+  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    scope: 'https://graph.microsoft.com/.default',
+    grant_type: 'client_credentials',
+  });
+
+  const res = await fetch(tokenUrl, { method: 'POST', body });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph token request failed (${res.status}): ${text}`);
+  }
+  const data = (await res.json()) as { access_token: string; expires_in: number };
+  graphToken = {
+    accessToken: data.access_token,
+    expiresAt: Date.now() + data.expires_in * 1000,
+  };
+  return graphToken.accessToken;
+}
+
+async function graphGet(endpoint: string): Promise<any> {
+  const token = await getGraphToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0${endpoint}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph API ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+async function graphPost(endpoint: string, body: unknown): Promise<any> {
+  const token = await getGraphToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0${endpoint}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph API ${res.status}: ${text}`);
+  }
+  // sendMail returns 202 with no body
+  if (res.status === 202) return { success: true };
+  return res.json();
+}
+
+// ── 17. outlook_inbox ───────────────────────────────────────────────────
+
+server.tool(
+  'outlook_inbox',
+  'Read recent emails from the Outlook inbox. Returns sender, subject, date, and preview.',
+  {
+    count: z.number().optional().default(10).describe('Number of emails to fetch (max 25)'),
+    unread_only: z.boolean().optional().default(false).describe('Only return unread emails'),
+  },
+  async ({ count, unread_only }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const limit = Math.min(count, 25);
+    const filter = unread_only ? '&$filter=isRead eq false' : '';
+    const data = await graphGet(
+      `/users/${userEmail}/mailFolders/inbox/messages?$top=${limit}&$select=from,subject,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc${filter}`
+    );
+    const emails = (data.value ?? []).map((m: any) => ({
+      from: m.from?.emailAddress?.name ?? m.from?.emailAddress?.address ?? 'unknown',
+      subject: m.subject ?? '(no subject)',
+      date: m.receivedDateTime,
+      preview: (m.bodyPreview ?? '').slice(0, 200),
+      unread: !m.isRead,
+    }));
+    return { content: [{ type: 'text' as const, text: JSON.stringify(emails, null, 2) }] };
+  },
+);
+
+// ── 18. outlook_search ──────────────────────────────────────────────────
+
+server.tool(
+  'outlook_search',
+  'Search emails by keyword. Searches subject, body, and sender.',
+  {
+    query: z.string().describe('Search query (keywords, sender name, subject text)'),
+    count: z.number().optional().default(10).describe('Max results (max 25)'),
+  },
+  async ({ query, count }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const limit = Math.min(count, 25);
+    const data = await graphGet(
+      `/users/${userEmail}/messages?$search="${encodeURIComponent(query)}"&$top=${limit}&$select=from,subject,receivedDateTime,bodyPreview&$orderby=receivedDateTime desc`
+    );
+    const emails = (data.value ?? []).map((m: any) => ({
+      from: m.from?.emailAddress?.name ?? m.from?.emailAddress?.address ?? 'unknown',
+      subject: m.subject ?? '(no subject)',
+      date: m.receivedDateTime,
+      preview: (m.bodyPreview ?? '').slice(0, 200),
+    }));
+    return { content: [{ type: 'text' as const, text: JSON.stringify(emails, null, 2) }] };
+  },
+);
+
+// ── 19. outlook_calendar ────────────────────────────────────────────────
+
+server.tool(
+  'outlook_calendar',
+  'View upcoming calendar events. Shows title, time, location, and attendees.',
+  {
+    days: z.number().optional().default(7).describe('Number of days ahead to look (max 30)'),
+  },
+  async ({ days }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const start = new Date().toISOString();
+    const end = new Date(Date.now() + Math.min(days, 30) * 86400000).toISOString();
+    const data = await graphGet(
+      `/users/${userEmail}/calendarView?startDateTime=${start}&endDateTime=${end}&$select=subject,start,end,location,attendees,isAllDay&$orderby=start/dateTime&$top=50`
+    );
+    const events = (data.value ?? []).map((e: any) => ({
+      title: e.subject ?? '(untitled)',
+      start: e.start?.dateTime,
+      end: e.end?.dateTime,
+      allDay: e.isAllDay ?? false,
+      location: e.location?.displayName || null,
+      attendees: (e.attendees ?? []).map((a: any) => a.emailAddress?.name ?? a.emailAddress?.address).slice(0, 10),
+    }));
+    return { content: [{ type: 'text' as const, text: JSON.stringify(events, null, 2) }] };
+  },
+);
+
+// ── 20. outlook_draft ───────────────────────────────────────────────────
+
+server.tool(
+  'outlook_draft',
+  'Create a draft email in the Outlook Drafts folder (does NOT send). Use this for cron jobs that prepare emails for owner review.',
+  {
+    to: z.string().describe('Recipient email address'),
+    subject: z.string().describe('Email subject line'),
+    body: z.string().describe('Email body (plain text)'),
+    cc: z.string().optional().describe('CC email address (optional)'),
+  },
+  async ({ to, subject, body, cc }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const message: any = {
+      subject,
+      body: { contentType: 'Text', content: body },
+      toRecipients: [{ emailAddress: { address: to } }],
+    };
+    if (cc) {
+      message.ccRecipients = [{ emailAddress: { address: cc } }];
+    }
+    // POST to /messages (not /sendMail) creates a draft
+    const draft = await graphPost(`/users/${userEmail}/messages`, message);
+    return textResult(`Draft created: "${subject}" to ${to} (ID: ${draft.id?.slice(0, 20)}...)`);
+  },
+);
+
+// ── 21. outlook_send ────────────────────────────────────────────────────
+
+server.tool(
+  'outlook_send',
+  'Send an email from your Outlook account. REQUIRES owner approval (Tier 3).',
+  {
+    to: z.string().describe('Recipient email address'),
+    subject: z.string().describe('Email subject line'),
+    body: z.string().describe('Email body (plain text)'),
+    cc: z.string().optional().describe('CC email address (optional)'),
+  },
+  async ({ to, subject, body, cc }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const message: any = {
+      subject,
+      body: { contentType: 'Text', content: body },
+      toRecipients: [{ emailAddress: { address: to } }],
+    };
+    if (cc) {
+      message.ccRecipients = [{ emailAddress: { address: cc } }];
+    }
+    await graphPost(`/users/${userEmail}/sendMail`, { message, saveToSentItems: true });
+    return textResult(`Email sent to ${to}: "${subject}"`);
+  },
+);
+
 // ── Main ───────────────────────────────────────────────────────────────
 
 async function main() {

@@ -230,6 +230,25 @@ export async function enforceToolPermissions(
     }
   }
 
+  // ── Outlook send blocked in autonomous mode (Tier 3) ─────────
+  if (toolName.includes('outlook_send') && heartbeatActive) {
+    return {
+      behavior: 'deny',
+      message: 'Sending email is forbidden during autonomous execution.',
+    };
+  }
+
+  // ── Outlook send requires explicit user approval (Tier 3) ───
+  if (toolName.includes('outlook_send')) {
+    if (approvalCallback) {
+      const desc = `Send email to ${toolInput.to ?? '?'}: "${toolInput.subject ?? '?'}"`;
+      const approved = await approvalCallback(desc);
+      if (!approved) {
+        return { behavior: 'deny', message: 'Email send denied by user.' };
+      }
+    }
+  }
+
   // ── SSRF protection ────────────────────────────────────────────
   if (toolName === 'WebFetch') {
     const url = String(toolInput.url ?? '');
@@ -272,16 +291,19 @@ You operate under a 3-tier security model. Violating these rules is not allowed.
 - WebSearch, WebFetch
 - Git: status, log, diff, branch, checkout, pull
 - Memory and task tools
+- Outlook inbox, search, and calendar (read-only)
 
 ### Tier 2 — Allowed with caution:
 - Write/create files outside the vault
 - Git: add, commit (but NEVER auto-push)
 - Bash commands for development (build, test, lint)
+- Creating email drafts in Outlook
 
 ### Tier 3 — NEVER do without asking ${owner} first:
 - git push (any form)
 - gh pr create, gh issue create
-- Sending emails, messages, or any outbound communication
+- Sending emails via Outlook
+- Sending messages or any other outbound communication
 - rm -rf, git reset --hard, git clean, or any destructive command
 - Form submission or data entry on websites
 - Anything involving credentials, payments, or accounts

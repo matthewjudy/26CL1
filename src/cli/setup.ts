@@ -199,6 +199,33 @@ const FEATURES: FeatureDef[] = [
       },
     ],
   },
+  {
+    value: 'outlook',
+    name: 'Outlook (Microsoft Graph — email + calendar)',
+    credentials: [
+      {
+        key: 'MS_TENANT_ID',
+        label: 'Azure AD tenant ID',
+        help: `Azure Portal > App registrations > your app > Directory (tenant) ID`,
+      },
+      {
+        key: 'MS_CLIENT_ID',
+        label: 'Azure AD client (app) ID',
+        help: `Azure Portal > App registrations > your app > Application (client) ID`,
+      },
+      {
+        key: 'MS_CLIENT_SECRET',
+        label: 'Azure AD client secret',
+        help: `Azure Portal > App registrations > Certificates & secrets > New client secret`,
+        masked: true,
+      },
+      {
+        key: 'MS_USER_EMAIL',
+        label: 'Mailbox email address',
+        help: `The email address Clementine should access (e.g. nathan@example.com)`,
+      },
+    ],
+  },
 ];
 
 // ── Credential collection helper ─────────────────────────────────────
@@ -350,6 +377,7 @@ export async function runSetup(): Promise<void> {
     { header: 'Webhook API', keys: ['WEBHOOK_ENABLED', 'WEBHOOK_PORT', 'WEBHOOK_SECRET'] },
     { header: 'Voice', keys: ['GROQ_API_KEY', 'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID'] },
     { header: 'Video', keys: ['GOOGLE_API_KEY'] },
+    { header: 'Outlook (Microsoft Graph)', keys: ['MS_TENANT_ID', 'MS_CLIENT_ID', 'MS_CLIENT_SECRET', 'MS_USER_EMAIL'] },
     { header: 'Security', keys: ['ALLOW_ALL_USERS'] },
   ];
 

@@ -153,6 +153,13 @@ export const ELEVENLABS_VOICE_ID = getEnv('ELEVENLABS_VOICE_ID');
 
 export const GOOGLE_API_KEY = getSecret('GOOGLE_API_KEY');
 
+// ── Outlook (Microsoft Graph) ───────────────────────────────────────
+
+export const MS_TENANT_ID = getEnv('MS_TENANT_ID');
+export const MS_CLIENT_ID = getEnv('MS_CLIENT_ID');
+export const MS_CLIENT_SECRET = getSecret('MS_CLIENT_SECRET');
+export const MS_USER_EMAIL = getEnv('MS_USER_EMAIL');
+
 // ── Security ─────────────────────────────────────────────────────────
 
 export const ALLOW_ALL_USERS = getEnv('ALLOW_ALL_USERS', 'false').toLowerCase() === 'true';
@@ -171,6 +178,7 @@ export const CHANNEL_SLACK = Boolean(SLACK_BOT_TOKEN && SLACK_APP_TOKEN);
 export const CHANNEL_TELEGRAM = Boolean(TELEGRAM_BOT_TOKEN);
 export const CHANNEL_WHATSAPP = Boolean(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && WHATSAPP_OWNER_PHONE);
 export const CHANNEL_WEBHOOK = WEBHOOK_ENABLED && Boolean(WEBHOOK_SECRET);
+export const CHANNEL_OUTLOOK = Boolean(MS_TENANT_ID && MS_CLIENT_ID && MS_CLIENT_SECRET && MS_USER_EMAIL);
 
 // ── Memory / Search ──────────────────────────────────────────────────
 
