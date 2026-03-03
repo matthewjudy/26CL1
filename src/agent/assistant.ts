@@ -65,7 +65,7 @@ const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const AUTO_MEMORY_MIN_LENGTH = 80;
 const AUTO_MEMORY_MODEL = MODELS.haiku;
 const OWNER = OWNER_NAME || 'the user';
-const MCP_SERVER_SCRIPT = path.join(PKG_DIR, 'src', 'tools', 'mcp-server.ts');
+const MCP_SERVER_SCRIPT = path.join(PKG_DIR, 'dist', 'tools', 'mcp-server.js');
 const TOOLS_SERVER = `${ASSISTANT_NAME.toLowerCase()}-tools`;
 
 function mcpTool(name: string): string {
@@ -483,7 +483,7 @@ important facts in real-time rather than relying on the background pass.
         [TOOLS_SERVER]: {
           type: 'stdio',
           command: 'node',
-          args: ['--import', 'tsx', MCP_SERVER_SCRIPT],
+          args: [MCP_SERVER_SCRIPT],
           env: { CLEMENTINE_HOME: BASE_DIR },
         },
       },
@@ -946,7 +946,7 @@ important facts in real-time rather than relying on the background pass.
             [TOOLS_SERVER]: {
               type: 'stdio',
               command: 'node',
-              args: ['--import', 'tsx', MCP_SERVER_SCRIPT],
+              args: [MCP_SERVER_SCRIPT],
               env: { CLEMENTINE_HOME: BASE_DIR },
             },
           },
