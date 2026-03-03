@@ -68,6 +68,11 @@ const CHANNELS: ChannelDef[] = [
         help: `Right-click your name in Discord > Copy User ID (enable Developer Mode in settings)`,
         validate: (v) => /^\d{17,20}$/.test(v) || 'Must be a numeric Discord user ID (17-20 digits)',
       },
+      {
+        key: 'DISCORD_WATCHED_CHANNELS',
+        label: 'Watched channel IDs (optional, comma-separated)',
+        help: `Right-click a text channel > Copy Channel ID. Bot will listen for messages in these channels.`,
+      },
     ],
   },
   {
@@ -370,7 +375,7 @@ export async function runSetup(): Promise<void> {
   const sections = [
     { header: 'Assistant Identity', keys: ['ASSISTANT_NAME', 'ASSISTANT_NICKNAME', 'OWNER_NAME'] },
     { header: 'Model', keys: ['DEFAULT_MODEL_TIER'] },
-    { header: 'Discord', keys: ['DISCORD_TOKEN', 'DISCORD_OWNER_ID'] },
+    { header: 'Discord', keys: ['DISCORD_TOKEN', 'DISCORD_OWNER_ID', 'DISCORD_WATCHED_CHANNELS'] },
     { header: 'Slack', keys: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_OWNER_USER_ID'] },
     { header: 'Telegram', keys: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_OWNER_ID'] },
     { header: 'WhatsApp (Twilio)', keys: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'WHATSAPP_OWNER_PHONE', 'WHATSAPP_FROM_PHONE', 'WHATSAPP_WEBHOOK_PORT'] },

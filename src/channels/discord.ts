@@ -14,6 +14,7 @@ import path from 'node:path';
 import {
   DISCORD_TOKEN,
   DISCORD_OWNER_ID,
+  DISCORD_WATCHED_CHANNELS,
   MODELS,
   ASSISTANT_NAME,
   PKG_DIR,
@@ -209,11 +210,14 @@ export async function startDiscord(
   cronScheduler: CronScheduler,
   dispatcher: NotificationDispatcher,
 ): Promise<void> {
+  const watchedChannels = new Set(DISCORD_WATCHED_CHANNELS);
+
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.DirectMessages,
       GatewayIntentBits.MessageContent,
+      ...(watchedChannels.size > 0 ? [GatewayIntentBits.GuildMessages] : []),
     ],
     partials: [Partials.Channel],
   });
@@ -226,27 +230,31 @@ export async function startDiscord(
     // Ignore own messages
     if (message.author.id === client.user?.id) return;
 
-    // DM-only
-    if (!message.channel.isDMBased()) return;
+    // DM or watched guild channel
+    const isDm = message.channel.isDMBased();
+    const isWatchedChannel = !isDm && watchedChannels.has(message.channelId);
+    if (!isDm && !isWatchedChannel) return;
 
-    // Owner-only
+    // Owner-only (applies to both DM and watched channels)
     if (DISCORD_OWNER_ID && message.author.id !== DISCORD_OWNER_ID) {
       logger.warn(`Ignored message from non-owner: ${message.author.tag} (${message.author.id})`);
       return;
     }
 
     const text = message.content;
-    const sessionKey = `discord:user:${message.author.id}`;
+    const sessionKey = isWatchedChannel
+      ? `discord:channel:${message.channelId}:${message.author.id}`
+      : `discord:user:${message.author.id}`;
 
-    // ── Commands ────────────────────────────────────────────────────
+    // ── Commands (DM only) ──────────────────────────────────────────
 
-    if (text === '!clear') {
+    if (isDm && text === '!clear') {
       gateway.clearSession(sessionKey);
       await message.reply('Session cleared.');
       return;
     }
 
-    if (text.startsWith('!model')) {
+    if (isDm && text.startsWith('!model')) {
       const parts = text.split(/\s+/);
       const tier = parts[1]?.toLowerCase() as keyof typeof MODELS | undefined;
       if (tier && tier in MODELS) {
@@ -261,12 +269,12 @@ export async function startDiscord(
       return;
     }
 
-    if (text === '!tools') {
+    if (isDm && text === '!tools') {
       await message.reply(formatToolsList());
       return;
     }
 
-    if (text === '!heartbeat') {
+    if (isDm && text === '!heartbeat') {
       const streamer = new DiscordStreamingMessage(message.channel);
       await streamer.start();
       const response = await heartbeat.runManual();
@@ -274,7 +282,7 @@ export async function startDiscord(
       return;
     }
 
-    if (text.startsWith('!cron')) {
+    if (isDm && text.startsWith('!cron')) {
       const parts = text.split(/\s+/);
       const subCmd = parts[1]?.toLowerCase();
       const jobName = parts.slice(2).join(' ');
@@ -296,16 +304,18 @@ export async function startDiscord(
       return;
     }
 
-    // ── Approval responses ──────────────────────────────────────────
+    // ── Approval responses (DM only) ────────────────────────────────
 
-    const lower = text.toLowerCase();
-    if (['yes', 'no', 'approve', 'deny'].includes(lower)) {
-      const approvals = gateway.getPendingApprovals();
-      if (approvals.length > 0) {
-        const approved = lower === 'yes' || lower === 'approve';
-        gateway.resolveApproval(approvals[approvals.length - 1], approved);
-        await message.react(approved ? '\u2705' : '\u274c');
-        return;
+    if (isDm) {
+      const lower = text.toLowerCase();
+      if (['yes', 'no', 'approve', 'deny'].includes(lower)) {
+        const approvals = gateway.getPendingApprovals();
+        if (approvals.length > 0) {
+          const approved = lower === 'yes' || lower === 'approve';
+          gateway.resolveApproval(approvals[approvals.length - 1], approved);
+          await message.react(approved ? '\u2705' : '\u274c');
+          return;
+        }
       }
     }
 
@@ -319,6 +329,18 @@ export async function startDiscord(
     } else if (text.startsWith('!d ')) {
       oneOffModel = MODELS.opus;
       effectiveText = text.slice(3);
+    }
+
+    // ── Reply context for watched channels ─────────────────────────
+
+    if (isWatchedChannel && message.reference?.messageId) {
+      try {
+        const referenced = await message.channel.messages.fetch(message.reference.messageId);
+        if (referenced.author.id === client.user?.id) {
+          const refContent = referenced.content.slice(0, 1500);
+          effectiveText = `[Replying to bot message:\n${refContent}]\n\n${effectiveText}`;
+        }
+      } catch { /* referenced message may be deleted */ }
     }
 
     // ── Show queued indicator if session is busy ─────────────────────

@@ -117,6 +117,10 @@ export const MODEL = MODELS[DEFAULT_MODEL_TIER] ?? MODELS.sonnet;
 
 export const DISCORD_TOKEN = getSecret('DISCORD_TOKEN');
 export const DISCORD_OWNER_ID = getEnv('DISCORD_OWNER_ID', '0');
+export const DISCORD_WATCHED_CHANNELS: string[] = getEnv('DISCORD_WATCHED_CHANNELS')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // ── Slack ────────────────────────────────────────────────────────────
 

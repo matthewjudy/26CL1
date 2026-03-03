@@ -1654,6 +1654,45 @@ server.tool(
   },
 );
 
+// ── Discord Channel Send ────────────────────────────────────────────────
+
+server.tool(
+  'discord_channel_send',
+  'Send a message to a Discord text channel by ID. For posting digests, summaries, or alerts to server channels.',
+  {
+    channel_id: z.string().describe('Discord channel ID to post to'),
+    message: z.string().describe('Message content (Discord markdown, max 2000 chars per chunk)'),
+  },
+  async ({ channel_id, message }) => {
+    const token = env['DISCORD_TOKEN'] ?? '';
+    if (!token) throw new Error('DISCORD_TOKEN not configured');
+    if (!channel_id) throw new Error('channel_id is required');
+
+    const chunks: string[] = [];
+    let remaining = message;
+    while (remaining.length > 0) {
+      if (remaining.length <= 1900) { chunks.push(remaining); break; }
+      let splitAt = remaining.lastIndexOf('\n', 1900);
+      if (splitAt === -1) splitAt = 1900;
+      chunks.push(remaining.slice(0, splitAt));
+      remaining = remaining.slice(splitAt).replace(/^\n+/, '');
+    }
+
+    for (const chunk of chunks) {
+      const res = await fetch(`https://discord.com/api/v10/channels/${channel_id}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: chunk }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Discord API ${res.status}: ${errText}`);
+      }
+    }
+    return textResult(`Message posted to channel ${channel_id} (${chunks.length} chunk${chunks.length > 1 ? 's' : ''})`);
+  },
+);
+
 // ── Main ───────────────────────────────────────────────────────────────
 
 async function main() {
