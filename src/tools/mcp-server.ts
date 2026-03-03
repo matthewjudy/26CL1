@@ -1656,12 +1656,47 @@ server.tool(
 
 // ── Workspace Tools ─────────────────────────────────────────────────────
 
-/** Re-read WORKSPACE_DIRS from .env on every call so runtime edits are picked up. */
+/** Common developer directories to auto-scan (relative to home). */
+const DEFAULT_WORKSPACE_CANDIDATES = [
+  'Desktop', 'Documents', 'Developer', 'Projects', 'projects',
+  'repos', 'Repos', 'src', 'code', 'Code', 'work', 'Work',
+  'dev', 'Dev', 'github', 'GitHub', 'gitlab', 'GitLab',
+];
+
+/**
+ * Build the effective workspace dirs list:
+ * 1. Auto-scan common locations that exist on this machine
+ * 2. Merge with explicit WORKSPACE_DIRS from .env
+ * 3. Deduplicate by resolved path
+ */
 function getWorkspaceDirs(): string[] {
+  const home = os.homedir();
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+
+  const add = (d: string) => {
+    const resolved = path.resolve(d);
+    if (!seen.has(resolved) && existsSync(resolved) && statSync(resolved).isDirectory()) {
+      seen.add(resolved);
+      dirs.push(resolved);
+    }
+  };
+
+  // Auto-scan common locations
+  for (const candidate of DEFAULT_WORKSPACE_CANDIDATES) {
+    add(path.join(home, candidate));
+  }
+
+  // Merge explicit WORKSPACE_DIRS from .env
   const fresh = readEnvFile();
-  return (fresh['WORKSPACE_DIRS'] ?? '')
+  const explicit = (fresh['WORKSPACE_DIRS'] ?? '')
     .split(',').map(s => s.trim()).filter(Boolean)
-    .map(d => d.startsWith('~') ? d.replace('~', os.homedir()) : d);
+    .map(d => d.startsWith('~') ? d.replace('~', home) : d);
+  for (const d of explicit) {
+    add(d);
+  }
+
+  return dirs;
 }
 
 /** Update a single key in the .env file, preserving all other content. */
@@ -1712,10 +1747,19 @@ server.tool(
 
     if (action === 'list') {
       if (currentDirs.length === 0) {
-        return textResult('No workspace directories configured. Use action "add" to add one.');
+        return textResult('No workspace directories found. Use action "add" to add one.');
       }
-      const lines = currentDirs.map((d, i) => `${i + 1}. \`${d}\``);
-      return textResult(`Workspace directories:\n\n${lines.join('\n')}`);
+      // Mark which are explicit vs auto-detected
+      const fresh = readEnvFile();
+      const explicitSet = new Set(
+        (fresh['WORKSPACE_DIRS'] ?? '').split(',').map(s => s.trim()).filter(Boolean)
+          .map(d => path.resolve(d.startsWith('~') ? d.replace('~', os.homedir()) : d)),
+      );
+      const lines = currentDirs.map((d, i) => {
+        const tag = explicitSet.has(d) ? ' *(explicit)*' : ' *(auto-detected)*';
+        return `${i + 1}. \`${d}\`${tag}`;
+      });
+      return textResult(`Workspace directories (${currentDirs.length}):\n\n${lines.join('\n')}`);
     }
 
     if (!directory) {
@@ -1832,8 +1876,8 @@ server.tool(
 
     if (workspaceDirs.length === 0) {
       return textResult(
-        'No workspace directories configured. Use workspace_config to add one, ' +
-        'or set WORKSPACE_DIRS in .env (comma-separated parent directories, e.g. ~/projects,~/work).',
+        'No workspace directories found (none of the common locations exist and WORKSPACE_DIRS is empty). ' +
+        'Use workspace_config to add a directory.',
       );
     }
 

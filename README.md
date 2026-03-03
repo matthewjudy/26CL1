@@ -345,18 +345,24 @@ The `discord_channel_send` tool lets Clementine post to any channel by ID, usefu
 
 ## Workspace discovery
 
-Clementine can discover and work with your local projects. Point her at parent directories that contain project folders:
+Clementine automatically discovers local projects with zero configuration. On every scan, she checks common developer directories in your home folder:
+
+> `Desktop`, `Documents`, `Developer`, `Projects`, `repos`, `src`, `code`, `work`, `dev`, `github`, `gitlab`
+
+Any that exist are scanned for project roots (`.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, etc.).
+
+For non-standard locations, add them via `WORKSPACE_DIRS` in `.env`:
 
 ```bash
-WORKSPACE_DIRS=~/projects,~/work
+WORKSPACE_DIRS=~/company/repos,/opt/projects
 ```
 
-Or let her manage it at runtime — just say "add ~/projects to my workspace" and she'll use the `workspace_config` tool to update the config without a restart.
+Or just tell Clementine at runtime — "add ~/company/repos to my workspace" — and she'll update the config immediately (no restart needed).
 
 Three tools power this:
 
-- **`workspace_config`** — Add, remove, or list workspace directories. Writes directly to `.env` and takes effect immediately (no restart needed).
-- **`workspace_list`** — Scans configured directories for project roots by detecting markers (`.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, etc.). Returns name, type, path, description, and whether the project has a `CLAUDE.md`.
+- **`workspace_config`** — Add, remove, or list workspace directories. Lists show which are auto-detected vs. explicitly configured. Changes take effect immediately.
+- **`workspace_list`** — Scans all workspace directories for project roots. Returns name, type, path, description, and whether the project has a `CLAUDE.md`.
 - **`workspace_info`** — Deep-reads a project: `README.md`, `.claude/CLAUDE.md`, `package.json`/`pyproject.toml`, and a directory tree (depth 2).
 
 Clementine can then use her built-in file tools (`Read`, `Glob`, `Grep`, `Edit`, `Bash`) to work directly in any discovered project.
