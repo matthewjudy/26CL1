@@ -6,9 +6,9 @@
  */
 
 import { input, select, checkbox, password, confirm } from '@inquirer/prompts';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { BASE_DIR } from '../config.js';
+import { BASE_DIR, SYSTEM_DIR, PROJECTS_DIR, SOUL_FILE, MEMORY_FILE } from '../config.js';
 
 // ── ANSI helpers ─────────────────────────────────────────────────────
 
@@ -261,6 +261,200 @@ async function collectCredentials(
   }
 }
 
+// ── Slug helper ──────────────────────────────────────────────────────
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// ── Style / proactivity / tone description maps ─────────────────────
+
+const STYLE_DESCRIPTIONS: Record<string, string> = {
+  concise: 'Keep responses brief and to the point',
+  balanced: 'Standard responses with appropriate detail',
+  detailed: 'Provide thorough explanations and context',
+};
+
+const PROACTIVITY_DESCRIPTIONS: Record<string, string> = {
+  reactive: 'Only act when asked, don\'t volunteer suggestions',
+  balanced: 'Offer relevant suggestions when appropriate',
+  proactive: 'Actively suggest improvements and flag issues',
+};
+
+const TONE_DESCRIPTIONS: Record<string, string> = {
+  professional: 'Maintain a formal, business-appropriate tone',
+  casual: 'Use a friendly, conversational tone',
+  minimal: 'Be terse and efficient, skip pleasantries',
+};
+
+// ── About You interview ─────────────────────────────────────────────
+
+interface AboutYouAnswers {
+  role: string;
+  interests: string;
+  projects: string;
+  style: string;
+  proactivity: string;
+  tone: string;
+}
+
+async function aboutYouInterview(ownerName: string): Promise<void> {
+  sectionHeader('Step 7: About You (optional)');
+
+  console.log(`  ${DIM}These questions help me learn about you. Press Enter to skip any.${RESET}`);
+  console.log();
+
+  let answers: AboutYouAnswers;
+
+  try {
+    const role = await input({ message: 'What\'s your job title or role?' });
+    const interests = await input({ message: 'What are your main interests or hobbies?' });
+    const projects = await input({ message: 'What projects are you currently working on? (comma-separated)' });
+
+    const style = await select({
+      message: 'How should I communicate with you?',
+      default: 'balanced',
+      choices: [
+        { value: 'concise', name: 'concise   — Brief and to the point' },
+        { value: 'balanced', name: 'balanced  — Standard with appropriate detail' },
+        { value: 'detailed', name: 'detailed  — Thorough explanations and context' },
+      ],
+    });
+
+    const proactivity = await select({
+      message: 'How proactive should I be?',
+      default: 'balanced',
+      choices: [
+        { value: 'reactive', name: 'reactive   — Only act when asked' },
+        { value: 'balanced', name: 'balanced   — Offer relevant suggestions' },
+        { value: 'proactive', name: 'proactive  — Actively suggest improvements' },
+      ],
+    });
+
+    const tone = await select({
+      message: 'What tone should I use?',
+      default: 'casual',
+      choices: [
+        { value: 'professional', name: 'professional — Formal and business-appropriate' },
+        { value: 'casual', name: 'casual       — Friendly and conversational' },
+        { value: 'minimal', name: 'minimal      — Terse and efficient' },
+      ],
+    });
+
+    answers = { role, interests, projects, style, proactivity, tone };
+  } catch {
+    // User pressed Ctrl+C or prompt was cancelled — skip silently
+    return;
+  }
+
+  const hasAbout = answers.role || answers.interests || answers.projects;
+  const hasPrefs = answers.style || answers.proactivity || answers.tone;
+
+  if (!hasAbout && !hasPrefs) return;
+
+  // Ensure vault directories exist
+  mkdirSync(SYSTEM_DIR, { recursive: true });
+  mkdirSync(PROJECTS_DIR, { recursive: true });
+
+  // ── Generate MEMORY.md ──────────────────────────────────────────
+  const memoryLines: string[] = [
+    '---',
+    'type: system-memory',
+    'tags:',
+    '  - system',
+    '  - memory',
+    '---',
+    '',
+    '# Memory',
+    '',
+  ];
+
+  if (hasAbout) {
+    const displayName = ownerName || 'the Owner';
+    memoryLines.push(`## About ${displayName}`, '');
+    if (answers.role) memoryLines.push(`- Role: ${answers.role}`);
+    if (answers.interests) memoryLines.push(`- Interests: ${answers.interests}`);
+    if (answers.projects) memoryLines.push(`- Current projects: ${answers.projects}`);
+    memoryLines.push('');
+  }
+
+  if (hasPrefs) {
+    memoryLines.push('## Owner Preferences', '');
+    if (answers.style) memoryLines.push(`- Communication style: ${answers.style}`);
+    if (answers.proactivity) memoryLines.push(`- Proactivity: ${answers.proactivity}`);
+    if (answers.tone) memoryLines.push(`- Tone: ${answers.tone}`);
+    memoryLines.push('');
+  }
+
+  writeFileSync(MEMORY_FILE, memoryLines.join('\n'));
+  console.log(`  ${GREEN}✔ Updated MEMORY.md with your preferences${RESET}`);
+
+  // ── Update SOUL.md ──────────────────────────────────────────────
+  if (hasPrefs && existsSync(SOUL_FILE)) {
+    let soul = readFileSync(SOUL_FILE, 'utf-8');
+
+    if (!soul.includes('## Owner Preferences')) {
+      const prefLines: string[] = ['', '## Owner Preferences', ''];
+      if (answers.style) {
+        prefLines.push(`- Communication style: ${answers.style} — ${STYLE_DESCRIPTIONS[answers.style]}`);
+      }
+      if (answers.proactivity) {
+        prefLines.push(`- Proactivity level: ${answers.proactivity} — ${PROACTIVITY_DESCRIPTIONS[answers.proactivity]}`);
+      }
+      if (answers.tone) {
+        prefLines.push(`- Tone: ${answers.tone} — ${TONE_DESCRIPTIONS[answers.tone]}`);
+      }
+      prefLines.push('');
+
+      soul = soul.trimEnd() + '\n' + prefLines.join('\n');
+      writeFileSync(SOUL_FILE, soul);
+      console.log(`  ${GREEN}✔ Updated SOUL.md with personality settings${RESET}`);
+    }
+  }
+
+  // ── Create project notes ────────────────────────────────────────
+  if (answers.projects) {
+    const projectNames = answers.projects
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    let created = 0;
+    const today = new Date().toISOString().slice(0, 10);
+
+    for (const name of projectNames) {
+      const slug = slugify(name);
+      if (!slug) continue;
+
+      const filePath = path.join(PROJECTS_DIR, `${slug}.md`);
+      if (existsSync(filePath)) continue;
+
+      const content = [
+        '---',
+        `created: ${today}`,
+        'tags: [project]',
+        '---',
+        '',
+        `# ${name}`,
+        '',
+        '(Add details about this project)',
+        '',
+      ].join('\n');
+
+      writeFileSync(filePath, content);
+      created++;
+    }
+
+    if (created > 0) {
+      console.log(`  ${GREEN}✔ Created ${created} project note${created === 1 ? '' : 's'}${RESET}`);
+    }
+  }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 export async function runSetup(): Promise<void> {
@@ -382,6 +576,9 @@ export async function runSetup(): Promise<void> {
     default: entries['ALLOW_ALL_USERS'] === 'true',
   });
   entries['ALLOW_ALL_USERS'] = allowAll ? 'true' : 'false';
+
+  // ── Step 7: About You ─────────────────────────────────────────
+  await aboutYouInterview(entries['OWNER_NAME'] || '');
 
   // ── Write .env ─────────────────────────────────────────────────
   const sections = [
