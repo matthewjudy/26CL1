@@ -230,6 +230,15 @@ function cmdLaunch(options: { foreground?: boolean; install?: boolean; uninstall
     return;
   }
 
+  // Auto-install LaunchAgent if setup wizard requested it
+  const launchAgentFlag = path.join(BASE_DIR, '.install-launchagent');
+  if (existsSync(launchAgentFlag)) {
+    try { unlinkSync(launchAgentFlag); } catch { /* ignore */ }
+    console.log('  Installing login service (auto-start on boot)...');
+    cmdLaunch({ install: true });
+    return;
+  }
+
   // Stop any existing instance first
   const existingPid = readPid();
   if (existingPid && isProcessAlive(existingPid)) {

@@ -626,11 +626,30 @@ export async function runSetup(): Promise<void> {
   console.log(`  All users:  ${allowAll ? 'yes' : 'no (owner only)'}`);
   console.log();
 
+  // ── Step 8: Auto-start on login ───────────────────────────────────
+  if (process.platform === 'darwin') {
+    sectionHeader('Step 8: Auto-Start');
+
+    console.log(`  ${DIM}Install a login service so ${entries['ASSISTANT_NAME'] || 'Clementine'} starts${RESET}`);
+    console.log(`  ${DIM}automatically when you turn on your computer.${RESET}`);
+    console.log();
+
+    const installService = await confirm({
+      message: 'Start automatically on login? (recommended)',
+      default: true,
+    });
+
+    if (installService) {
+      // Signal to the caller that LaunchAgent should be installed
+      writeFileSync(path.join(BASE_DIR, '.install-launchagent'), '');
+      console.log(`  ${GREEN}✔ Will install login service after first launch${RESET}`);
+    }
+  }
+
+  console.log();
   console.log(`  ${BOLD}Next steps${RESET}`);
   console.log(`  ${DIM}${'─'.repeat(50)}${RESET}`);
-  console.log(`    ${BOLD}clementine launch${RESET}            Start as background daemon`);
-  console.log(`    ${BOLD}clementine launch -f${RESET}         Start in foreground (debug)`);
-  console.log(`    ${BOLD}clementine launch --install${RESET}  Install as login service (survives reboots)`);
-  console.log(`    ${BOLD}clementine doctor${RESET}            Verify everything is configured`);
+  console.log(`    ${BOLD}clementine launch${RESET}    Start the assistant`);
+  console.log(`    ${BOLD}clementine doctor${RESET}    Verify everything is configured`);
   console.log();
 }
