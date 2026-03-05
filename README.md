@@ -307,11 +307,13 @@ Secrets can also be stored in macOS Keychain (`security find-generic-password`) 
 
 ## Models
 
-| Tier | Model | Use case |
-|------|-------|----------|
-| `haiku` | `claude-haiku-4-5-20251001` | Auto-memory extraction (background, fast, cheap) |
-| `sonnet` | `claude-sonnet-4-6` | Default conversation model (1M context) |
-| `opus` | `claude-opus-4-6` | Available via config or agent profiles |
+| Tier | Model Alias | Use case |
+|------|-------------|----------|
+| `haiku` | `haiku` (latest Haiku) | Auto-memory extraction (background, fast, cheap) |
+| `sonnet` | `sonnet` (latest Sonnet) | Default conversation model (1M context) |
+| `opus` | `opus` (latest Opus) | Available via config or agent profiles |
+
+Model aliases always resolve to the latest version via the Claude Code SDK. To pin a specific version, set `DEFAULT_MODEL_TIER` to a full model name (e.g. `claude-sonnet-4-6`).
 
 Change the default with `clementine config set DEFAULT_MODEL_TIER opus`, then `clementine restart`.
 

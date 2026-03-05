@@ -105,9 +105,9 @@ function getSecret(envKey: string, keychainService?: string): string {
 // ── Models ───────────────────────────────────────────────────────────
 
 export const MODELS: Models = {
-  haiku: 'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-6',
+  haiku: 'haiku',
+  sonnet: 'sonnet',
+  opus: 'opus',
 };
 
 export const DEFAULT_MODEL_TIER = (getEnv('DEFAULT_MODEL_TIER', 'sonnet')) as keyof Models;
