@@ -583,7 +583,7 @@ export class CronScheduler {
           outputPreview: response ? response.slice(0, 200) : undefined,
         });
 
-        if (response) {
+        if (response && !CronScheduler.isCronNoise(response)) {
           await this.dispatcher.send(`**[Cron: ${job.name} — ${timeStr}]**\n\n${response}`);
         }
         return; // done
@@ -643,6 +643,36 @@ export class CronScheduler {
     } catch (err) {
       return `Cron job '${jobName}' error: ${err}`;
     }
+  }
+
+  /** Filter out cron responses that are just narration, not actionable output. */
+  private static isCronNoise(response: string): boolean {
+    const lower = response.toLowerCase().trim();
+    const noisePatterns = [
+      'nothing to report',
+      'nothing new',
+      'nothing meaningful',
+      'nothing notable',
+      'no new',
+      'no updates',
+      'no unread',
+      'all clear',
+      'completing the cleanup silently',
+      'completing silently',
+      'cleanup silently',
+      'let me check',
+      'let me read',
+      'let me search',
+      'let me start',
+      'let me use',
+      "i'll check",
+      "i'll execute",
+      "i'll scan",
+      'let me retry',
+      'let me fix',
+    ];
+    // If the response starts with narration or says nothing meaningful, filter it
+    return noisePatterns.some((p) => lower.includes(p));
   }
 
   listJobs(): string {
