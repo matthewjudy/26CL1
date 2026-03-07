@@ -907,7 +907,22 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     return;
   }
 
-  // 5. Git pull
+  // 5. Stash local changes, pull, then reapply
+  let didStash = false;
+  try {
+    const stashOutput = execSync('git stash', {
+      cwd: PACKAGE_ROOT,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    didStash = !stashOutput.includes('No local changes');
+    if (didStash) {
+      console.log(`  ${GREEN}OK${RESET}  Stashed local customizations`);
+    }
+  } catch {
+    // No changes to stash — continue
+  }
+
   console.log(`  Pulling latest...`);
   try {
     const pullOutput = execSync('git pull --ff-only', {
@@ -928,6 +943,10 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
       console.error('  Resolve manually with: git -C "' + PACKAGE_ROOT + '" pull --rebase');
     } else {
       console.error(`  ${RED}FAIL${RESET}  git pull failed: ${errStr.slice(0, 200)}`);
+    }
+    if (didStash) {
+      console.log(`  ${DIM}Restoring stashed changes...${RESET}`);
+      try { execSync('git stash pop', { cwd: PACKAGE_ROOT, stdio: 'pipe' }); } catch { /* best effort */ }
     }
     console.log();
     console.log(`  ${DIM}Config backup is at: ${backupDir}${RESET}`);
@@ -986,18 +1005,33 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     // Non-fatal — local dist is already updated
   }
 
-  // 9. Doctor check
+  // 9. Restore stashed local customizations
+  if (didStash) {
+    try {
+      execSync('git stash pop', {
+        cwd: PACKAGE_ROOT,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      console.log(`  ${GREEN}OK${RESET}  Local customizations restored`);
+    } catch {
+      console.error(`  ${YELLOW}WARN${RESET}  Could not auto-restore local changes (conflict)`);
+      console.log(`       Your changes are saved in: git -C "${PACKAGE_ROOT}" stash list`);
+      console.log(`       Restore manually with: git -C "${PACKAGE_ROOT}" stash pop`);
+    }
+  }
+
+  // 10. Doctor check
   console.log();
   console.log(`  ${DIM}Running health check...${RESET}`);
   cmdDoctor();
 
-  // 10. Restart if requested or was running
+  // 11. Restart if requested or was running
   if (options.restart || wasRunning) {
     console.log('  Restarting daemon...');
     cmdLaunch({});
   }
 
-  // 11. Show current version
+  // 12. Show current version
   try {
     const hash = execSync('git rev-parse --short HEAD', {
       cwd: PACKAGE_ROOT,
