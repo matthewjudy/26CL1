@@ -33,6 +33,7 @@ const ENV_PATH = path.join(BASE_DIR, '.env');
 const VAULT_DIR = path.join(BASE_DIR, 'vault');
 const CRON_FILE = path.join(VAULT_DIR, '00-System', 'CRON.md');
 const MEMORY_DB_PATH = path.join(VAULT_DIR, '.memory.db');
+const PROJECTS_META_FILE = path.join(BASE_DIR, 'projects.json');
 
 // ── Lazy gateway for chat ────────────────────────────────────────────
 
@@ -162,6 +163,21 @@ function getProjectScripts(dirPath: string, entries: string[]): string[] {
     } catch { /* ignore */ }
   }
   return [];
+}
+
+interface ProjectMetaEntry {
+  path: string;
+  description?: string;
+  keywords?: string[];
+}
+
+function loadProjectsMeta(): ProjectMetaEntry[] {
+  try {
+    if (!existsSync(PROJECTS_META_FILE)) return [];
+    return JSON.parse(readFileSync(PROJECTS_META_FILE, 'utf-8'));
+  } catch {
+    return [];
+  }
 }
 
 function scanProjects(): ProjectInfo[] {
@@ -709,7 +725,55 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
   app.get('/api/projects', (_req, res) => {
     try {
       const projects = scanProjects();
-      res.json({ projects });
+      // Merge user-defined metadata from projects.json
+      const meta = loadProjectsMeta();
+      const merged = projects.map(p => {
+        const m = meta.find(pm => pm.path === p.path);
+        return {
+          ...p,
+          userDescription: m?.description ?? '',
+          keywords: m?.keywords ?? [],
+          linked: !!m,
+        };
+      });
+      res.json({ projects: merged });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post('/api/projects/link', (req, res) => {
+    try {
+      const { path: projPath, description, keywords } = req.body;
+      if (!projPath) {
+        res.status(400).json({ error: 'path is required' });
+        return;
+      }
+      const meta = loadProjectsMeta();
+      const existing = meta.findIndex(m => m.path === projPath);
+      const entry = { path: projPath, description: description ?? '', keywords: keywords ?? [] };
+      if (existing >= 0) {
+        meta[existing] = entry;
+      } else {
+        meta.push(entry);
+      }
+      writeFileSync(PROJECTS_META_FILE, JSON.stringify(meta, null, 2));
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post('/api/projects/unlink', (req, res) => {
+    try {
+      const { path: projPath } = req.body;
+      if (!projPath) {
+        res.status(400).json({ error: 'path is required' });
+        return;
+      }
+      const meta = loadProjectsMeta().filter(m => m.path !== projPath);
+      writeFileSync(PROJECTS_META_FILE, JSON.stringify(meta, null, 2));
+      res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -1805,7 +1869,7 @@ function getDashboardHTML(): string {
     <!-- ═══ Projects Page ═══ -->
     <div class="page" id="page-projects">
       <div class="page-title">Projects</div>
-      <p style="color:var(--text-muted);margin-bottom:16px">Discovered projects from your workspace directories. Select a project when creating scheduled tasks to give the agent access to that project's tools and context.</p>
+      <p style="color:var(--text-muted);margin-bottom:16px">Link projects to give Clementine automatic access to their tools and MCP servers. When you mention a linked project's keywords in chat, Clementine switches into that project's context automatically.</p>
       <div id="panel-projects"><div class="empty-state">Loading...</div></div>
     </div>
 
@@ -2049,6 +2113,32 @@ function getDashboardHTML(): string {
     <div class="modal-footer">
       <button onclick="closeConfirmModal()">Cancel</button>
       <button class="btn-danger" id="confirm-action">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="project-modal">
+  <div class="modal" style="width:480px">
+    <div class="modal-header">
+      <h3 id="project-modal-title">Link Project</h3>
+      <button class="btn-ghost btn-sm" onclick="closeProjectModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="project-path" />
+      <div class="form-row">
+        <label>Description</label>
+        <input type="text" id="project-description" placeholder="e.g. Salesforce CRM integration tools" />
+        <div class="form-hint">Describe what this project provides so Clementine can match it from chat context.</div>
+      </div>
+      <div class="form-row">
+        <label>Keywords</label>
+        <input type="text" id="project-keywords" placeholder="e.g. salesforce, CRM, leads, opportunities" />
+        <div class="form-hint">Comma-separated keywords that trigger this project's context. Include tool names, services, and domain terms.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="closeProjectModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveProjectLink()">Save</button>
     </div>
   </div>
 </div>
@@ -2314,7 +2404,8 @@ async function refreshProjects() {
     const r = await fetch('/api/projects');
     const d = await r.json();
     projectsData = d.projects || [];
-    document.getElementById('nav-project-count').textContent = projectsData.length;
+    const linkedCount = projectsData.filter(p => p.linked).length;
+    document.getElementById('nav-project-count').textContent = linkedCount || projectsData.length;
 
     // Update the project selector in cron modal
     const sel = document.getElementById('cron-workdir');
@@ -2340,24 +2431,82 @@ async function refreshProjects() {
       badges.push('<span class="badge badge-blue">' + esc(p.type) + '</span>');
       if (p.hasClaude) badges.push('<span class="badge badge-green">CLAUDE.md</span>');
       if (p.hasMcp) badges.push('<span class="badge badge-yellow">MCP</span>');
+      if (p.linked) badges.push('<span class="badge" style="background:#22c55e;color:#fff">Linked</span>');
       const scripts = (p.scripts || []).slice(0, 8);
       const scriptHtml = scripts.length > 0
         ? '<div style="margin-top:8px"><span style="font-size:11px;color:var(--text-muted)">Scripts:</span> ' + scripts.map(s => '<code style="font-size:11px;background:var(--surface);padding:1px 5px;border-radius:3px">' + esc(s) + '</code>').join(' ') + '</div>'
         : '';
+      const kwHtml = (p.keywords || []).length > 0
+        ? '<div style="margin-top:6px"><span style="font-size:11px;color:var(--text-muted)">Keywords:</span> ' + p.keywords.map(k => '<code style="font-size:11px;background:var(--surface);padding:1px 5px;border-radius:3px;color:var(--accent)">' + esc(k) + '</code>').join(' ') + '</div>'
+        : '';
+      const userDescHtml = p.userDescription
+        ? '<div style="color:var(--accent);margin-bottom:4px;font-size:12px">' + esc(p.userDescription) + '</div>'
+        : '';
+      const linkBtn = p.linked
+        ? '<button class="btn btn-sm" style="font-size:11px" onclick="openProjectEditor(\'' + esc(p.path).replace(/'/g, "\\'") + '\')">Edit</button> <button class="btn btn-sm btn-danger" style="font-size:11px" onclick="unlinkProject(\'' + esc(p.path).replace(/'/g, "\\'") + '\')">Unlink</button>'
+        : '<button class="btn btn-sm btn-primary" style="font-size:11px" onclick="openProjectEditor(\'' + esc(p.path).replace(/'/g, "\\'") + '\')">Link</button>';
       html += '<div class="card" style="cursor:default">'
         + '<div class="card-header" style="display:flex;align-items:center;justify-content:space-between">'
         + '<strong>' + esc(p.name) + '</strong>'
         + '<div>' + badges.join(' ') + '</div>'
         + '</div>'
         + '<div class="card-body">'
+        + userDescHtml
         + (p.description ? '<div style="color:var(--text-secondary);margin-bottom:6px">' + esc(p.description) + '</div>' : '')
         + '<div style="font-size:11px;color:var(--text-muted);font-family:monospace">' + esc(p.path) + '</div>'
         + scriptHtml
+        + kwHtml
+        + '<div style="margin-top:10px;text-align:right">' + linkBtn + '</div>'
         + '</div></div>';
     }
     html += '</div>';
     document.getElementById('panel-projects').innerHTML = html;
   } catch(e) { }
+}
+
+function openProjectEditor(projPath) {
+  const p = projectsData.find(x => x.path === projPath);
+  if (!p) return;
+  document.getElementById('project-path').value = projPath;
+  document.getElementById('project-description').value = p.userDescription || '';
+  document.getElementById('project-keywords').value = (p.keywords || []).join(', ');
+  document.getElementById('project-modal-title').textContent = (p.linked ? 'Edit' : 'Link') + ': ' + p.name;
+  document.getElementById('project-modal').classList.add('show');
+}
+
+function closeProjectModal() {
+  document.getElementById('project-modal').classList.remove('show');
+}
+
+async function saveProjectLink() {
+  const projPath = document.getElementById('project-path').value;
+  const description = document.getElementById('project-description').value.trim();
+  const keywords = document.getElementById('project-keywords').value
+    .split(',').map(k => k.trim()).filter(Boolean);
+  try {
+    const r = await fetch('/api/projects/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: projPath, description, keywords }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    toast('Project linked successfully');
+    closeProjectModal();
+    refreshProjects();
+  } catch(e) { toast('Failed: ' + e, 'error'); }
+}
+
+async function unlinkProject(projPath) {
+  try {
+    const r = await fetch('/api/projects/unlink', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: projPath }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    toast('Project unlinked');
+    refreshProjects();
+  } catch(e) { toast('Failed: ' + e, 'error'); }
 }
 
 // ── Cron Modal ────────────────────────────

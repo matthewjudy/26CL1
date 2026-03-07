@@ -44,6 +44,7 @@ import {
   UNLEASHED_PHASE_TURNS,
   UNLEASHED_DEFAULT_MAX_HOURS,
   UNLEASHED_MAX_PHASES,
+  PROJECTS_META_FILE,
 } from '../config.js';
 import type { AgentProfile, OnTextCallback, SessionData } from '../types.js';
 import {
@@ -222,6 +223,68 @@ function extractDeliverable(blocks: string[]): string {
   }
   // All blocks were narration
   return '';
+}
+
+// ── Project Matching ────────────────────────────────────────────────
+
+interface ProjectMeta {
+  path: string;
+  description?: string;
+  keywords?: string[];
+}
+
+function loadProjectsMeta(): ProjectMeta[] {
+  try {
+    if (!fs.existsSync(PROJECTS_META_FILE)) return [];
+    const raw = JSON.parse(fs.readFileSync(PROJECTS_META_FILE, 'utf-8'));
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Match a user message against linked projects by name, description, and keywords.
+ * Returns the best match if confidence is high enough, or null.
+ */
+function matchProject(message: string): ProjectMeta | null {
+  const projects = loadProjectsMeta();
+  if (projects.length === 0) return null;
+
+  const lower = message.toLowerCase();
+  let best: ProjectMeta | null = null;
+  let bestScore = 0;
+
+  for (const proj of projects) {
+    let score = 0;
+    const name = path.basename(proj.path).toLowerCase();
+
+    // Name match (strongest signal)
+    if (lower.includes(name)) score += 10;
+
+    // Keyword matches (skip very short keywords to avoid false positives)
+    if (proj.keywords?.length) {
+      for (const kw of proj.keywords) {
+        if (kw.length >= 3 && lower.includes(kw.toLowerCase())) score += 5;
+      }
+    }
+
+    // Description word overlap (weaker signal)
+    if (proj.description) {
+      const descWords = proj.description.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      for (const w of descWords) {
+        if (lower.includes(w)) score += 1;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = proj;
+    }
+  }
+
+  // Require at least a keyword-level match to activate
+  return bestScore >= 5 ? best : null;
 }
 
 // ── PersonalAssistant ───────────────────────────────────────────────
@@ -784,15 +847,31 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     securityAnnotation?: string,
   ): Promise<[string, string]> {
     const rawContext = await this.retrieveContext(prompt, sessionKey);
-    const retrievalContext = securityAnnotation
+    let retrievalContext = securityAnnotation
       ? `${securityAnnotation}\n\n${rawContext}`
       : rawContext;
     setProfileTier(profile?.tier ?? null);
     setInteractionSource(inferInteractionSource(sessionKey));
 
+    // Auto-match a linked project based on message content (only on fresh conversations —
+    // switching cwd mid-session with a resume would confuse the agent)
+    const hasActiveSession = !!(sessionKey && this.sessions.has(sessionKey));
+    const matchedProject = hasActiveSession ? null : matchProject(prompt);
+    if (matchedProject) {
+      logger.info({ project: matchedProject.path }, 'Auto-matched project from message');
+      const projName = path.basename(matchedProject.path);
+      const projDesc = matchedProject.description ? ` — ${matchedProject.description}` : '';
+      retrievalContext = `## Active Project: ${projName}${projDesc}\n\nYou are operating in the context of the **${projName}** project at \`${matchedProject.path}\`. You have access to this project's tools, MCP servers, and configuration.\n\n${retrievalContext}`;
+    }
+
     try {
       for (let attempt = 0; attempt <= PersonalAssistant.RATE_LIMIT_MAX_RETRIES; attempt++) {
         const sdkOptions = this.buildOptions({ model, retrievalContext, profile, sessionKey });
+
+        // If a project matched, switch cwd so the agent gets its tools/CLAUDE.md
+        if (matchedProject) {
+          sdkOptions.cwd = matchedProject.path;
+        }
 
         // Set resume session if available
         if (sessionKey && this.sessions.has(sessionKey)) {
