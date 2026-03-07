@@ -894,6 +894,23 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     console.log(`  ${GREEN}OK${RESET}  Daemon stopped`);
   }
 
+  // Helper: if update fails after stopping daemon, relaunch before exiting
+  function failAndRestart(backupDir: string): never {
+    if (wasRunning) {
+      console.log();
+      console.log(`  Restarting daemon (was running before update)...`);
+      try {
+        cmdLaunch({});
+        console.log(`  ${GREEN}OK${RESET}  Daemon restarted`);
+      } catch {
+        console.error(`  ${YELLOW}WARN${RESET}  Could not restart daemon — run: clementine launch`);
+      }
+    }
+    console.log();
+    console.log(`  ${DIM}Config backup is at: ${backupDir}${RESET}`);
+    process.exit(1);
+  }
+
   if (options.dryRun) {
     console.log();
     console.log(`  ${DIM}Dry run — would execute:${RESET}`);
@@ -949,9 +966,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
       console.log(`  ${DIM}Restoring stashed changes...${RESET}`);
       try { execSync('git stash pop', { cwd: PACKAGE_ROOT, stdio: 'pipe' }); } catch { /* best effort */ }
     }
-    console.log();
-    console.log(`  ${DIM}Config backup is at: ${backupDir}${RESET}`);
-    process.exit(1);
+    failAndRestart(backupDir);
   }
 
   // 6. npm install
@@ -964,8 +979,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     console.log(`  ${GREEN}OK${RESET}  Dependencies installed`);
   } catch (err) {
     console.error(`  ${RED}FAIL${RESET}  npm install failed: ${String(err).slice(0, 200)}`);
-    console.log(`  ${DIM}Config backup is at: ${backupDir}${RESET}`);
-    process.exit(1);
+    failAndRestart(backupDir);
   }
 
   // 6b. Rebuild native modules (better-sqlite3) for current Node version
@@ -989,8 +1003,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     console.log(`  ${GREEN}OK${RESET}  Build succeeded`);
   } catch (err) {
     console.error(`  ${RED}FAIL${RESET}  Build failed: ${String(err).slice(0, 200)}`);
-    console.log(`  ${DIM}Config backup is at: ${backupDir}${RESET}`);
-    process.exit(1);
+    failAndRestart(backupDir);
   }
 
   // 8. Reinstall globally

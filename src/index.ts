@@ -172,6 +172,19 @@ function verifySetup(): string[] {
     }
   }
 
+  // Check better-sqlite3 native module
+  try {
+    require.resolve('better-sqlite3');
+    // If resolve works, try actually loading it
+    execSync('node -e "require(\'better-sqlite3\')"', { stdio: 'pipe', timeout: 5000 });
+  } catch {
+    errors.push(
+      'better-sqlite3 native module is broken (Node version mismatch).\n' +
+      '  Fix: npm rebuild better-sqlite3\n' +
+      '  Run: clementine doctor',
+    );
+  }
+
   // Check vault system files
   const requiredFiles: Array<[string, string]> = [
     [config.SOUL_FILE, 'SOUL.md'],
