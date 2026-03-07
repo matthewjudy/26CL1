@@ -194,10 +194,17 @@ export class Gateway {
     maxTurns?: number,
     model?: string,
     workDir?: string,
+    mode: 'standard' | 'unleashed' = 'standard',
+    maxHours?: number,
   ): Promise<string> {
-    logger.info(`Running cron job: ${jobName}${workDir ? ` in ${workDir}` : ''}`);
+    logger.info(`Running cron job: ${jobName}${workDir ? ` in ${workDir}` : ''}${mode === 'unleashed' ? ' (unleashed)' : ''}`);
     try {
-      const response = await this.assistant.runCronJob(jobName, jobPrompt, tier, maxTurns, model, workDir);
+      let response: string;
+      if (mode === 'unleashed') {
+        response = await this.assistant.runUnleashedTask(jobName, jobPrompt, tier, maxTurns, model, workDir, maxHours);
+      } else {
+        response = await this.assistant.runCronJob(jobName, jobPrompt, tier, maxTurns, model, workDir);
+      }
 
       // Re-baseline integrity checksums after cron job (may write to vault)
       scanner.refreshIntegrity();

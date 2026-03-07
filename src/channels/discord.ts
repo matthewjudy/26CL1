@@ -369,10 +369,25 @@ export async function startDiscord(
       if (subCmd === 'list' || !subCmd) {
         await message.reply(cronScheduler.listJobs());
       } else if (subCmd === 'run' && jobName) {
-        const streamer = new DiscordStreamingMessage(message.channel);
-        await streamer.start();
-        const response = await cronScheduler.runManual(jobName);
-        await streamer.finalize(response);
+        const job = cronScheduler.getJob(jobName);
+        if (!job) {
+          await message.reply(`Cron job '${jobName}' not found. Use \`!cron list\` to see available jobs.`);
+        } else if (cronScheduler.isJobRunning(jobName)) {
+          await message.reply(`Cron job '${jobName}' is already running.`);
+        } else if (job.mode === 'unleashed') {
+          // Unleashed tasks run in background — don't block the channel
+          await message.reply(`Unleashed task "${jobName}" started in background (max ${job.maxHours ?? 6}h). Check the dashboard for progress.`);
+          cronScheduler.runManual(jobName).then((result) => {
+            message.reply(`**[Unleashed: ${jobName} — done]**\n\n${result.slice(0, 1800)}`).catch(() => {});
+          }).catch((err) => {
+            message.reply(`**[Unleashed: ${jobName} — error]**\n\n${err}`).catch(() => {});
+          });
+        } else {
+          const streamer = new DiscordStreamingMessage(message.channel);
+          await streamer.start();
+          const response = await cronScheduler.runManual(jobName);
+          await streamer.finalize(response);
+        }
       } else if (subCmd === 'disable' && jobName) {
         await message.reply(cronScheduler.disableJob(jobName));
       } else if (subCmd === 'enable' && jobName) {

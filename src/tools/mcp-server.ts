@@ -2273,15 +2273,18 @@ server.tool(
 
 server.tool(
   'add_cron_job',
-  'Add a new scheduled cron job. Validates the schedule expression and writes to CRON.md. The daemon auto-reloads on file change.',
+  'Add a new scheduled cron job. Validates the schedule expression and writes to CRON.md. The daemon auto-reloads on file change. Use mode "unleashed" for long-running tasks (hours) with phased execution and checkpointing.',
   {
     name: z.string().describe('Job name (unique identifier)'),
     schedule: z.string().describe('Cron expression (e.g., "0 9 * * 1" for Monday 9 AM)'),
     prompt: z.string().describe('The prompt/instruction for the assistant to execute'),
     tier: z.number().optional().default(1).describe('Security tier (1=auto, 2=logged, 3=approval)'),
     enabled: z.boolean().optional().default(true).describe('Whether the job is enabled'),
+    work_dir: z.string().optional().describe('Project directory to run in (agent gets access to project tools, CLAUDE.md, files)'),
+    mode: z.enum(['standard', 'unleashed']).optional().default('standard').describe('standard = normal cron, unleashed = long-running phased execution with checkpointing'),
+    max_hours: z.number().optional().describe('Max hours for unleashed mode (default 6). Ignored for standard mode.'),
   },
-  async ({ name: jobName, schedule, prompt, tier, enabled }) => {
+  async ({ name: jobName, schedule, prompt, tier, enabled, work_dir, mode, max_hours }) => {
     // Validate cron expression
     const cronMod = await import('node-cron');
     if (!cronMod.default.validate(schedule)) {
@@ -2312,13 +2315,18 @@ server.tool(
     }
 
     // Create and append the new job
-    const newJob = {
+    const newJob: Record<string, unknown> = {
       name: jobName,
       schedule,
       prompt,
       enabled,
       tier,
     };
+    if (work_dir) newJob.work_dir = work_dir;
+    if (mode === 'unleashed') {
+      newJob.mode = 'unleashed';
+      if (max_hours) newJob.max_hours = max_hours;
+    }
 
     jobs.push(newJob);
     parsed.data.jobs = jobs;
@@ -2327,14 +2335,19 @@ server.tool(
     const output = matterMod.default.stringify(parsed.content, parsed.data);
     writeFileSync(CRON_FILE, output);
 
-    logger.info({ jobName, schedule, tier }, 'Added cron job via MCP tool');
+    logger.info({ jobName, schedule, tier, mode, work_dir }, 'Added cron job via MCP tool');
+
+    const details = [
+      `  Schedule: ${schedule}`,
+      `  Prompt: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`,
+      `  Tier: ${tier}`,
+      `  Enabled: ${enabled}`,
+    ];
+    if (work_dir) details.push(`  Project: ${work_dir}`);
+    if (mode === 'unleashed') details.push(`  Mode: unleashed (max ${max_hours ?? 6} hours)`);
 
     return textResult(
-      `Added cron job "${jobName}":\n` +
-      `  Schedule: ${schedule}\n` +
-      `  Prompt: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}\n` +
-      `  Tier: ${tier}\n` +
-      `  Enabled: ${enabled}\n\n` +
+      `Added cron job "${jobName}":\n${details.join('\n')}\n\n` +
       `The daemon will auto-reload CRON.md on file change.`,
     );
   },

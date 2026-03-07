@@ -94,6 +94,8 @@ export interface CronJobDefinition {
   maxTurns?: number;
   model?: string;
   workDir?: string;
+  mode?: 'standard' | 'unleashed';
+  maxHours?: number;
 }
 
 export interface CronRunEntry {

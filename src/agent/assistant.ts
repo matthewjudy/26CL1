@@ -41,6 +41,9 @@ import {
   SYSTEM_PROMPT_MAX_CONTEXT_CHARS,
   SESSION_EXCHANGE_HISTORY_SIZE,
   SESSION_EXCHANGE_MAX_CHARS,
+  UNLEASHED_PHASE_TURNS,
+  UNLEASHED_DEFAULT_MAX_HOURS,
+  UNLEASHED_MAX_PHASES,
 } from '../config.js';
 import type { AgentProfile, OnTextCallback, SessionData } from '../types.js';
 import {
@@ -1141,7 +1144,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       cronTier: tier,
       maxTurns: maxTurns ?? HEARTBEAT_MAX_TURNS,
       model: model ?? null,
-      enableTeams: false,
+      enableTeams: true,
     });
 
     // Override cwd if a project workDir is specified
@@ -1177,6 +1180,211 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     }
 
     return lastTextBlock.trim();
+  }
+
+  // ── Unleashed Mode (Long-Running Autonomous Tasks) ─────────────────
+
+  async runUnleashedTask(
+    jobName: string,
+    jobPrompt: string,
+    tier = 1,
+    maxTurns?: number,
+    model?: string,
+    workDir?: string,
+    maxHours?: number,
+  ): Promise<string> {
+    setInteractionSource('autonomous');
+
+    const effectiveMaxHours = maxHours ?? UNLEASHED_DEFAULT_MAX_HOURS;
+    const turnsPerPhase = maxTurns ?? UNLEASHED_PHASE_TURNS;
+    const deadline = Date.now() + effectiveMaxHours * 60 * 60 * 1000;
+
+    // Set up progress directory
+    const progressDir = path.join(BASE_DIR, 'unleashed', jobName.replace(/[^a-zA-Z0-9_-]/g, '_'));
+    fs.mkdirSync(progressDir, { recursive: true });
+
+    const progressFile = path.join(progressDir, 'progress.jsonl');
+    const cancelFile = path.join(progressDir, 'CANCEL');
+    const statusFile = path.join(progressDir, 'status.json');
+
+    // Clean up any previous cancel flag
+    if (fs.existsSync(cancelFile)) fs.unlinkSync(cancelFile);
+
+    const writeStatus = (status: Record<string, unknown>) => {
+      fs.writeFileSync(statusFile, JSON.stringify({ ...status, updatedAt: new Date().toISOString() }, null, 2));
+    };
+
+    const appendProgress = (entry: Record<string, unknown>) => {
+      fs.appendFileSync(progressFile, JSON.stringify({ ...entry, timestamp: new Date().toISOString() }) + '\n');
+    };
+
+    const startedAt = new Date().toISOString();
+    writeStatus({ jobName, status: 'running', phase: 0, startedAt, maxHours: effectiveMaxHours });
+    appendProgress({ event: 'started', jobName, prompt: jobPrompt.slice(0, 200) });
+
+    let sessionId = '';
+    let phase = 0;
+    let lastOutput = '';
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 3;
+
+    while (phase < UNLEASHED_MAX_PHASES) {
+      // Check cancellation
+      if (fs.existsSync(cancelFile)) {
+        appendProgress({ event: 'cancelled', phase });
+        writeStatus({ jobName, status: 'cancelled', phase, startedAt, finishedAt: new Date().toISOString() });
+        logger.info(`Unleashed task ${jobName} cancelled at phase ${phase}`);
+        return lastOutput || `Task "${jobName}" was cancelled at phase ${phase}.`;
+      }
+
+      // Check deadline
+      if (Date.now() >= deadline) {
+        appendProgress({ event: 'timeout', phase, maxHours: effectiveMaxHours });
+        writeStatus({ jobName, status: 'timeout', phase, startedAt, finishedAt: new Date().toISOString() });
+        logger.info(`Unleashed task ${jobName} timed out after ${effectiveMaxHours}h at phase ${phase}`);
+        return lastOutput || `Task "${jobName}" timed out after ${effectiveMaxHours} hours (phase ${phase}).`;
+      }
+
+      phase++;
+      const phaseStart = Date.now();
+      logger.info(`Unleashed task ${jobName}: starting phase ${phase}`);
+
+      // Re-assert autonomous source — a chat message may have changed it between phases
+      setInteractionSource('autonomous');
+
+      const sdkOptions = this.buildOptions({
+        isHeartbeat: true,
+        cronTier: tier,
+        maxTurns: turnsPerPhase,
+        model: model ?? null,
+        enableTeams: true,
+      });
+
+      if (workDir) {
+        sdkOptions.cwd = workDir;
+      }
+
+      // Resume from previous phase's session
+      if (sessionId) {
+        sdkOptions.resume = sessionId;
+      }
+
+      const now = new Date();
+      const timestamp = now.toISOString().slice(0, 16).replace('T', ' ');
+      const remainingHours = ((deadline - Date.now()) / (60 * 60 * 1000)).toFixed(1);
+
+      let prompt: string;
+      if (phase === 1) {
+        prompt =
+          `[UNLEASHED TASK: ${jobName} — Phase ${phase} — ${timestamp}]\n\n` +
+          `You are running in unleashed mode — a long-running autonomous task.\n` +
+          `Time remaining: ${remainingHours} hours. You have ${turnsPerPhase} turns per phase.\n` +
+          `After each phase completes, your session will be resumed with fresh context.\n\n` +
+          `TASK:\n${jobPrompt}\n\n` +
+          `IMPORTANT:\n` +
+          `- Work methodically through the task in phases\n` +
+          `- At the end of this phase, output a STATUS SUMMARY of what you accomplished and what remains\n` +
+          `- Use sub-agents (Agent/Task tools) for parallel work streams\n` +
+          `- Save important intermediate results to files so they persist across phases`;
+      } else if (sessionId) {
+        // Resuming existing session — agent has full conversation history
+        prompt =
+          `[UNLEASHED TASK: ${jobName} — Phase ${phase} — ${timestamp}]\n\n` +
+          `Continuing unleashed task. This is phase ${phase}.\n` +
+          `Time remaining: ${remainingHours} hours. You have ${turnsPerPhase} turns this phase.\n\n` +
+          `Continue working on the task. Pick up where you left off.\n` +
+          `If the task is COMPLETE, output "TASK_COMPLETE:" followed by a final summary.\n\n` +
+          `IMPORTANT: Output a STATUS SUMMARY at the end of this phase.`;
+      } else {
+        // Fresh session after error — no conversation history available
+        prompt =
+          `[UNLEASHED TASK: ${jobName} — Phase ${phase} (recovery) — ${timestamp}]\n\n` +
+          `You are running in unleashed mode — a long-running autonomous task.\n` +
+          `Time remaining: ${remainingHours} hours. You have ${turnsPerPhase} turns this phase.\n` +
+          `Previous phases encountered an error and the session was reset.\n\n` +
+          `TASK:\n${jobPrompt}\n\n` +
+          `Check any files or progress from prior phases, then continue the work.\n` +
+          `If the task is COMPLETE, output "TASK_COMPLETE:" followed by a final summary.\n\n` +
+          `IMPORTANT: Output a STATUS SUMMARY at the end of this phase.`;
+      }
+
+      let phaseOutput = '';
+      let phaseSessionId = '';
+
+      try {
+        const stream = query({ prompt, options: sdkOptions });
+
+        for await (const message of stream) {
+          if (message.type === 'assistant') {
+            const blocks = getContentBlocks(message as SDKAssistantMessage);
+            for (const block of blocks) {
+              if (block.type === 'text' && block.text) {
+                phaseOutput += block.text;
+              } else if (block.type === 'tool_use' && block.name) {
+                logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
+              }
+            }
+          } else if (message.type === 'result') {
+            const result = message as SDKResultMessage;
+            phaseSessionId = result.session_id ?? '';
+          }
+        }
+      } catch (err) {
+        logger.error({ err, jobName, phase }, `Unleashed task phase ${phase} error`);
+        appendProgress({ event: 'phase_error', phase, error: String(err) });
+        consecutiveErrors++;
+
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          appendProgress({ event: 'aborted', phase, reason: `${MAX_CONSECUTIVE_ERRORS} consecutive phase errors` });
+          writeStatus({ jobName, status: 'error', phase, startedAt, finishedAt: new Date().toISOString() });
+          logger.error(`Unleashed task ${jobName} aborted after ${MAX_CONSECUTIVE_ERRORS} consecutive errors`);
+          return lastOutput || `Task "${jobName}" aborted after ${MAX_CONSECUTIVE_ERRORS} consecutive phase errors.`;
+        }
+
+        // On error, try to continue with a fresh session
+        sessionId = '';
+        continue;
+      }
+
+      const phaseDurationMs = Date.now() - phaseStart;
+      sessionId = phaseSessionId;
+      lastOutput = phaseOutput.trim();
+      consecutiveErrors = 0;
+
+      appendProgress({
+        event: 'phase_complete',
+        phase,
+        durationMs: phaseDurationMs,
+        outputPreview: lastOutput.slice(0, 500),
+        sessionId: phaseSessionId,
+      });
+
+      writeStatus({
+        jobName,
+        status: 'running',
+        phase,
+        startedAt,
+        maxHours: effectiveMaxHours,
+        lastPhaseDurationMs: phaseDurationMs,
+        lastPhaseOutputPreview: lastOutput.slice(0, 300),
+      });
+
+      logger.info(`Unleashed task ${jobName}: phase ${phase} complete (${(phaseDurationMs / 1000).toFixed(0)}s)`);
+
+      // Check if the agent signaled completion
+      if (lastOutput.includes('TASK_COMPLETE:')) {
+        appendProgress({ event: 'completed', phase });
+        writeStatus({ jobName, status: 'completed', phase, startedAt, finishedAt: new Date().toISOString() });
+        logger.info(`Unleashed task ${jobName} completed at phase ${phase}`);
+        return lastOutput;
+      }
+    }
+
+    // Hit max phases
+    appendProgress({ event: 'max_phases', phase });
+    writeStatus({ jobName, status: 'max_phases', phase, startedAt, finishedAt: new Date().toISOString() });
+    logger.warn(`Unleashed task ${jobName} hit max phases (${UNLEASHED_MAX_PHASES})`);
+    return lastOutput || `Task "${jobName}" reached maximum phase limit (${UNLEASHED_MAX_PHASES}).`;
   }
 
   // ── Session Management ────────────────────────────────────────────

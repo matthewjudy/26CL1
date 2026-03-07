@@ -717,7 +717,7 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
 
   app.post('/api/cron', (req, res) => {
     try {
-      const { name, schedule, prompt, tier, enabled, work_dir } = req.body;
+      const { name, schedule, prompt, tier, enabled, work_dir, mode, max_hours } = req.body;
       if (!name || !schedule || !prompt) {
         res.status(400).json({ error: 'name, schedule, and prompt are required' });
         return;
@@ -743,6 +743,10 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
         tier: isNaN(tierNum) ? 1 : tierNum,
       };
       if (work_dir) job.work_dir = String(work_dir);
+      if (mode === 'unleashed') {
+        job.mode = 'unleashed';
+        if (max_hours) job.max_hours = Number(max_hours);
+      }
       jobs.push(job);
       writeCronFile(parsed, jobs);
       res.json({ ok: true, message: `Created cron job: ${name}` });
@@ -780,6 +784,15 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
           jobs[idx].work_dir = String(updates.work_dir);
         } else {
           delete jobs[idx].work_dir;
+        }
+      }
+      if (updates.mode !== undefined) {
+        if (updates.mode === 'unleashed') {
+          jobs[idx].mode = 'unleashed';
+          if (updates.max_hours) jobs[idx].max_hours = Number(updates.max_hours);
+        } else {
+          delete jobs[idx].mode;
+          delete jobs[idx].max_hours;
         }
       }
       if (updates.name !== undefined && updates.name !== jobName) {
@@ -834,6 +847,50 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
       jobs.splice(idx, 1);
       writeCronFile(parsed, jobs);
       res.json({ ok: true, message: `Deleted cron job: ${jobName}` });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── Unleashed status/cancel routes ─────────────────────────────────
+
+  app.get('/api/unleashed', (_req, res) => {
+    const unleashedDir = path.join(BASE_DIR, 'unleashed');
+    if (!existsSync(unleashedDir)) {
+      res.json({ tasks: [] });
+      return;
+    }
+    try {
+      const tasks: Array<Record<string, unknown>> = [];
+      for (const dir of readdirSync(unleashedDir)) {
+        const dirPath = path.join(unleashedDir, dir);
+        if (!statSync(dirPath).isDirectory()) continue;
+        const statusFile = path.join(dirPath, 'status.json');
+        if (existsSync(statusFile)) {
+          try {
+            const status = JSON.parse(readFileSync(statusFile, 'utf-8'));
+            tasks.push(status);
+          } catch { /* skip corrupt */ }
+        }
+      }
+      tasks.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      res.json({ tasks });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post('/api/unleashed/:name/cancel', (req, res) => {
+    const taskName = req.params.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const cancelFile = path.join(BASE_DIR, 'unleashed', taskName, 'CANCEL');
+    const taskDir = path.join(BASE_DIR, 'unleashed', taskName);
+    if (!existsSync(taskDir)) {
+      res.status(404).json({ error: 'Unleashed task not found' });
+      return;
+    }
+    try {
+      writeFileSync(cancelFile, new Date().toISOString());
+      res.json({ ok: true, message: `Cancel signal sent to "${req.params.name}"` });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -1185,6 +1242,7 @@ function getDashboardHTML(): string {
   .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
   .badge-gray { background: rgba(90,106,126,0.15); color: var(--text-muted); }
   .badge-blue { background: rgba(56,139,253,0.15); color: #58a6ff; }
+  .badge-purple { background: rgba(163,113,247,0.15); color: #a371f7; }
   .badge-accent { background: var(--accent-glow); color: var(--accent); }
   .badge-dot {
     width: 6px; height: 6px;
@@ -1943,6 +2001,28 @@ function getDashboardHTML(): string {
         </select>
         <div class="form-hint">Run this task inside a project directory. The agent gets access to that project's tools, CLAUDE.md, and files.</div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Mode</label>
+          <select id="cron-mode" onchange="toggleUnleashedOptions()">
+            <option value="standard">Standard</option>
+            <option value="unleashed">Unleashed (long-running)</option>
+          </select>
+          <div class="form-hint">Unleashed mode runs in phases with checkpointing for tasks that take hours.</div>
+        </div>
+        <div class="form-group" id="cron-maxhours-group" style="display:none">
+          <label class="form-label">Max Hours</label>
+          <select id="cron-maxhours">
+            <option value="1">1 hour</option>
+            <option value="2">2 hours</option>
+            <option value="4">4 hours</option>
+            <option value="6" selected>6 hours (default)</option>
+            <option value="8">8 hours</option>
+            <option value="12">12 hours</option>
+            <option value="24">24 hours</option>
+          </select>
+        </div>
+      </div>
       <div class="form-group">
         <label class="form-label">Prompt</label>
         <textarea id="cron-prompt" rows="5" placeholder="What should the AI do when this task runs?"></textarea>
@@ -2161,8 +2241,11 @@ async function refreshCron() {
       const projectBadge = projectName
         ? '<span class="badge badge-blue">' + esc(projectName) + '</span>'
         : '<span style="color:var(--text-muted)">—</span>';
+      const modeBadge = job.mode === 'unleashed'
+        ? ' <span class="badge badge-purple">unleashed</span>'
+        : '';
       html += '<tr>'
-        + '<td><strong>' + esc(job.name) + '</strong><br><span style="font-size:11px;color:var(--text-muted)">' + esc((job.prompt || '').slice(0, 60)) + (job.prompt && job.prompt.length > 60 ? '...' : '') + '</span></td>'
+        + '<td><strong>' + esc(job.name) + '</strong>' + modeBadge + '<br><span style="font-size:11px;color:var(--text-muted)">' + esc((job.prompt || '').slice(0, 60)) + (job.prompt && job.prompt.length > 60 ? '...' : '') + '</span></td>'
         + '<td><code style="color:var(--accent)">' + esc(job.schedule) + '</code></td>'
         + '<td>' + projectBadge + '</td>'
         + '<td>' + statusBadge + '</td>'
@@ -2175,8 +2258,52 @@ async function refreshCron() {
         + '</div></td></tr>';
     }
     html += '</table>';
+
+    // Fetch unleashed task status and append if any exist
+    try {
+      const ur = await fetch('/api/unleashed');
+      const ud = await ur.json();
+      const tasks = ud.tasks || [];
+      if (tasks.length > 0) {
+        html += '<h3 style="margin:24px 0 12px;font-size:14px;color:var(--text-secondary)">Unleashed Tasks</h3>';
+        html += '<table><tr><th>Task</th><th>Status</th><th>Phase</th><th>Duration</th><th style="width:80px"></th></tr>';
+        for (const t of tasks) {
+          const statusColors = { running: 'badge-blue', completed: 'badge-green', cancelled: 'badge-gray', timeout: 'badge-yellow', error: 'badge-red', max_phases: 'badge-yellow' };
+          const cls = statusColors[t.status] || 'badge-gray';
+          const badge = '<span class="badge ' + cls + '">' + esc(t.status) + '</span>';
+          let duration = '';
+          if (t.startedAt) {
+            const endTime = t.finishedAt ? new Date(t.finishedAt).getTime() : Date.now();
+            const mins = Math.round((endTime - new Date(t.startedAt).getTime()) / 60000);
+            duration = mins < 60 ? mins + 'm' : Math.floor(mins/60) + 'h ' + (mins%60) + 'm';
+          }
+          const cancelBtn = t.status === 'running'
+            ? '<button class="btn-sm btn-danger" onclick="cancelUnleashed(\\'' + esc(t.jobName) + '\\')">Cancel</button>'
+            : '';
+          html += '<tr>'
+            + '<td><strong>' + esc(t.jobName) + '</strong>'
+            + (t.lastPhaseOutputPreview ? '<br><span style="font-size:11px;color:var(--text-muted)">' + esc(t.lastPhaseOutputPreview.slice(0,80)) + '...</span>' : '')
+            + '</td>'
+            + '<td>' + badge + '</td>'
+            + '<td>' + (t.phase || 0) + '</td>'
+            + '<td>' + esc(duration) + (t.maxHours ? ' / ' + t.maxHours + 'h max' : '') + '</td>'
+            + '<td>' + cancelBtn + '</td>'
+            + '</tr>';
+        }
+        html += '</table>';
+      }
+    } catch(e) { /* unleashed status is optional */ }
+
     document.getElementById('panel-cron').innerHTML = html;
   } catch(e) { }
+}
+
+async function cancelUnleashed(jobName) {
+  if (!confirm('Cancel unleashed task "' + jobName + '"?')) return;
+  try {
+    await apiPost('/api/unleashed/' + encodeURIComponent(jobName) + '/cancel');
+    setTimeout(refreshCron, 1000);
+  } catch(e) { toast('Failed to cancel: ' + e, 'error'); }
 }
 
 // ── Projects ──────────────────────────────
@@ -2236,6 +2363,11 @@ async function refreshProjects() {
 // ── Cron Modal ────────────────────────────
 let editingCronJob = null;
 
+function toggleUnleashedOptions() {
+  const mode = document.getElementById('cron-mode').value;
+  document.getElementById('cron-maxhours-group').style.display = mode === 'unleashed' ? '' : 'none';
+}
+
 function openCreateCronModal() {
   editingCronJob = null;
   document.getElementById('cron-modal-title').textContent = 'New Scheduled Task';
@@ -2249,6 +2381,9 @@ function openCreateCronModal() {
   updateScheduleFromBuilder();
   document.getElementById('cron-tier').value = '1';
   document.getElementById('cron-workdir').value = '';
+  document.getElementById('cron-mode').value = 'standard';
+  document.getElementById('cron-maxhours').value = '6';
+  toggleUnleashedOptions();
   document.getElementById('cron-prompt').value = '';
   document.getElementById('cron-modal').classList.add('show');
 }
@@ -2264,6 +2399,9 @@ function openEditCronModal(jobName) {
   setScheduleFromCron(job.schedule || '0 9 * * *');
   document.getElementById('cron-tier').value = String(job.tier || 1);
   document.getElementById('cron-workdir').value = job.work_dir || '';
+  document.getElementById('cron-mode').value = job.mode || 'standard';
+  document.getElementById('cron-maxhours').value = String(job.max_hours || 6);
+  toggleUnleashedOptions();
   document.getElementById('cron-prompt').value = job.prompt || '';
   document.getElementById('cron-modal').classList.add('show');
 }
@@ -2278,6 +2416,8 @@ async function saveCronJob() {
   const schedule = document.getElementById('cron-schedule').value.trim();
   const tier = parseInt(document.getElementById('cron-tier').value);
   const work_dir = document.getElementById('cron-workdir').value;
+  const mode = document.getElementById('cron-mode').value;
+  const max_hours = mode === 'unleashed' ? parseInt(document.getElementById('cron-maxhours').value) : undefined;
   const prompt = document.getElementById('cron-prompt').value.trim();
 
   if (!name || !schedule || !prompt) {
@@ -2285,7 +2425,7 @@ async function saveCronJob() {
     return;
   }
 
-  const body = { name, schedule, tier, prompt, enabled: true, work_dir: work_dir || undefined };
+  const body = { name, schedule, tier, prompt, enabled: true, work_dir: work_dir || undefined, mode, max_hours };
 
   if (editingCronJob) {
     await apiJson('PUT', '/api/cron/' + encodeURIComponent(editingCronJob), body);

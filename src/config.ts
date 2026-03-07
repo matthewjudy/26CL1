@@ -175,6 +175,15 @@ export const HEARTBEAT_ACTIVE_START = 8;
 export const HEARTBEAT_ACTIVE_END = 22;
 export const HEARTBEAT_MAX_TURNS = 5;
 
+// ── Unleashed mode ──────────────────────────────────────────────────
+
+/** Max turns per phase in unleashed mode before checkpointing. */
+export const UNLEASHED_PHASE_TURNS = 75;
+/** Default max duration for unleashed tasks (hours). */
+export const UNLEASHED_DEFAULT_MAX_HOURS = 6;
+/** Max phases before forcing completion. */
+export const UNLEASHED_MAX_PHASES = 50;
+
 // ── Workspace ───────────────────────────────────────────────────────
 
 export const WORKSPACE_DIRS: string[] = getEnv('WORKSPACE_DIRS')
