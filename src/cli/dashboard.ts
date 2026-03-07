@@ -93,6 +93,143 @@ async function searchMemory(query: string, limit = 20): Promise<{ results: Array
   }
 }
 
+// ── Project scanning (mirrors workspace_list from MCP server) ────────
+
+const PROJECT_MARKERS = [
+  '.git', 'package.json', 'pyproject.toml', 'Cargo.toml',
+  'go.mod', 'Makefile', 'CMakeLists.txt', 'build.gradle',
+  'pom.xml', 'Gemfile', 'mix.exs', '.claude/CLAUDE.md',
+];
+
+const WORKSPACE_CANDIDATES = [
+  'Desktop', 'Documents', 'Developer', 'Projects', 'projects',
+  'repos', 'Repos', 'src', 'code', 'Code', 'work', 'Work',
+  'dev', 'Dev', 'github', 'GitHub', 'gitlab', 'GitLab',
+];
+
+interface ProjectInfo {
+  name: string;
+  path: string;
+  type: string;
+  description: string;
+  hasClaude: boolean;
+  scripts: string[];
+  hasMcp: boolean;
+}
+
+function detectProjectType(entries: string[]): string {
+  if (entries.includes('package.json')) return 'node';
+  if (entries.includes('pyproject.toml') || entries.includes('setup.py')) return 'python';
+  if (entries.includes('Cargo.toml')) return 'rust';
+  if (entries.includes('go.mod')) return 'go';
+  if (entries.includes('build.gradle') || entries.includes('pom.xml')) return 'java';
+  if (entries.includes('Gemfile')) return 'ruby';
+  if (entries.includes('mix.exs')) return 'elixir';
+  if (entries.includes('CMakeLists.txt')) return 'c/c++';
+  if (entries.includes('Makefile')) return 'make';
+  return 'unknown';
+}
+
+function getProjectDescription(dirPath: string, entries: string[]): string {
+  if (entries.includes('package.json')) {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(dirPath, 'package.json'), 'utf-8'));
+      if (pkg.description) return pkg.description;
+    } catch { /* ignore */ }
+  }
+  if (entries.includes('pyproject.toml')) {
+    try {
+      const toml = readFileSync(path.join(dirPath, 'pyproject.toml'), 'utf-8');
+      const match = toml.match(/description\s*=\s*"([^"]+)"/);
+      if (match) return match[1];
+    } catch { /* ignore */ }
+  }
+  return '';
+}
+
+function getProjectScripts(dirPath: string, entries: string[]): string[] {
+  if (entries.includes('package.json')) {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(dirPath, 'package.json'), 'utf-8'));
+      return Object.keys(pkg.scripts || {}).slice(0, 15);
+    } catch { /* ignore */ }
+  }
+  if (entries.includes('Makefile')) {
+    try {
+      const mk = readFileSync(path.join(dirPath, 'Makefile'), 'utf-8');
+      const targets = [...mk.matchAll(/^([a-zA-Z_][a-zA-Z0-9_-]*):/gm)].map(m => m[1]);
+      return targets.slice(0, 15);
+    } catch { /* ignore */ }
+  }
+  return [];
+}
+
+function scanProjects(): ProjectInfo[] {
+  const home = os.homedir();
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+
+  const addDir = (d: string) => {
+    const resolved = path.resolve(d);
+    if (!seen.has(resolved) && existsSync(resolved)) {
+      try { if (statSync(resolved).isDirectory()) { seen.add(resolved); dirs.push(resolved); } } catch { /* ignore */ }
+    }
+  };
+
+  for (const candidate of WORKSPACE_CANDIDATES) {
+    addDir(path.join(home, candidate));
+  }
+
+  // Merge explicit WORKSPACE_DIRS from .env
+  if (existsSync(ENV_PATH)) {
+    const envContent = readFileSync(ENV_PATH, 'utf-8');
+    const match = envContent.match(/^WORKSPACE_DIRS=(.+)$/m);
+    if (match) {
+      for (const d of match[1].split(',').map(s => s.trim()).filter(Boolean)) {
+        addDir(d.startsWith('~') ? d.replace('~', home) : d);
+      }
+    }
+  }
+
+  const projects: ProjectInfo[] = [];
+  for (const wsDir of dirs) {
+    let entries: string[];
+    try { entries = readdirSync(wsDir); } catch { continue; }
+
+    for (const entry of entries) {
+      if (entry.startsWith('.')) continue;
+      const fullPath = path.join(wsDir, entry);
+      try { if (!statSync(fullPath).isDirectory()) continue; } catch { continue; }
+
+      let subEntries: string[];
+      try { subEntries = readdirSync(fullPath); } catch { continue; }
+
+      const isProject = PROJECT_MARKERS.some(marker => {
+        if (marker.includes('/')) return existsSync(path.join(fullPath, marker));
+        return subEntries.includes(marker);
+      });
+      if (!isProject) continue;
+
+      // Dedup by resolved path
+      const resolvedProject = path.resolve(fullPath);
+      if (seen.has('proj:' + resolvedProject)) continue;
+      seen.add('proj:' + resolvedProject);
+
+      projects.push({
+        name: entry,
+        path: fullPath,
+        type: detectProjectType(subEntries),
+        description: getProjectDescription(fullPath, subEntries),
+        hasClaude: existsSync(path.join(fullPath, '.claude', 'CLAUDE.md')),
+        scripts: getProjectScripts(fullPath, subEntries),
+        hasMcp: existsSync(path.join(fullPath, '.mcp.json')) || existsSync(path.join(fullPath, '.claude', 'mcp.json')),
+      });
+    }
+  }
+
+  return projects.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // ── Metrics computation ──────────────────────────────────────────────
 
 function computeMetrics(): Record<string, unknown> {
@@ -569,9 +706,18 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
 
   // ── CRON CRUD routes ──────────────────────────────────────────
 
+  app.get('/api/projects', (_req, res) => {
+    try {
+      const projects = scanProjects();
+      res.json({ projects });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.post('/api/cron', (req, res) => {
     try {
-      const { name, schedule, prompt, tier, enabled } = req.body;
+      const { name, schedule, prompt, tier, enabled, work_dir } = req.body;
       if (!name || !schedule || !prompt) {
         res.status(400).json({ error: 'name, schedule, and prompt are required' });
         return;
@@ -589,13 +735,15 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
         return;
       }
       const tierNum = parseInt(String(tier ?? '1'), 10);
-      jobs.push({
+      const job: Record<string, unknown> = {
         name: String(name),
         schedule: String(schedule),
         prompt: String(prompt),
         enabled: enabled !== false,
         tier: isNaN(tierNum) ? 1 : tierNum,
-      });
+      };
+      if (work_dir) job.work_dir = String(work_dir);
+      jobs.push(job);
       writeCronFile(parsed, jobs);
       res.json({ ok: true, message: `Created cron job: ${name}` });
     } catch (err) {
@@ -626,6 +774,13 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
       if (updates.tier !== undefined) {
         const t = parseInt(String(updates.tier), 10);
         if (!isNaN(t)) jobs[idx].tier = t;
+      }
+      if (updates.work_dir !== undefined) {
+        if (updates.work_dir) {
+          jobs[idx].work_dir = String(updates.work_dir);
+        } else {
+          delete jobs[idx].work_dir;
+        }
       }
       if (updates.name !== undefined && updates.name !== jobName) {
         // Rename — check for duplicates
@@ -1029,6 +1184,7 @@ function getDashboardHTML(): string {
   .badge-red { background: var(--red-bg); color: var(--red); }
   .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
   .badge-gray { background: rgba(90,106,126,0.15); color: var(--text-muted); }
+  .badge-blue { background: rgba(56,139,253,0.15); color: #58a6ff; }
   .badge-accent { background: var(--accent-glow); color: var(--accent); }
   .badge-dot {
     width: 6px; height: 6px;
@@ -1526,6 +1682,13 @@ function getDashboardHTML(): string {
       </div>
     </div>
     <div class="nav-section">
+      <div class="nav-section-title">Workspace</div>
+      <div class="nav-item" data-page="projects">
+        <span class="nav-icon">&#128193;</span> Projects
+        <span class="nav-badge" id="nav-project-count">0</span>
+      </div>
+    </div>
+    <div class="nav-section">
       <div class="nav-section-title">Automation</div>
       <div class="nav-item" data-page="cron">
         <span class="nav-icon">&#9200;</span> Scheduled Tasks
@@ -1573,6 +1736,13 @@ function getDashboardHTML(): string {
           <div class="card-body" id="panel-launchagent"><div class="empty-state">Loading...</div></div>
         </div>
       </div>
+    </div>
+
+    <!-- ═══ Projects Page ═══ -->
+    <div class="page" id="page-projects">
+      <div class="page-title">Projects</div>
+      <p style="color:var(--text-muted);margin-bottom:16px">Discovered projects from your workspace directories. Select a project when creating scheduled tasks to give the agent access to that project's tools and context.</p>
+      <div id="panel-projects"><div class="empty-state">Loading...</div></div>
     </div>
 
     <!-- ═══ Cron / Scheduled Tasks Page ═══ -->
@@ -1687,6 +1857,13 @@ function getDashboardHTML(): string {
         </div>
       </div>
       <div class="form-group">
+        <label class="form-label">Project Context <span style="color:var(--text-muted);font-weight:normal">(optional)</span></label>
+        <select id="cron-workdir">
+          <option value="">None — runs in default context</option>
+        </select>
+        <div class="form-hint">Run this task inside a project directory. The agent gets access to that project's tools, CLAUDE.md, and files.</div>
+      </div>
+      <div class="form-group">
         <label class="form-label">Prompt</label>
         <textarea id="cron-prompt" rows="5" placeholder="What should the AI do when this task runs?"></textarea>
         <div class="form-hint">The instruction sent to the AI agent when this task fires.</div>
@@ -1754,6 +1931,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     const el = document.getElementById('page-' + page);
     if (el) el.classList.add('active');
     // Refresh relevant data
+    if (page === 'projects') refreshProjects();
     if (page === 'logs') refreshLogs();
     if (page === 'memory') refreshMemory();
     if (page === 'metrics') refreshMetrics();
@@ -1887,7 +2065,7 @@ async function refreshCron() {
       document.getElementById('panel-cron').innerHTML = '<div class="empty-state" style="padding:40px">No scheduled tasks yet. Click "+ New Task" to create one.</div>';
       return;
     }
-    let html = '<table><tr><th>Task</th><th>Schedule</th><th>Tier</th><th>Status</th><th>Last Run</th><th style="width:180px">Actions</th></tr>';
+    let html = '<table><tr><th>Task</th><th>Schedule</th><th>Project</th><th>Status</th><th>Last Run</th><th style="width:180px">Actions</th></tr>';
     for (const job of cronJobsData) {
       const enabled = job.enabled !== false;
       const statusBadge = enabled
@@ -1899,10 +2077,14 @@ async function refreshCron() {
         const statusCls = lr.status === 'ok' ? 'badge-green' : 'badge-red';
         lastRun = esc(timeAgo(lr.finishedAt)) + ' <span class="badge ' + statusCls + '">' + esc(lr.status) + '</span>';
       }
+      const projectName = job.work_dir ? job.work_dir.split('/').pop() : '';
+      const projectBadge = projectName
+        ? '<span class="badge badge-blue">' + esc(projectName) + '</span>'
+        : '<span style="color:var(--text-muted)">—</span>';
       html += '<tr>'
         + '<td><strong>' + esc(job.name) + '</strong><br><span style="font-size:11px;color:var(--text-muted)">' + esc((job.prompt || '').slice(0, 60)) + (job.prompt && job.prompt.length > 60 ? '...' : '') + '</span></td>'
         + '<td><code style="color:var(--accent)">' + esc(job.schedule) + '</code></td>'
-        + '<td>' + esc(job.tier || 1) + '</td>'
+        + '<td>' + projectBadge + '</td>'
         + '<td>' + statusBadge + '</td>'
         + '<td>' + lastRun + '</td>'
         + '<td><div class="btn-group">'
@@ -1917,6 +2099,60 @@ async function refreshCron() {
   } catch(e) { }
 }
 
+// ── Projects ──────────────────────────────
+let projectsData = [];
+
+async function refreshProjects() {
+  try {
+    const r = await fetch('/api/projects');
+    const d = await r.json();
+    projectsData = d.projects || [];
+    document.getElementById('nav-project-count').textContent = projectsData.length;
+
+    // Update the project selector in cron modal
+    const sel = document.getElementById('cron-workdir');
+    const currentVal = sel.value;
+    sel.innerHTML = '<option value="">None — runs in default context</option>';
+    for (const p of projectsData) {
+      const opt = document.createElement('option');
+      opt.value = p.path;
+      opt.textContent = p.name + ' (' + p.type + ')';
+      sel.appendChild(opt);
+    }
+    sel.value = currentVal;
+
+    // Render projects page
+    if (projectsData.length === 0) {
+      document.getElementById('panel-projects').innerHTML = '<div class="empty-state" style="padding:40px">No projects found. Add workspace directories via <code>clementine config set WORKSPACE_DIRS ~/projects</code></div>';
+      return;
+    }
+
+    let html = '<div class="grid-2">';
+    for (const p of projectsData) {
+      const badges = [];
+      badges.push('<span class="badge badge-blue">' + esc(p.type) + '</span>');
+      if (p.hasClaude) badges.push('<span class="badge badge-green">CLAUDE.md</span>');
+      if (p.hasMcp) badges.push('<span class="badge badge-yellow">MCP</span>');
+      const scripts = (p.scripts || []).slice(0, 8);
+      const scriptHtml = scripts.length > 0
+        ? '<div style="margin-top:8px"><span style="font-size:11px;color:var(--text-muted)">Scripts:</span> ' + scripts.map(s => '<code style="font-size:11px;background:var(--surface);padding:1px 5px;border-radius:3px">' + esc(s) + '</code>').join(' ') + '</div>'
+        : '';
+      html += '<div class="card" style="cursor:default">'
+        + '<div class="card-header" style="display:flex;align-items:center;justify-content:space-between">'
+        + '<strong>' + esc(p.name) + '</strong>'
+        + '<div>' + badges.join(' ') + '</div>'
+        + '</div>'
+        + '<div class="card-body">'
+        + (p.description ? '<div style="color:var(--text-secondary);margin-bottom:6px">' + esc(p.description) + '</div>' : '')
+        + '<div style="font-size:11px;color:var(--text-muted);font-family:monospace">' + esc(p.path) + '</div>'
+        + scriptHtml
+        + '</div></div>';
+    }
+    html += '</div>';
+    document.getElementById('panel-projects').innerHTML = html;
+  } catch(e) { }
+}
+
 // ── Cron Modal ────────────────────────────
 let editingCronJob = null;
 
@@ -1928,6 +2164,7 @@ function openCreateCronModal() {
   document.getElementById('cron-name').disabled = false;
   document.getElementById('cron-schedule').value = '';
   document.getElementById('cron-tier').value = '1';
+  document.getElementById('cron-workdir').value = '';
   document.getElementById('cron-prompt').value = '';
   document.getElementById('cron-modal').classList.add('show');
 }
@@ -1942,6 +2179,7 @@ function openEditCronModal(jobName) {
   document.getElementById('cron-name').disabled = true;
   document.getElementById('cron-schedule').value = job.schedule || '';
   document.getElementById('cron-tier').value = String(job.tier || 1);
+  document.getElementById('cron-workdir').value = job.work_dir || '';
   document.getElementById('cron-prompt').value = job.prompt || '';
   document.getElementById('cron-modal').classList.add('show');
 }
@@ -1955,6 +2193,7 @@ async function saveCronJob() {
   const name = document.getElementById('cron-name').value.trim();
   const schedule = document.getElementById('cron-schedule').value.trim();
   const tier = parseInt(document.getElementById('cron-tier').value);
+  const work_dir = document.getElementById('cron-workdir').value;
   const prompt = document.getElementById('cron-prompt').value.trim();
 
   if (!name || !schedule || !prompt) {
@@ -1962,10 +2201,12 @@ async function saveCronJob() {
     return;
   }
 
+  const body = { name, schedule, tier, prompt, enabled: true, work_dir: work_dir || undefined };
+
   if (editingCronJob) {
-    await apiJson('PUT', '/api/cron/' + encodeURIComponent(editingCronJob), { schedule, tier, prompt });
+    await apiJson('PUT', '/api/cron/' + encodeURIComponent(editingCronJob), body);
   } else {
-    await apiJson('POST', '/api/cron', { name, schedule, tier, prompt, enabled: true });
+    await apiJson('POST', '/api/cron', body);
   }
   closeCronModal();
   refreshCron();
@@ -2316,6 +2557,7 @@ function refreshAll() {
   refreshCron();
   refreshTimers();
   refreshHeartbeat();
+  if (currentPage === 'projects') refreshProjects();
   if (currentPage === 'memory') refreshMemory();
   if (currentPage === 'logs') refreshLogs();
   if (currentPage === 'metrics') refreshMetrics();
@@ -2323,6 +2565,7 @@ function refreshAll() {
 }
 
 refreshAll();
+refreshProjects(); // Load project list for cron form selector
 setInterval(refreshAll, 5000);
 </script>
 </body>

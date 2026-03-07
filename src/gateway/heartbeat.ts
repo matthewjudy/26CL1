@@ -343,13 +343,14 @@ export function parseCronJobs(): CronJobDefinition[] {
     const tier = Number(job.tier ?? 1);
     const maxTurns = job.max_turns != null ? Number(job.max_turns) : undefined;
     const model = job.model != null ? String(job.model) : undefined;
+    const workDir = job.work_dir != null ? String(job.work_dir) : undefined;
 
     if (!name || !schedule || !prompt) {
       logger.warn({ job }, 'Skipping malformed cron job');
       continue;
     }
 
-    jobs.push({ name, schedule, prompt, enabled, tier, maxTurns, model });
+    jobs.push({ name, schedule, prompt, enabled, tier, maxTurns, model, workDir });
   }
 
   return jobs;
@@ -569,6 +570,7 @@ export class CronScheduler {
           job.tier,
           job.maxTurns,
           job.model,
+          job.workDir,
         );
 
         // Success — log and dispatch
@@ -638,6 +640,7 @@ export class CronScheduler {
         job.tier,
         job.maxTurns,
         job.model,
+        job.workDir,
       );
       return response || `*(cron job '${jobName}' completed — no output)*`;
     } catch (err) {

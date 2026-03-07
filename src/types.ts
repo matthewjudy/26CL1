@@ -93,6 +93,7 @@ export interface CronJobDefinition {
   tier: number;
   maxTurns?: number;
   model?: string;
+  workDir?: string;
 }
 
 export interface CronRunEntry {

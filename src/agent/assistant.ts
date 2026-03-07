@@ -1133,6 +1133,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     tier = 1,
     maxTurns?: number,
     model?: string,
+    workDir?: string,
   ): Promise<string> {
     setInteractionSource('autonomous');
     const sdkOptions = this.buildOptions({
@@ -1142,6 +1143,11 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       model: model ?? null,
       enableTeams: false,
     });
+
+    // Override cwd if a project workDir is specified
+    if (workDir) {
+      sdkOptions.cwd = workDir;
+    }
 
     const now = new Date();
     const timestamp = now.toISOString().slice(0, 16).replace('T', ' ');
