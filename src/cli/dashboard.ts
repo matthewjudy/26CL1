@@ -66,13 +66,15 @@ async function getGateway(): Promise<Gateway> {
 
 // ── Memory search (direct DB access, read-only) ─────────────────────
 
-async function searchMemory(query: string, limit = 20): Promise<Array<Record<string, unknown>>> {
-  if (!existsSync(MEMORY_DB_PATH)) return [];
+async function searchMemory(query: string, limit = 20): Promise<{ results: Array<Record<string, unknown>>; error?: string; dbExists: boolean }> {
+  if (!existsSync(MEMORY_DB_PATH)) {
+    return { results: [], dbExists: false, error: `Memory DB not found at ${MEMORY_DB_PATH}` };
+  }
+  const Database = (await import('better-sqlite3')).default;
+  const db = new Database(MEMORY_DB_PATH, { readonly: true });
   try {
-    const Database = (await import('better-sqlite3')).default;
-    const db = new Database(MEMORY_DB_PATH, { readonly: true });
     const words = query.split(/\s+/).filter((w) => w.length > 0);
-    if (words.length === 0) { db.close(); return []; }
+    if (words.length === 0) { db.close(); return { results: [], dbExists: true }; }
     const ftsQuery = words.map((w) => `"${w.replace(/"/g, '')}"`).join(' OR ');
     const rows = db.prepare(
       `SELECT c.id, c.source_file, c.section, c.content, c.chunk_type,
@@ -83,10 +85,11 @@ async function searchMemory(query: string, limit = 20): Promise<Array<Record<str
        ORDER BY bm25(chunks_fts)
        LIMIT ?`,
     ).all(ftsQuery, limit) as Array<Record<string, unknown>>;
+    return { results: rows, dbExists: true };
+  } catch (err) {
+    return { results: [], dbExists: true, error: String(err) };
+  } finally {
     db.close();
-    return rows;
-  } catch {
-    return [];
   }
 }
 
@@ -707,10 +710,10 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
       return;
     }
     try {
-      const results = await searchMemory(q, 20);
-      res.json({ results });
+      const data = await searchMemory(q, 20);
+      res.json(data);
     } catch (err) {
-      res.status(500).json({ error: String(err) });
+      res.status(500).json({ results: [], error: String(err) });
     }
   });
 
@@ -2200,6 +2203,14 @@ async function runMemorySearch() {
   try {
     const r = await fetch('/api/memory/search?q=' + encodeURIComponent(q));
     const d = await r.json();
+
+    if (d.error) {
+      const hint = d.dbExists === false
+        ? 'The memory database has not been created yet. The assistant builds it after its first conversation.'
+        : d.error;
+      container.innerHTML = '<div class="empty-state" style="color:var(--yellow)">' + esc(hint) + '</div>';
+      return;
+    }
 
     if (!d.results || d.results.length === 0) {
       container.innerHTML = '<div class="empty-state">No results found for "' + esc(q) + '"</div>';
