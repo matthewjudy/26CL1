@@ -24,6 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runSetup } from './setup.js';
 import { cmdCronList, cmdCronRun, cmdCronRunDue, cmdCronRuns, cmdCronAdd, cmdCronTest, cmdHeartbeat } from './cron.js';
+import { cmdDashboard } from './dashboard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -732,6 +733,17 @@ program
   .command('tools')
   .description('List available MCP tools, plugins, and channels')
   .action(cmdTools);
+
+program
+  .command('dashboard')
+  .description('Launch local command center')
+  .option('-p, --port <n>', 'Port (default 3030)', '3030')
+  .action((opts: { port?: string }) => {
+    cmdDashboard(opts).catch((err: unknown) => {
+      console.error('Dashboard error:', err);
+      process.exit(1);
+    });
+  });
 
 program
   .command('update')
