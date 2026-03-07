@@ -2246,7 +2246,7 @@ async function refreshCron() {
         : '';
       html += '<tr>'
         + '<td><strong>' + esc(job.name) + '</strong>' + modeBadge + '<br><span style="font-size:11px;color:var(--text-muted)">' + esc((job.prompt || '').slice(0, 60)) + (job.prompt && job.prompt.length > 60 ? '...' : '') + '</span></td>'
-        + '<td><code style="color:var(--accent)">' + esc(job.schedule) + '</code></td>'
+        + '<td>' + (describeCron(job.schedule || '') || '<code style="color:var(--accent)">' + esc(job.schedule) + '</code>') + '<br><span style="font-size:10px;color:var(--text-muted)">' + esc(job.schedule) + '</span></td>'
         + '<td>' + projectBadge + '</td>'
         + '<td>' + statusBadge + '</td>'
         + '<td>' + lastRun + '</td>'
@@ -2556,16 +2556,43 @@ function updateScheduleHint() {
   }
 }
 
+const monthNames = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
 function describeCron(expr) {
   const parts = expr.split(/\s+/);
   if (parts.length !== 5) return '';
-  const [min, hour, , , dow] = parts;
+  const [min, hour, dom, month, dow] = parts;
+
+  // Every N minutes
   if (min.startsWith('*/')) return 'Every ' + min.slice(2) + ' minutes';
+  // Every N hours
   if (hour.startsWith('*/')) return 'Every ' + hour.slice(2) + ' hours';
-  if (dow === '1-5' && !hour.includes(',')) return 'Weekdays at ' + formatTime(+hour, +min);
-  if (dow === '*' && !hour.includes(',') && !hour.includes('/')) return 'Every day at ' + formatTime(+hour, +min);
-  if (/^[0-6]$/.test(dow) && !hour.includes(',')) return 'Every ' + dayNames[+dow] + ' at ' + formatTime(+hour, +min);
+
+  const time = formatTime(+hour, +min);
+
+  // Specific date: day + month set (e.g. "10 16 1 3 *" = Mar 1 at 4:10 PM)
+  if (dom !== '*' && month !== '*') {
+    const monthStr = monthNames[+month] || 'Month ' + month;
+    return monthStr + ' ' + dom + ' at ' + time;
+  }
+
+  // Day of month only (e.g. "0 9 15 * *" = 15th of every month)
+  if (dom !== '*' && month === '*' && dow === '*') {
+    const suffix = +dom === 1 ? 'st' : +dom === 2 ? 'nd' : +dom === 3 ? 'rd' : 'th';
+    return dom + suffix + ' of every month at ' + time;
+  }
+
+  // Weekdays
+  if (dow === '1-5' && !hour.includes(',')) return 'Weekdays at ' + time;
+  // Every day
+  if (dow === '*' && dom === '*' && month === '*' && !hour.includes(',') && !hour.includes('/')) return 'Every day at ' + time;
+  // Specific weekday
+  if (/^[0-6]$/.test(dow) && !hour.includes(',')) return 'Every ' + dayNames[+dow] + ' at ' + time;
+  // Multiple weekdays (e.g. "0 9 * * 1,3,5")
+  if (/^[0-6](,[0-6])+$/.test(dow)) return dow.split(',').map(d => dayNames[+d]).join(', ') + ' at ' + time;
+  // Multiple hours
   if (hour.includes(',')) return 'Daily at ' + hour.split(',').map(h => formatTime(+h, +min)).join(', ');
+
   return '';
 }
 
