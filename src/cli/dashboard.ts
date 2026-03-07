@@ -1323,6 +1323,12 @@ function getDashboardHTML(): string {
     grid-template-columns: 1fr 1fr;
     gap: 12px;
   }
+  .schedule-builder .form-row {
+    margin-bottom: 8px;
+  }
+  .schedule-builder .form-row:last-child {
+    margin-bottom: 0;
+  }
   .toggle {
     position: relative;
     width: 36px;
@@ -1841,12 +1847,86 @@ function getDashboardHTML(): string {
         <input type="text" id="cron-name" placeholder="e.g. morning-briefing">
         <div class="form-hint">Unique identifier. Use lowercase with dashes.</div>
       </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Schedule (cron expression)</label>
-          <input type="text" id="cron-schedule" placeholder="0 9 * * *">
-          <div class="form-hint" id="cron-schedule-hint">minute hour day month weekday</div>
+      <div class="form-group">
+        <label class="form-label">Schedule</label>
+        <div class="schedule-builder" id="schedule-builder">
+          <div class="form-row">
+            <select id="sched-freq" onchange="updateScheduleBuilder()">
+              <option value="daily">Every day</option>
+              <option value="weekdays">Weekdays (Mon–Fri)</option>
+              <option value="weekly">Weekly</option>
+              <option value="hourly">Every N hours</option>
+              <option value="minutes">Every N minutes</option>
+              <option value="custom">Custom cron expression</option>
+            </select>
+            <select id="sched-day" style="display:none" onchange="updateScheduleFromBuilder()">
+              <option value="1">Monday</option>
+              <option value="2">Tuesday</option>
+              <option value="3">Wednesday</option>
+              <option value="4">Thursday</option>
+              <option value="5">Friday</option>
+              <option value="6">Saturday</option>
+              <option value="0">Sunday</option>
+            </select>
+          </div>
+          <div class="form-row" id="sched-time-row">
+            <select id="sched-hour" onchange="updateScheduleFromBuilder()">
+              <option value="0">12:00 AM</option>
+              <option value="1">1:00 AM</option>
+              <option value="2">2:00 AM</option>
+              <option value="3">3:00 AM</option>
+              <option value="4">4:00 AM</option>
+              <option value="5">5:00 AM</option>
+              <option value="6">6:00 AM</option>
+              <option value="7">7:00 AM</option>
+              <option value="8">8:00 AM</option>
+              <option value="9" selected>9:00 AM</option>
+              <option value="10">10:00 AM</option>
+              <option value="11">11:00 AM</option>
+              <option value="12">12:00 PM</option>
+              <option value="13">1:00 PM</option>
+              <option value="14">2:00 PM</option>
+              <option value="15">3:00 PM</option>
+              <option value="16">4:00 PM</option>
+              <option value="17">5:00 PM</option>
+              <option value="18">6:00 PM</option>
+              <option value="19">7:00 PM</option>
+              <option value="20">8:00 PM</option>
+              <option value="21">9:00 PM</option>
+              <option value="22">10:00 PM</option>
+              <option value="23">11:00 PM</option>
+            </select>
+            <select id="sched-minute" onchange="updateScheduleFromBuilder()">
+              <option value="0">:00</option>
+              <option value="15">:15</option>
+              <option value="30">:30</option>
+              <option value="45">:45</option>
+            </select>
+          </div>
+          <div class="form-row" id="sched-interval-row" style="display:none">
+            <select id="sched-interval" onchange="updateScheduleFromBuilder()">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+              <option value="10">10</option>
+              <option value="12">12</option>
+              <option value="15">15</option>
+              <option value="20">20</option>
+              <option value="30">30</option>
+            </select>
+            <span style="color:var(--text-muted);align-self:center" id="sched-interval-label">hours</span>
+          </div>
+          <div id="sched-custom-row" style="display:none">
+            <input type="text" id="cron-schedule" placeholder="0 9 * * *" oninput="updateScheduleHint()">
+          </div>
+          <div class="form-hint" id="cron-schedule-hint" style="margin-top:6px"></div>
         </div>
+      </div>
+      <div class="form-row">
         <div class="form-group">
           <label class="form-label">Tier</label>
           <select id="cron-tier">
@@ -2162,7 +2242,11 @@ function openCreateCronModal() {
   document.getElementById('cron-modal-save').textContent = 'Create Task';
   document.getElementById('cron-name').value = '';
   document.getElementById('cron-name').disabled = false;
-  document.getElementById('cron-schedule').value = '';
+  document.getElementById('sched-freq').value = 'daily';
+  updateScheduleBuilder();
+  document.getElementById('sched-hour').value = '9';
+  document.getElementById('sched-minute').value = '0';
+  updateScheduleFromBuilder();
   document.getElementById('cron-tier').value = '1';
   document.getElementById('cron-workdir').value = '';
   document.getElementById('cron-prompt').value = '';
@@ -2177,7 +2261,7 @@ function openEditCronModal(jobName) {
   document.getElementById('cron-modal-save').textContent = 'Save Changes';
   document.getElementById('cron-name').value = job.name;
   document.getElementById('cron-name').disabled = true;
-  document.getElementById('cron-schedule').value = job.schedule || '';
+  setScheduleFromCron(job.schedule || '0 9 * * *');
   document.getElementById('cron-tier').value = String(job.tier || 1);
   document.getElementById('cron-workdir').value = job.work_dir || '';
   document.getElementById('cron-prompt').value = job.prompt || '';
@@ -2244,27 +2328,158 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ── Schedule hint ─────────────────────────
-const scheduleExamples = {
-  '0 9 * * *': 'Every day at 9:00 AM',
-  '0 9 * * 1-5': 'Weekdays at 9:00 AM',
-  '0 8,12,18 * * *': 'Daily at 8 AM, 12 PM, 6 PM',
-  '*/30 * * * *': 'Every 30 minutes',
-  '0 18 * * 5': 'Every Friday at 6:00 PM',
-  '0 22 * * *': 'Every day at 10:00 PM',
-  '0 0 * * 0': 'Every Sunday at midnight',
-  '0 */2 * * *': 'Every 2 hours',
-};
-document.getElementById('cron-schedule').addEventListener('input', (e) => {
-  const v = e.target.value.trim();
+// ── Schedule Builder ──────────────────────
+const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+function formatTime(h, m) {
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const hr = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return hr + ':' + String(m).padStart(2, '0') + ' ' + ampm;
+}
+
+function updateScheduleBuilder() {
+  const freq = document.getElementById('sched-freq').value;
+  const dayEl = document.getElementById('sched-day');
+  const timeRow = document.getElementById('sched-time-row');
+  const intervalRow = document.getElementById('sched-interval-row');
+  const customRow = document.getElementById('sched-custom-row');
+
+  dayEl.style.display = freq === 'weekly' ? '' : 'none';
+  timeRow.style.display = (freq === 'daily' || freq === 'weekdays' || freq === 'weekly') ? '' : 'none';
+  intervalRow.style.display = (freq === 'hourly' || freq === 'minutes') ? '' : 'none';
+  customRow.style.display = freq === 'custom' ? '' : 'none';
+
+  document.getElementById('sched-interval-label').textContent = freq === 'minutes' ? 'minutes' : 'hours';
+
+  // Reset interval options based on type
+  const intSel = document.getElementById('sched-interval');
+  if (freq === 'minutes') {
+    intSel.innerHTML = [5,10,15,20,30,45].map(v => '<option value="'+v+'">'+v+'</option>').join('');
+  } else if (freq === 'hourly') {
+    intSel.innerHTML = [1,2,3,4,6,8,12].map(v => '<option value="'+v+'">'+v+'</option>').join('');
+  }
+
+  updateScheduleFromBuilder();
+}
+
+function updateScheduleFromBuilder() {
+  const freq = document.getElementById('sched-freq').value;
+  if (freq === 'custom') return;
+
+  const hour = document.getElementById('sched-hour').value;
+  const minute = document.getElementById('sched-minute').value;
+  const day = document.getElementById('sched-day').value;
+  const interval = document.getElementById('sched-interval').value;
   const hint = document.getElementById('cron-schedule-hint');
-  if (scheduleExamples[v]) {
-    hint.textContent = scheduleExamples[v];
+
+  let expr = '';
+  let desc = '';
+
+  switch (freq) {
+    case 'daily':
+      expr = minute + ' ' + hour + ' * * *';
+      desc = 'Every day at ' + formatTime(+hour, +minute);
+      break;
+    case 'weekdays':
+      expr = minute + ' ' + hour + ' * * 1-5';
+      desc = 'Weekdays at ' + formatTime(+hour, +minute);
+      break;
+    case 'weekly':
+      expr = minute + ' ' + hour + ' * * ' + day;
+      desc = 'Every ' + dayNames[day] + ' at ' + formatTime(+hour, +minute);
+      break;
+    case 'hourly':
+      expr = '0 */' + interval + ' * * *';
+      desc = 'Every ' + interval + ' hour' + (+interval > 1 ? 's' : '');
+      break;
+    case 'minutes':
+      expr = '*/' + interval + ' * * * *';
+      desc = 'Every ' + interval + ' minutes';
+      break;
+  }
+
+  document.getElementById('cron-schedule').value = expr;
+  hint.textContent = desc;
+  hint.style.color = 'var(--green)';
+}
+
+function updateScheduleHint() {
+  const v = document.getElementById('cron-schedule').value.trim();
+  const hint = document.getElementById('cron-schedule-hint');
+  const desc = describeCron(v);
+  if (desc) {
+    hint.textContent = desc;
     hint.style.color = 'var(--green)';
   } else {
     hint.textContent = 'minute hour day month weekday';
     hint.style.color = '';
   }
-});
+}
+
+function describeCron(expr) {
+  const parts = expr.split(/\s+/);
+  if (parts.length !== 5) return '';
+  const [min, hour, , , dow] = parts;
+  if (min.startsWith('*/')) return 'Every ' + min.slice(2) + ' minutes';
+  if (hour.startsWith('*/')) return 'Every ' + hour.slice(2) + ' hours';
+  if (dow === '1-5' && !hour.includes(',')) return 'Weekdays at ' + formatTime(+hour, +min);
+  if (dow === '*' && !hour.includes(',') && !hour.includes('/')) return 'Every day at ' + formatTime(+hour, +min);
+  if (/^[0-6]$/.test(dow) && !hour.includes(',')) return 'Every ' + dayNames[+dow] + ' at ' + formatTime(+hour, +min);
+  if (hour.includes(',')) return 'Daily at ' + hour.split(',').map(h => formatTime(+h, +min)).join(', ');
+  return '';
+}
+
+function setScheduleFromCron(expr) {
+  // Try to reverse-map a cron expression back to the builder
+  const parts = expr.split(/\s+/);
+  if (parts.length !== 5) {
+    document.getElementById('sched-freq').value = 'custom';
+    updateScheduleBuilder();
+    document.getElementById('cron-schedule').value = expr;
+    updateScheduleHint();
+    return;
+  }
+  const [min, hour, , , dow] = parts;
+
+  if (min.startsWith('*/')) {
+    document.getElementById('sched-freq').value = 'minutes';
+    updateScheduleBuilder();
+    document.getElementById('sched-interval').value = min.slice(2);
+    updateScheduleFromBuilder();
+  } else if (hour.startsWith('*/')) {
+    document.getElementById('sched-freq').value = 'hourly';
+    updateScheduleBuilder();
+    document.getElementById('sched-interval').value = hour.slice(2);
+    updateScheduleFromBuilder();
+  } else if (dow === '1-5' && !hour.includes(',')) {
+    document.getElementById('sched-freq').value = 'weekdays';
+    updateScheduleBuilder();
+    document.getElementById('sched-hour').value = hour;
+    document.getElementById('sched-minute').value = min;
+    updateScheduleFromBuilder();
+  } else if (dow === '*' && !hour.includes(',') && !hour.includes('/')) {
+    document.getElementById('sched-freq').value = 'daily';
+    updateScheduleBuilder();
+    document.getElementById('sched-hour').value = hour;
+    document.getElementById('sched-minute').value = min;
+    updateScheduleFromBuilder();
+  } else if (/^[0-6]$/.test(dow) && !hour.includes(',')) {
+    document.getElementById('sched-freq').value = 'weekly';
+    updateScheduleBuilder();
+    document.getElementById('sched-day').value = dow;
+    document.getElementById('sched-hour').value = hour;
+    document.getElementById('sched-minute').value = min;
+    updateScheduleFromBuilder();
+  } else {
+    document.getElementById('sched-freq').value = 'custom';
+    updateScheduleBuilder();
+    document.getElementById('cron-schedule').value = expr;
+    updateScheduleHint();
+  }
+}
+
+// Initialize builder on load
+updateScheduleFromBuilder();
 
 // ── Timers ────────────────────────────────
 async function refreshTimers() {
