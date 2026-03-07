@@ -517,7 +517,12 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       allowedTools.push('Task', 'Agent');
     }
 
-    const disallowed = isHeartbeat ? getHeartbeatDisallowedTools() : [];
+    // Heartbeats get full restrictions. Cron jobs tier 2+ get Bash/Write/Edit.
+    // Cron tier 1 gets heartbeat restrictions (read-only + vault writes).
+    const isCron = cronTier !== null;
+    const disallowed = isHeartbeat && (!isCron || (cronTier ?? 0) < 2)
+      ? getHeartbeatDisallowedTools()
+      : [];
     const effectiveMaxTurns = maxTurns ?? (isHeartbeat ? HEARTBEAT_MAX_TURNS : 15);
 
     return {

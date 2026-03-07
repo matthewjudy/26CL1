@@ -1988,9 +1988,9 @@ function getDashboardHTML(): string {
         <div class="form-group">
           <label class="form-label">Tier</label>
           <select id="cron-tier">
-            <option value="1">Tier 1 (Standard)</option>
-            <option value="2">Tier 2 (Extended)</option>
-            <option value="3">Tier 3 (Full access)</option>
+            <option value="1">Tier 1 — Read-only (vault, search, web)</option>
+            <option value="2">Tier 2 — Read + Write (Bash, files, sub-agents)</option>
+            <option value="3">Tier 3 — Full access (use with caution)</option>
           </select>
         </div>
       </div>

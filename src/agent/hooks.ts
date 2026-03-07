@@ -98,12 +98,14 @@ export function logToolUse(toolName: string, toolInput: Record<string, unknown>)
 }
 
 // ── Heartbeat tool restrictions ─────────────────────────────────────
+// These apply to actual heartbeats and tier-1 cron jobs (read-only).
+// Tier 2+ cron jobs and unleashed tasks bypass these restrictions.
 
 const HEARTBEAT_DISALLOWED_TIER2 = ['Write', 'Edit', 'Bash'];
 
 const HEARTBEAT_DISALLOWED_ALWAYS = [
-  'Bash',      // Never give raw Bash in autonomous mode
-  'Task',      // No sub-agents in heartbeats
+  'Bash',      // No raw shell in low-tier autonomous mode
+  'Task',      // No sub-agents in heartbeats (too short to benefit)
   'Skill',     // Skill packs load heavy context and waste turns
   'TodoWrite', // Internal bookkeeping wastes autonomous turns
 ];
@@ -380,8 +382,8 @@ export function getCronSecurityPrompt(tier = 1): string {
   const owner = OWNER_NAME || 'the user';
   const tierNote =
     tier < 2
-      ? 'You have **Tier 1 only** — read operations and vault writes.'
-      : 'You have **Tier 1 + Tier 2** — reads, vault writes, and external write tools.';
+      ? 'You have **Tier 1 only** — read operations and vault writes. No Bash, file writes, or edits outside the vault.'
+      : 'You have **Tier 1 + Tier 2** — reads, vault writes, Bash, file writes/edits, and external tools. Use sub-agents for parallel work.';
   return `
 ## Cron Job Security (MANDATORY)
 
