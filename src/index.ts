@@ -92,6 +92,14 @@ function ensureSingleton(): void {
           process.kill(oldPid, 0); // test if alive
           logger.info({ pid: oldPid }, 'Stopping previous instance');
           killPid(oldPid);
+          // Verify it's actually dead
+          try {
+            process.kill(oldPid, 0);
+            logger.warn({ pid: oldPid }, 'Previous instance still alive after kill — forcing SIGKILL');
+            try { process.kill(oldPid, 'SIGKILL'); } catch { /* already dead */ }
+          } catch {
+            // dead — good
+          }
         } catch {
           // not running
         }
@@ -475,6 +483,11 @@ async function asyncMain(): Promise<void> {
       env: process.env,
     });
     child.unref();
+
+    // Force exit — the Discord websocket and other event loop handles
+    // will keep this process alive indefinitely if we just return.
+    cleanupPid();
+    process.exit(0);
   }
 }
 
