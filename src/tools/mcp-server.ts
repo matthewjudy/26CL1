@@ -2291,6 +2291,161 @@ server.tool(
   },
 );
 
+// ── List Cron Jobs ──────────────────────────────────────────────────────
+
+function describeCronSchedule(expr: string): string {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length < 5) return expr;
+  const [min, hour, dom, mon, dow] = parts;
+
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  let timeStr = '';
+  if (hour !== '*' && min !== '*') {
+    const h = parseInt(hour, 10);
+    const m = parseInt(min, 10);
+    if (!isNaN(h) && !isNaN(m)) {
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+      timeStr = `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+    }
+  } else if (min.startsWith('*/')) {
+    timeStr = `every ${min.slice(2)} min`;
+  } else if (hour.startsWith('*/')) {
+    timeStr = `every ${hour.slice(2)} hours`;
+  }
+
+  let dayStr = '';
+  if (dow !== '*') {
+    const days = dow.split(',').map(d => {
+      const n = parseInt(d, 10);
+      return !isNaN(n) ? (dayNames[n % 7] || d) : d;
+    });
+    dayStr = days.join(', ');
+  } else if (dom !== '*') {
+    dayStr = `day ${dom}`;
+    if (mon !== '*') {
+      const m = parseInt(mon, 10);
+      dayStr += ` of ${!isNaN(m) ? (monNames[m] || mon) : mon}`;
+    }
+  } else {
+    dayStr = 'daily';
+  }
+
+  return [timeStr, dayStr].filter(Boolean).join(' ');
+}
+
+function getNextRun(expr: string): string | null {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length < 5) return null;
+  const [minF, hourF, domF, monF, dowF] = parts;
+
+  const now = new Date();
+  // Check the next 48 hours minute by minute (max 2880 iterations)
+  for (let offset = 1; offset <= 2880; offset++) {
+    const t = new Date(now.getTime() + offset * 60_000);
+    const matches =
+      fieldMatch(minF, t.getMinutes()) &&
+      fieldMatch(hourF, t.getHours()) &&
+      fieldMatch(domF, t.getDate()) &&
+      fieldMatch(monF, t.getMonth() + 1) &&
+      fieldMatch(dowF, t.getDay());
+    if (matches) {
+      const h = t.getHours();
+      const m = t.getMinutes();
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+      const today = t.toDateString() === now.toDateString();
+      const tomorrow = t.toDateString() === new Date(now.getTime() + 86400000).toDateString();
+      const dayLabel = today ? 'today' : tomorrow ? 'tomorrow' : t.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      return `${dayLabel} at ${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+    }
+  }
+  return null;
+}
+
+function fieldMatch(field: string, value: number): boolean {
+  if (field === '*') return true;
+  if (field.startsWith('*/')) {
+    const step = parseInt(field.slice(2), 10);
+    return !isNaN(step) && step > 0 && value % step === 0;
+  }
+  for (const part of field.split(',')) {
+    if (part.includes('-')) {
+      const [a, b] = part.split('-').map(Number);
+      if (!isNaN(a) && !isNaN(b) && value >= a && value <= b) return true;
+    } else {
+      if (parseInt(part, 10) === value) return true;
+    }
+  }
+  return false;
+}
+
+server.tool(
+  'cron_list',
+  'List all scheduled cron jobs with human-readable schedules, next run times, and recent run status.',
+  {},
+  async () => {
+    if (!existsSync(CRON_FILE)) {
+      return textResult('No cron jobs configured (CRON.md not found).');
+    }
+
+    const matterMod = await import('gray-matter');
+    const raw = readFileSync(CRON_FILE, 'utf-8');
+    const parsed = matterMod.default(raw);
+    const jobDefs = (parsed.data.jobs ?? []) as Array<Record<string, unknown>>;
+
+    if (jobDefs.length === 0) {
+      return textResult('No cron jobs defined in CRON.md.');
+    }
+
+    // Load recent run history
+    const runsDir = path.join(BASE_DIR, 'cron', 'runs');
+
+    const lines: string[] = [];
+    for (const job of jobDefs) {
+      const name = String(job.name ?? '');
+      const schedule = String(job.schedule ?? '');
+      const prompt = String(job.prompt ?? '');
+      const enabled = job.enabled !== false;
+      const mode = job.mode === 'unleashed' ? 'unleashed' : 'standard';
+      const workDir = job.work_dir ? String(job.work_dir) : null;
+
+      const humanSchedule = describeCronSchedule(schedule);
+      const nextRun = enabled ? getNextRun(schedule) : null;
+
+      let lastRunInfo = '';
+      if (existsSync(runsDir)) {
+        const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const logFile = path.join(runsDir, `${safeName}.jsonl`);
+        if (existsSync(logFile)) {
+          try {
+            const logLines = readFileSync(logFile, 'utf-8').trim().split('\n').filter(Boolean);
+            if (logLines.length > 0) {
+              const last = JSON.parse(logLines[logLines.length - 1]);
+              const ago = Math.round((Date.now() - new Date(last.finishedAt).getTime()) / 60000);
+              const agoStr = ago < 60 ? `${ago}m ago` : ago < 1440 ? `${Math.round(ago / 60)}h ago` : `${Math.round(ago / 1440)}d ago`;
+              lastRunInfo = `last run: ${last.status} (${agoStr})`;
+              if (last.deliveryFailed) lastRunInfo += ' [delivery failed]';
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      const status = enabled ? 'enabled' : 'disabled';
+      lines.push(`**${name}** [${status}] ${mode === 'unleashed' ? '[unleashed] ' : ''}` +
+        `\n  Schedule: ${humanSchedule} (\`${schedule}\`)` +
+        (nextRun ? `\n  Next run: ${nextRun}` : '') +
+        (lastRunInfo ? `\n  ${lastRunInfo}` : '') +
+        (workDir ? `\n  Work dir: ${workDir}` : '') +
+        `\n  Prompt: ${prompt.slice(0, 120)}${prompt.length > 120 ? '...' : ''}`);
+    }
+
+    return textResult(lines.join('\n\n'));
+  },
+);
+
 // ── Add Cron Job ────────────────────────────────────────────────────────
 
 server.tool(

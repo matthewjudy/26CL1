@@ -582,6 +582,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       mcpTool('workspace_list'),
       mcpTool('workspace_info'),
       mcpTool('self_restart'),
+      mcpTool('cron_list'),
       mcpTool('add_cron_job'),
       mcpTool('memory_report'),
       mcpTool('memory_correct'),
