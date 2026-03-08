@@ -3101,7 +3101,7 @@ function refreshAll() {
   refreshCron();
   refreshTimers();
   refreshHeartbeat();
-  if (currentPage === 'projects') refreshProjects();
+  refreshProjects(); // Always refresh — keeps nav badge + cron dropdown in sync
   if (currentPage === 'memory') refreshMemory();
   if (currentPage === 'logs') refreshLogs();
   if (currentPage === 'metrics') refreshMetrics();
@@ -3109,7 +3109,6 @@ function refreshAll() {
 }
 
 refreshAll();
-refreshProjects(); // Load project list for cron form selector
 setInterval(refreshAll, 5000);
 </script>
 </body>
