@@ -116,6 +116,7 @@ interface ProjectInfo {
   hasClaude: boolean;
   scripts: string[];
   hasMcp: boolean;
+  mcpServers: string[];
 }
 
 function detectProjectType(entries: string[]): string {
@@ -163,6 +164,25 @@ function getProjectScripts(dirPath: string, entries: string[]): string[] {
     } catch { /* ignore */ }
   }
   return [];
+}
+
+function getMcpServers(dirPath: string): string[] {
+  const servers: string[] = [];
+  // Check .mcp.json (project-level Claude Code MCP config)
+  for (const mcpPath of [
+    path.join(dirPath, '.mcp.json'),
+    path.join(dirPath, '.claude', 'mcp.json'),
+  ]) {
+    if (!existsSync(mcpPath)) continue;
+    try {
+      const data = JSON.parse(readFileSync(mcpPath, 'utf-8'));
+      const mcpServers = data.mcpServers || data.servers || {};
+      for (const name of Object.keys(mcpServers)) {
+        if (!servers.includes(name)) servers.push(name);
+      }
+    } catch { /* ignore */ }
+  }
+  return servers;
 }
 
 interface ProjectMetaEntry {
@@ -260,6 +280,7 @@ function scanProjects(): ProjectInfo[] {
     let subEntries: string[];
     try { subEntries = readdirSync(fullPath); } catch { return; }
 
+    const mcpServers = getMcpServers(fullPath);
     projects.push({
       name,
       path: fullPath,
@@ -267,7 +288,8 @@ function scanProjects(): ProjectInfo[] {
       description: getProjectDescription(fullPath, subEntries),
       hasClaude: existsSync(path.join(fullPath, '.claude', 'CLAUDE.md')),
       scripts: getProjectScripts(fullPath, subEntries),
-      hasMcp: existsSync(path.join(fullPath, '.mcp.json')) || existsSync(path.join(fullPath, '.claude', 'mcp.json')),
+      hasMcp: mcpServers.length > 0,
+      mcpServers,
     });
   };
 
@@ -3577,6 +3599,9 @@ async function refreshProjects() {
       if (p.hasClaude) badges.push('<span class="badge badge-green">CLAUDE.md</span>');
       if (p.hasMcp) badges.push('<span class="badge badge-yellow">MCP</span>');
       if (p.linked) badges.push('<span class="badge" style="background:#22c55e;color:#fff">Linked</span>');
+      const mcpHtml = (p.mcpServers || []).length > 0
+        ? '<div style="margin-top:8px"><span style="font-size:11px;color:var(--text-muted)">MCP Servers:</span> ' + p.mcpServers.map(s => '<code style="font-size:11px;background:var(--surface);padding:2px 6px;border-radius:3px;color:#eab308">' + esc(s) + '</code>').join(' ') + '</div>'
+        : '';
       const scripts = (p.scripts || []).slice(0, 8);
       const scriptHtml = scripts.length > 0
         ? '<div style="margin-top:8px"><span style="font-size:11px;color:var(--text-muted)">Scripts:</span> ' + scripts.map(s => '<code style="font-size:11px;background:var(--surface);padding:1px 5px;border-radius:3px">' + esc(s) + '</code>').join(' ') + '</div>'
@@ -3600,6 +3625,7 @@ async function refreshProjects() {
         + userDescHtml
         + (p.description ? '<div style="color:var(--text-secondary);margin-bottom:6px">' + esc(p.description) + '</div>' : '')
         + '<div style="font-size:11px;color:var(--text-muted);font-family:monospace">' + esc(p.path) + '</div>'
+        + mcpHtml
         + scriptHtml
         + kwHtml
         + '<div style="margin-top:10px;text-align:right">' + linkBtn + '</div>'
