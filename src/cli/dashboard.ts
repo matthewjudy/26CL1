@@ -562,10 +562,24 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
   const app = express();
   app.use(express.json());
 
+  // Compute build version hash at startup for cache busting / auto-reload
+  let buildHash = String(Date.now());
+  try {
+    buildHash = execSync('git rev-parse --short HEAD', { cwd: PACKAGE_ROOT, encoding: 'utf-8' }).trim();
+  } catch { /* fallback to timestamp */ }
+
   // ── GET routes ───────────────────────────────────────────────────
 
   app.get('/', (_req, res) => {
     res.type('html').send(getDashboardHTML());
+  });
+
+  app.get('/api/version', (_req, res) => {
+    let currentHash = buildHash;
+    try {
+      currentHash = execSync('git rev-parse --short HEAD', { cwd: PACKAGE_ROOT, encoding: 'utf-8' }).trim();
+    } catch { /* use cached */ }
+    res.json({ hash: currentHash, started: buildHash });
   });
 
   app.get('/api/status', (_req, res) => {
@@ -3094,6 +3108,20 @@ function formatMs(ms) {
   return (ms / 60000).toFixed(1) + 'm';
 }
 
+// ── Version check for auto-reload ─────────
+let _loadedHash = null;
+async function checkVersion() {
+  try {
+    const r = await fetch('/api/version');
+    const d = await r.json();
+    if (!_loadedHash) { _loadedHash = d.hash; return; }
+    if (d.hash !== _loadedHash) {
+      toast('Dashboard updated — reloading...', 'success');
+      setTimeout(() => location.reload(), 2000);
+    }
+  } catch { /* ignore */ }
+}
+
 // ── Refresh orchestrator ──────────────────
 function refreshAll() {
   refreshStatus();
@@ -3105,6 +3133,7 @@ function refreshAll() {
   if (currentPage === 'memory') refreshMemory();
   if (currentPage === 'logs') refreshLogs();
   if (currentPage === 'metrics') refreshMetrics();
+  checkVersion();
   document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
 }
 

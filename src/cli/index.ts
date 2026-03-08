@@ -821,12 +821,15 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     process.exit(1);
   }
 
+  let step = 0;
+  const S = () => `[${++step}]`;
+
   // 2. Stash any local customizations so pull succeeds
   let didStash = false;
   try {
     const status = execSync('git status --porcelain', { cwd: PACKAGE_ROOT, encoding: 'utf-8' }).trim();
     if (status) {
-      console.log(`  ${DIM}Local customizations detected — stashing...${RESET}`);
+      console.log(`  ${S()} Stashing local customizations...`);
       const stashOut = execSync('git stash', { cwd: PACKAGE_ROOT, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
       didStash = !stashOut.includes('No local changes');
       if (didStash) {
@@ -839,7 +842,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
 
   // 3. Back up user config
   const backupDir = path.join(BASE_DIR, 'backups', `pre-update-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}`);
-  console.log(`  ${DIM}Backing up config to ${backupDir}${RESET}`);
+  console.log(`  ${S()} Backing up config...`);
 
   if (!options.dryRun) {
     mkdirSync(backupDir, { recursive: true });
@@ -886,7 +889,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
   const pid = readPid();
   const wasRunning = pid && isProcessAlive(pid);
   if (wasRunning) {
-    console.log(`  Stopping daemon (PID ${pid})...`);
+    console.log(`  ${S()} Stopping daemon (PID ${pid})...`);
     if (!options.dryRun) {
       stopDaemon(pid!);
       try { unlinkSync(getPidFilePath()); } catch { /* ignore */ }
@@ -914,20 +917,22 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
   if (options.dryRun) {
     console.log();
     console.log(`  ${DIM}Dry run — would execute:${RESET}`);
-    console.log(`    git -C "${PACKAGE_ROOT}" pull --ff-only`);
-    console.log(`    npm install --loglevel=error --no-audit  (in ${PACKAGE_ROOT})`);
-    console.log(`    npm run build`);
-    console.log(`    npm install -g . --loglevel=error --no-audit`);
-    console.log(`    clementine doctor`);
+    console.log(`    ${S()} Pull latest (git pull --ff-only)`);
+    console.log(`    ${S()} Install dependencies (npm install)`);
+    console.log(`    ${S()} Build (clean) (rm -rf dist && npm run build)`);
+    console.log(`    ${S()} Verify build output`);
+    console.log(`    ${S()} Reinstall CLI globally`);
+    console.log(`    ${S()} Restore local customizations`);
+    console.log(`    ${S()} Run health check (clementine doctor)`);
     if (options.restart || wasRunning) {
-      console.log('    clementine launch');
+      console.log(`    ${S()} Restart daemon`);
     }
     console.log();
     return;
   }
 
   // 5. Git pull
-  console.log(`  Pulling latest...`);
+  console.log(`  ${S()} Pulling latest...`);
   try {
     const pullOutput = execSync('git pull --ff-only', {
       cwd: PACKAGE_ROOT,
@@ -970,7 +975,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
   }
 
   // 6. npm install
-  console.log('  Installing dependencies...');
+  console.log(`  ${S()} Installing dependencies...`);
   try {
     execSync('npm install --loglevel=error --no-audit', {
       cwd: PACKAGE_ROOT,
@@ -993,8 +998,8 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     console.error(`  ${YELLOW}WARN${RESET}  Native module rebuild failed — memory search may not work`);
   }
 
-  // 7. Build
-  console.log('  Building...');
+  // 7. Build (clean)
+  console.log(`  ${S()} Building (clean)...`);
   try {
     execSync('npm run build', {
       cwd: PACKAGE_ROOT,
@@ -1006,8 +1011,25 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     failAndRestart(backupDir);
   }
 
+  // 7b. Verify build output is fresh
+  const distEntry = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
+  if (existsSync(distEntry)) {
+    const distStat = statSync(distEntry);
+    const ageMs = Date.now() - distStat.mtimeMs;
+    if (ageMs > 30_000) {
+      console.error(`  ${YELLOW}WARN${RESET}  Build output appears stale (${Math.round(ageMs / 1000)}s old) — retrying with clean build...`);
+      try {
+        execSync('rm -rf dist && npm run build', { cwd: PACKAGE_ROOT, stdio: ['pipe', 'pipe', 'pipe'] });
+        console.log(`  ${GREEN}OK${RESET}  Clean rebuild succeeded`);
+      } catch (err) {
+        console.error(`  ${RED}FAIL${RESET}  Clean rebuild failed: ${String(err).slice(0, 200)}`);
+        failAndRestart(backupDir);
+      }
+    }
+  }
+
   // 8. Reinstall globally
-  console.log('  Reinstalling CLI globally...');
+  console.log(`  ${S()} Reinstalling CLI globally...`);
   try {
     execSync('npm install -g . --loglevel=error --no-audit', {
       cwd: PACKAGE_ROOT,
@@ -1021,6 +1043,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
 
   // 9. Restore stashed local customizations
   if (didStash) {
+    console.log(`  ${S()} Restoring local customizations...`);
     try {
       execSync('git stash pop', {
         cwd: PACKAGE_ROOT,
@@ -1036,12 +1059,14 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
 
   // 10. Doctor check
   console.log();
-  console.log(`  ${DIM}Running health check...${RESET}`);
+  console.log(`  ${S()} Running health check...`);
   cmdDoctor();
 
   // 11. Restart if requested or was running
   if (options.restart || wasRunning) {
-    console.log('  Restarting daemon...');
+    // Ensure build output is fully flushed before spawning new process
+    execSync('sync', { stdio: 'pipe' });
+    console.log(`  ${S()} Restarting daemon...`);
     cmdLaunch({});
   }
 
