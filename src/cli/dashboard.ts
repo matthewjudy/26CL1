@@ -3552,13 +3552,13 @@ var browseParent = null;
 var browseCurrent = '';
 
 function promptAddWorkspaceDir() {
-  document.getElementById('browse-dir-modal').classList.add('active');
+  document.getElementById('browse-dir-modal').classList.add('show');
   document.getElementById('browse-manual-path').value = '';
   browseDir('');
 }
 
 function closeBrowseModal() {
-  document.getElementById('browse-dir-modal').classList.remove('active');
+  document.getElementById('browse-dir-modal').classList.remove('show');
 }
 
 var browseEntries = [];
