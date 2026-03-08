@@ -180,6 +180,49 @@ function loadProjectsMeta(): ProjectMetaEntry[] {
   }
 }
 
+function getWorkspaceDirs(): string[] {
+  if (!existsSync(ENV_PATH)) return [];
+  const content = readFileSync(ENV_PATH, 'utf-8');
+  const match = content.match(/^WORKSPACE_DIRS=(.+)$/m);
+  if (!match) return [];
+  return match[1].split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function setWorkspaceDirs(dirs: string[]): void {
+  let lines: string[] = [];
+  if (existsSync(ENV_PATH)) {
+    lines = readFileSync(ENV_PATH, 'utf-8').split('\n');
+  }
+
+  const value = dirs.join(',');
+  let found = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('WORKSPACE_DIRS=')) {
+      lines[i] = `WORKSPACE_DIRS=${value}`;
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    // Find or create Workspace section
+    let insertIdx = lines.length;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim() === '# Workspace') {
+        insertIdx = i + 1;
+        break;
+      }
+    }
+    if (insertIdx === lines.length) {
+      lines.push('', '# Workspace');
+      insertIdx = lines.length;
+    }
+    lines.splice(insertIdx, 0, `WORKSPACE_DIRS=${value}`);
+  }
+
+  writeFileSync(ENV_PATH, lines.join('\n'));
+}
+
 function scanProjects(): ProjectInfo[] {
   const home = os.homedir();
   const seen = new Set<string>();
@@ -970,6 +1013,89 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
       res.status(500).json({ error: String(err) });
     }
   });
+
+  // ── Workspace Dirs routes ───────────────────────────────────────
+
+  app.get('/api/workspace-dirs', (_req, res) => {
+    try {
+      res.json({ dirs: getWorkspaceDirs() });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post('/api/workspace-dirs', (req, res) => {
+    try {
+      const { dir } = req.body;
+      if (!dir || typeof dir !== 'string') {
+        res.status(400).json({ error: 'dir is required' });
+        return;
+      }
+      const resolved = dir.startsWith('~') ? dir.replace('~', os.homedir()) : path.resolve(dir);
+      if (!existsSync(resolved)) {
+        res.status(400).json({ error: `Directory not found: ${resolved}` });
+        return;
+      }
+      const current = getWorkspaceDirs();
+      if (current.includes(resolved)) {
+        res.json({ ok: true, dirs: current });
+        return;
+      }
+      current.push(resolved);
+      setWorkspaceDirs(current);
+      res.json({ ok: true, dirs: current });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.delete('/api/workspace-dirs', (req, res) => {
+    try {
+      const { dir } = req.body;
+      if (!dir) {
+        res.status(400).json({ error: 'dir is required' });
+        return;
+      }
+      const current = getWorkspaceDirs().filter(d => d !== dir);
+      setWorkspaceDirs(current);
+      res.json({ ok: true, dirs: current });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.get('/api/browse-dir', (req, res) => {
+    try {
+      const home = os.homedir();
+      const dirPath = typeof req.query.path === 'string' && req.query.path
+        ? (req.query.path.startsWith('~') ? req.query.path.replace('~', home) : req.query.path)
+        : home;
+      const resolved = path.resolve(dirPath);
+      if (!existsSync(resolved) || !statSync(resolved).isDirectory()) {
+        res.status(400).json({ error: 'Not a valid directory' });
+        return;
+      }
+      const entries = readdirSync(resolved, { withFileTypes: true })
+        .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+        .map(e => {
+          const fullPath = path.join(resolved, e.name);
+          // Detect if this looks like a project (has package.json, .git, etc.)
+          let isProject = false;
+          try {
+            const children = readdirSync(fullPath);
+            isProject = children.some(c => ['package.json', 'Cargo.toml', 'pyproject.toml', 'go.mod', '.git', 'Makefile', 'pom.xml', '.claude'].includes(c));
+          } catch { /* ignore */ }
+          return { name: e.name, path: fullPath, isProject };
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const parent = path.dirname(resolved);
+      res.json({ current: resolved, parent: parent !== resolved ? parent : null, entries });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── CRON CRUD routes (continued) ──────────────────────────────
 
   app.post('/api/cron', (req, res) => {
     try {
@@ -2605,6 +2731,15 @@ function getDashboardHTML(): string {
     <div class="page" id="page-projects">
       <div class="page-title">Projects</div>
       <p style="color:var(--text-muted);margin-bottom:16px">Link projects to give Clementine automatic access to their tools and MCP servers. When you mention a linked project's keywords in chat, Clementine switches into that project's context automatically.</p>
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
+          <span>Workspace Directories</span>
+          <button class="btn btn-sm btn-primary" onclick="promptAddWorkspaceDir()" style="font-size:11px">+ Add Path</button>
+        </div>
+        <div class="card-body" id="workspace-dirs-list" style="font-size:13px">
+          <div class="empty-state">Loading...</div>
+        </div>
+      </div>
       <div id="panel-projects"><div class="empty-state">Loading...</div></div>
     </div>
 
@@ -2881,6 +3016,30 @@ function getDashboardHTML(): string {
     <div class="modal-footer">
       <button onclick="closeProjectModal()">Cancel</button>
       <button class="btn-primary" onclick="saveProjectLink()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="browse-dir-modal">
+  <div class="modal" style="width:560px">
+    <div class="modal-header">
+      <h3>Browse Directories</h3>
+      <button class="btn-ghost btn-sm" onclick="closeBrowseModal()">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:0">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+        <button class="btn-sm" id="browse-up-btn" onclick="browseUp()" title="Go up">&uarr; Up</button>
+        <code id="browse-current-path" style="font-size:12px;color:var(--text-secondary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></code>
+      </div>
+      <div id="browse-entries" style="max-height:400px;overflow-y:auto;padding:4px 0"></div>
+      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px">
+        <input type="text" id="browse-manual-path" placeholder="Or paste a path..." style="flex:1;font-size:12px" />
+        <button class="btn-sm btn-primary" onclick="addManualPath()">Add</button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="closeBrowseModal()">Cancel</button>
+      <button class="btn-primary" id="browse-add-current" onclick="addCurrentBrowseDir()">Add This Directory</button>
     </div>
   </div>
 </div>
@@ -3266,7 +3425,109 @@ async function cancelUnleashed(jobName) {
 // ── Projects ──────────────────────────────
 let projectsData = [];
 
+async function refreshWorkspaceDirs() {
+  try {
+    const r = await fetch('/api/workspace-dirs');
+    const d = await r.json();
+    const dirs = d.dirs || [];
+    const el = document.getElementById('workspace-dirs-list');
+    if (!el) return;
+    if (dirs.length === 0) {
+      el.innerHTML = '<span style="color:var(--text-muted)">No custom directories configured. Projects are scanned from ~/Desktop, ~/Documents, ~/Developer, etc. by default.</span>';
+      return;
+    }
+    el.innerHTML = dirs.map(function(dir) {
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">'
+        + '<code style="font-size:12px">' + esc(dir) + '</code>'
+        + '<button class="btn-sm btn-danger" style="font-size:10px;padding:2px 8px" onclick="removeWorkspaceDir(\\'' + esc(dir).replace(/'/g, "\\\\'") + '\\')">Remove</button>'
+        + '</div>';
+    }).join('');
+  } catch(e) { }
+}
+
+var browseParent = null;
+var browseCurrent = '';
+
+function promptAddWorkspaceDir() {
+  document.getElementById('browse-dir-modal').classList.add('active');
+  document.getElementById('browse-manual-path').value = '';
+  browseDir('');
+}
+
+function closeBrowseModal() {
+  document.getElementById('browse-dir-modal').classList.remove('active');
+}
+
+function browseDir(dirPath) {
+  var url = '/api/browse-dir' + (dirPath ? '?path=' + encodeURIComponent(dirPath) : '');
+  fetch(url).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.error) { showToast(d.error, 'error'); return; }
+    browseCurrent = d.current;
+    browseParent = d.parent;
+    document.getElementById('browse-current-path').textContent = d.current;
+    document.getElementById('browse-up-btn').disabled = !d.parent;
+    var el = document.getElementById('browse-entries');
+    if (d.entries.length === 0) {
+      el.innerHTML = '<div style="padding:16px;color:var(--text-muted);text-align:center">No subdirectories</div>';
+      return;
+    }
+    el.innerHTML = d.entries.map(function(e) {
+      var icon = e.isProject ? '\\u{1F4C1}' : '\\u{1F4C2}';
+      var projectBadge = e.isProject ? ' <span class="badge badge-blue" style="font-size:10px">project</span>' : '';
+      return '<div style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)" '
+        + 'onmouseenter="this.style.background=\\'var(--surface-hover)\\'" onmouseleave="this.style.background=\\'\\'">'
+        + '<div onclick="browseDir(\\'' + esc(e.path).replace(/'/g, "\\\\'") + '\\')" style="flex:1;display:flex;align-items:center;gap:8px">'
+        + '<span>' + icon + '</span>'
+        + '<span>' + esc(e.name) + projectBadge + '</span>'
+        + '</div>'
+        + '<button class="btn-sm btn-primary" style="font-size:10px;padding:2px 8px;flex-shrink:0" onclick="event.stopPropagation();addBrowsedDir(\\'' + esc(e.path).replace(/'/g, "\\\\'") + '\\')">Add</button>'
+        + '</div>';
+    }).join('');
+  });
+}
+
+function browseUp() {
+  if (browseParent) browseDir(browseParent);
+}
+
+function addBrowsedDir(dir) {
+  fetch('/api/workspace-dirs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: dir })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.error) { showToast(d.error, 'error'); return; }
+    showToast('Added: ' + dir);
+    closeBrowseModal();
+    refreshWorkspaceDirs();
+    refreshProjects();
+  });
+}
+
+function addCurrentBrowseDir() {
+  if (browseCurrent) addBrowsedDir(browseCurrent);
+}
+
+function addManualPath() {
+  var dir = document.getElementById('browse-manual-path').value.trim();
+  if (!dir) return;
+  addBrowsedDir(dir);
+}
+
+function removeWorkspaceDir(dir) {
+  if (!confirm('Remove workspace directory?\\n' + dir)) return;
+  fetch('/api/workspace-dirs', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: dir })
+  }).then(function(r) { return r.json(); }).then(function() {
+    refreshWorkspaceDirs();
+    refreshProjects();
+  });
+}
+
 async function refreshProjects() {
+  refreshWorkspaceDirs();
   try {
     const r = await fetch('/api/projects');
     const d = await r.json();
@@ -3288,7 +3549,7 @@ async function refreshProjects() {
 
     // Render projects page
     if (projectsData.length === 0) {
-      document.getElementById('panel-projects').innerHTML = '<div class="empty-state" style="padding:40px">No projects found. Add workspace directories via <code>clementine config set WORKSPACE_DIRS ~/projects</code></div>';
+      document.getElementById('panel-projects').innerHTML = '<div class="empty-state" style="padding:40px">No projects found. Add workspace directories above or place projects in ~/Desktop, ~/Documents, ~/Developer, etc.</div>';
       return;
     }
 
