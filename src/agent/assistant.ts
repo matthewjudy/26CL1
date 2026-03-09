@@ -200,26 +200,43 @@ function yesterdayISO(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// ── Cron Output Extraction ──────────────────────────────────────────
-
-/** Return the last non-empty text block, or '' if nothing/sentinel. */
-function extractDeliverable(blocks: string[]): string {
-  if (blocks.length === 0) return '';
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const text = blocks[i].trim();
-    if (text === '__NOTHING__') return '';
-    if (text.length > 0) return text;
-  }
-  return '';
-}
-
-// ── Cron Trace Persistence ──────────────────────────────────────────
+// ── Cron Trace Types ────────────────────────────────────────────────
 
 interface TraceEntry {
   type: string;
   timestamp: string;
   content: string;
 }
+
+// ── Cron Output Extraction ──────────────────────────────────────────
+
+/** Return the last non-empty text block that came after the last tool call, or '' if nothing/sentinel. */
+function extractDeliverable(trace: TraceEntry[]): string {
+  if (trace.length === 0) return '';
+
+  // Find the index of the last tool_call
+  let lastToolIdx = -1;
+  for (let i = trace.length - 1; i >= 0; i--) {
+    if (trace[i].type === 'tool_call') {
+      lastToolIdx = i;
+      break;
+    }
+  }
+
+  // Only consider text blocks after the last tool call
+  // If no tools were used, all text is considered (lastToolIdx = -1)
+  for (let i = trace.length - 1; i > lastToolIdx; i--) {
+    if (trace[i].type === 'text') {
+      const text = trace[i].content.trim();
+      if (text === '__NOTHING__') return '';
+      if (text.length > 0) return text;
+    }
+  }
+
+  return '';
+}
+
+// ── Cron Trace Persistence ──────────────────────────────────────────
 
 function saveCronTrace(jobName: string, trace: TraceEntry[]): void {
   if (trace.length === 0) return;
@@ -1288,11 +1305,10 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       `${jobPrompt}\n\n` +
       `## How to respond\n` +
       `You're sending this directly to ${ownerName} as a DM. Write like you're texting them — casual, concise, no headers or section dividers unless the info genuinely needs structure. Skip narrating your process. If there's nothing worth reporting, output ONLY: __NOTHING__\n` +
-      `Your final text response is the only thing delivered.`;
+      `After finishing your work, you MUST write a final text response with your findings — only that final message gets delivered.`;
 
-    // Collect all text blocks and execution trace
-    const allTextBlocks: string[] = [];
-    const trace: Array<{ type: string; timestamp: string; content: string }> = [];
+    // Collect execution trace
+    const trace: TraceEntry[] = [];
     const stream = query({ prompt, options: sdkOptions });
 
     for await (const message of stream) {
@@ -1300,7 +1316,6 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
         const blocks = getContentBlocks(message as SDKAssistantMessage);
         for (const block of blocks) {
           if (block.type === 'text' && block.text) {
-            allTextBlocks.push(block.text);
             trace.push({ type: 'text', timestamp: new Date().toISOString(), content: block.text });
           } else if (block.type === 'tool_use' && block.name) {
             logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
@@ -1317,7 +1332,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     // Save execution trace
     saveCronTrace(jobName, trace);
 
-    return extractDeliverable(allTextBlocks);
+    return extractDeliverable(trace);
   }
 
   // ── Unleashed Mode (Long-Running Autonomous Tasks) ─────────────────
