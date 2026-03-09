@@ -600,8 +600,8 @@ export class CronScheduler {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         const startedAt = new Date();
         try {
-          // Standard cron jobs get a 10-minute timeout to prevent hanging
-          const cronPromise = this.gateway.handleCronJob(
+          // Standard cron jobs get a 10-minute timeout via SDK AbortController
+          const response = await this.gateway.handleCronJob(
             job.name,
             job.prompt,
             job.tier,
@@ -610,20 +610,8 @@ export class CronScheduler {
             job.workDir,
             job.mode,
             job.maxHours,
+            job.mode !== 'unleashed' ? CRON_STANDARD_TIMEOUT_MS : undefined,
           );
-
-          let response: string;
-          if (job.mode !== 'unleashed') {
-            const timeoutMs = CRON_STANDARD_TIMEOUT_MS;
-            response = await Promise.race([
-              cronPromise,
-              sleep(timeoutMs).then(() => {
-                throw new Error(`Cron job '${job.name}' timed out after ${timeoutMs / 60_000} minutes`);
-              }),
-            ]);
-          } else {
-            response = await cronPromise;
-          }
 
           // Success — log and dispatch
           const finishedAt = new Date();

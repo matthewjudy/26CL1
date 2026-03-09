@@ -18,6 +18,7 @@ import {
   type SDKMessage,
   type SDKAssistantMessage,
   type SDKResultMessage,
+  type SDKPartialAssistantMessage,
 } from '@anthropic-ai/claude-code';
 import matter from 'gray-matter';
 import pino from 'pino';
@@ -565,12 +566,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       }
     }
 
-    parts.push(getSecurityPrompt());
-    if (cronTier !== null && cronTier !== undefined) {
-      parts.push(getCronSecurityPrompt(cronTier));
-    } else if (isHeartbeat) {
-      parts.push(getHeartbeatSecurityPrompt());
-    }
+    // Security rules are now passed via appendSystemPrompt in buildOptions()
 
     return parts.join('\n\n---\n\n');
   }
@@ -651,14 +647,28 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       : [];
     const effectiveMaxTurns = maxTurns ?? (isHeartbeat ? HEARTBEAT_MAX_TURNS : 15);
 
+    // Determine security prompt for appendSystemPrompt
+    const securityPrompt = cronTier !== null && cronTier !== undefined
+      ? getCronSecurityPrompt(cronTier)
+      : isHeartbeat
+        ? getHeartbeatSecurityPrompt()
+        : getSecurityPrompt();
+
+    // Fallback model: auto-fallback on rate limits (avoid self-referencing)
+    const resolvedModel = resolveModel(model) ?? MODEL;
+    const fallback = resolvedModel !== MODELS.sonnet ? MODELS.sonnet : undefined;
+
     return {
       customSystemPrompt: this.buildSystemPrompt({
         isHeartbeat, cronTier, retrievalContext, profile, sessionKey, model,
       }),
-      model: resolveModel(model) ?? MODEL,
+      appendSystemPrompt: securityPrompt,
+      model: resolvedModel,
+      ...(fallback ? { fallbackModel: fallback } : {}),
       permissionMode: 'bypassPermissions',
       allowedTools,
       disallowedTools: disallowed,
+      includePartialMessages: true,
       mcpServers: {
         [TOOLS_SERVER]: {
           type: 'stdio',
@@ -670,7 +680,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       maxTurns: effectiveMaxTurns,
       cwd: BASE_DIR,
       env: SAFE_ENV,
-      canUseTool: async (toolName, toolInput) => {
+      canUseTool: async (toolName, toolInput, _options) => {
         const result = await enforceToolPermissions(toolName, toolInput);
         if (result.behavior === 'deny') {
           return { behavior: 'deny' as const, message: result.message ?? 'Denied.' };
@@ -923,20 +933,41 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
         try {
           const stream = query({ prompt, options: sdkOptions });
 
+          let gotStreamEvents = false;
+
           for await (const message of stream) {
             if (message.type === 'assistant') {
               const blocks = getContentBlocks(message as SDKAssistantMessage);
               for (const block of blocks) {
-                if (block.type === 'text' && block.text) {
+                if (block.type === 'text' && block.text && !gotStreamEvents) {
+                  // Only accumulate from assistant messages if we haven't
+                  // received stream_event deltas (which already accumulated text)
                   responseText += block.text;
                   if (onText) await onText(responseText);
                 } else if (block.type === 'tool_use' && block.name) {
                   logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
                 }
               }
+            } else if (message.type === 'stream_event') {
+              // Token-level streaming — extract delta text for real-time updates
+              gotStreamEvents = true;
+              const partial = message as SDKPartialAssistantMessage;
+              const evt = partial.event as { type?: string; delta?: { type?: string; text?: string } };
+              if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+                responseText += evt.delta.text;
+                if (onText) await onText(responseText);
+              }
             } else if (message.type === 'result') {
               const result = message as SDKResultMessage;
               sessionId = result.session_id ?? '';
+              // Capture cost/usage metrics
+              if ('total_cost_usd' in result) {
+                logger.info({
+                  cost_usd: (result as any).total_cost_usd,
+                  num_turns: (result as any).num_turns,
+                  duration_ms: (result as any).duration_ms,
+                }, 'SDK query completed');
+              }
               if (result.is_error) {
                 const resultText = (result as { result?: string }).result;
                 if (resultText) {
@@ -948,6 +979,8 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
                   }
                 }
               }
+            } else if (message.type === 'system') {
+              // Init message with tools/MCP status — no action needed
             } else {
               logger.debug({ type: message.type }, 'Unknown SDK message type');
             }
@@ -1271,6 +1304,16 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
             logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
           }
         }
+      } else if (message.type === 'result') {
+        if ('total_cost_usd' in message) {
+          logger.info({
+            cost_usd: (message as any).total_cost_usd,
+            num_turns: (message as any).num_turns,
+            duration_ms: (message as any).duration_ms,
+          }, 'Heartbeat query completed');
+        }
+      } else if (message.type === 'system' || message.type === 'stream_event') {
+        // Init / streaming messages — no action needed
       }
     }
 
@@ -1284,6 +1327,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     maxTurns?: number,
     model?: string,
     workDir?: string,
+    timeoutMs?: number,
   ): Promise<string> {
     setInteractionSource('autonomous');
     const sdkOptions = this.buildOptions({
@@ -1299,6 +1343,17 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       sdkOptions.cwd = workDir;
     }
 
+    // Use AbortController for clean timeout instead of Promise.race
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs) {
+      const ac = new AbortController();
+      sdkOptions.abortController = ac;
+      timeoutHandle = setTimeout(() => {
+        ac.abort();
+        logger.warn({ job: jobName, timeoutMs }, `Cron job '${jobName}' aborted after timeout`);
+      }, timeoutMs);
+    }
+
     const ownerName = OWNER;
     const prompt =
       `[Scheduled task: ${jobName}]\n\n` +
@@ -1307,32 +1362,47 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       `You're sending this directly to ${ownerName} as a DM. Write like you're texting them — casual, concise, no headers or section dividers unless the info genuinely needs structure. Skip narrating your process. If there's nothing worth reporting, output ONLY: __NOTHING__\n` +
       `After finishing your work, you MUST write a final text response with your findings — only that final message gets delivered.`;
 
-    // Collect execution trace
-    const trace: TraceEntry[] = [];
-    const stream = query({ prompt, options: sdkOptions });
+    try {
+      // Collect execution trace
+      const trace: TraceEntry[] = [];
+      const stream = query({ prompt, options: sdkOptions });
 
-    for await (const message of stream) {
-      if (message.type === 'assistant') {
-        const blocks = getContentBlocks(message as SDKAssistantMessage);
-        for (const block of blocks) {
-          if (block.type === 'text' && block.text) {
-            trace.push({ type: 'text', timestamp: new Date().toISOString(), content: block.text });
-          } else if (block.type === 'tool_use' && block.name) {
-            logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
-            trace.push({
-              type: 'tool_call',
-              timestamp: new Date().toISOString(),
-              content: `${block.name}(${JSON.stringify(block.input ?? {}).slice(0, 500)})`,
-            });
+      for await (const message of stream) {
+        if (message.type === 'assistant') {
+          const blocks = getContentBlocks(message as SDKAssistantMessage);
+          for (const block of blocks) {
+            if (block.type === 'text' && block.text) {
+              trace.push({ type: 'text', timestamp: new Date().toISOString(), content: block.text });
+            } else if (block.type === 'tool_use' && block.name) {
+              logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
+              trace.push({
+                type: 'tool_call',
+                timestamp: new Date().toISOString(),
+                content: `${block.name}(${JSON.stringify(block.input ?? {}).slice(0, 500)})`,
+              });
+            }
           }
+        } else if (message.type === 'result') {
+          if ('total_cost_usd' in message) {
+            logger.info({
+              job: jobName,
+              cost_usd: (message as any).total_cost_usd,
+              num_turns: (message as any).num_turns,
+              duration_ms: (message as any).duration_ms,
+            }, 'Cron job query completed');
+          }
+        } else if (message.type === 'system' || message.type === 'stream_event') {
+          // Init / streaming messages — no action needed
         }
       }
+
+      // Save execution trace
+      saveCronTrace(jobName, trace);
+
+      return extractDeliverable(trace);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
-
-    // Save execution trace
-    saveCronTrace(jobName, trace);
-
-    return extractDeliverable(trace);
   }
 
   // ── Unleashed Mode (Long-Running Autonomous Tasks) ─────────────────
@@ -1480,6 +1550,17 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
           } else if (message.type === 'result') {
             const result = message as SDKResultMessage;
             phaseSessionId = result.session_id ?? '';
+            if ('total_cost_usd' in result) {
+              logger.info({
+                job: jobName,
+                phase,
+                cost_usd: (result as any).total_cost_usd,
+                num_turns: (result as any).num_turns,
+                duration_ms: (result as any).duration_ms,
+              }, 'Unleashed phase completed');
+            }
+          } else if (message.type === 'system' || message.type === 'stream_event') {
+            // Init / streaming messages — no action needed
           }
         }
       } catch (err) {

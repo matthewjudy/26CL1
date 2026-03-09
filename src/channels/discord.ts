@@ -38,7 +38,7 @@ import type { Gateway } from '../gateway/router.js';
 
 const logger = pino({ name: 'clementine.discord' });
 
-const STREAM_EDIT_INTERVAL = 1500; // ms
+const STREAM_EDIT_INTERVAL = 800; // ms — tuned for token-level streaming
 const THINKING_INDICATOR = '\u2728 *thinking...*';
 const DISCORD_MSG_LIMIT = 2000;
 const BOT_MESSAGE_TRACKING_LIMIT = 100;
