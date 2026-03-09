@@ -335,6 +335,7 @@ export class PersonalAssistant {
   private exchangeCounts = new Map<string, number>();
   private sessionTimestamps = new Map<string, Date>();
   private lastExchanges = new Map<string, Array<{ user: string; assistant: string }>>();
+  private pendingContext = new Map<string, Array<{ user: string; assistant: string }>>();
   private restoredSessions = new Set<string>();
   private profileManager: ProfileManager;
   private memoryStore: any = null; // Typed as any — MemoryStore may not be available yet
@@ -817,6 +818,21 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
           `[Conversation context from before restart (our recent messages):\n${historyLines.join('\n')}]\n\n${effectivePrompt}`;
       }
       this.restoredSessions.delete(key); // Only inject once per restored session
+    }
+
+    // Drain any pending context from cron/heartbeat injections so the
+    // active SDK session knows about work that happened outside of chat
+    if (key && this.pendingContext.has(key)) {
+      const pending = this.pendingContext.get(key)!;
+      if (pending.length > 0) {
+        const contextLines: string[] = [];
+        for (const ctx of pending) {
+          contextLines.push(`[${ctx.user}]\n${ctx.assistant}`);
+        }
+        effectivePrompt =
+          `[Background activity since your last message — you did this work via cron/scheduled tasks:\n${contextLines.join('\n\n')}]\n\n${effectivePrompt}`;
+        this.pendingContext.delete(key);
+      }
     }
 
     let [responseText, sessionId] = await this.runQuery(
@@ -1647,17 +1663,27 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
    * so follow-up conversation has context.
    */
   injectContext(sessionKey: string, userText: string, assistantText: string): void {
-    // Add to in-memory exchange history (use larger limit for injected context)
+    const trimmedUser = userText.slice(0, INJECTED_CONTEXT_MAX_CHARS);
+    const trimmedAssistant = assistantText.slice(0, INJECTED_CONTEXT_MAX_CHARS);
+
+    // Add to in-memory exchange history
     const history = this.lastExchanges.get(sessionKey) ?? [];
-    history.push({
-      user: userText.slice(0, INJECTED_CONTEXT_MAX_CHARS),
-      assistant: assistantText.slice(0, INJECTED_CONTEXT_MAX_CHARS),
-    });
+    history.push({ user: trimmedUser, assistant: trimmedAssistant });
     if (history.length > SESSION_EXCHANGE_HISTORY_SIZE) {
       this.lastExchanges.set(sessionKey, history.slice(-SESSION_EXCHANGE_HISTORY_SIZE));
     } else {
       this.lastExchanges.set(sessionKey, history);
     }
+
+    // Queue as pending context so the next chat() prepends it even
+    // when an active SDK session exists (session recovery alone won't
+    // help because the SDK session has no knowledge of this exchange).
+    const pending = this.pendingContext.get(sessionKey) ?? [];
+    pending.push({ user: trimmedUser, assistant: trimmedAssistant });
+    // Keep at most 3 pending to avoid bloating the next prompt
+    if (pending.length > 3) pending.shift();
+    this.pendingContext.set(sessionKey, pending);
+
     this.sessionTimestamps.set(sessionKey, new Date());
     this.saveSessions();
 
