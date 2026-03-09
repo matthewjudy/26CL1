@@ -134,8 +134,36 @@ export async function cmdCronRun(jobName: string): Promise<void> {
   }
 }
 
+/** Check if the main daemon process is alive via its PID file. */
+function isDaemonRunning(): boolean {
+  // PID file is named after the assistant (e.g. .clementine.pid)
+  const envPath = path.join(BASE_DIR, '.env');
+  let name = 'clementine';
+  if (existsSync(envPath)) {
+    const content = readFileSync(envPath, 'utf-8');
+    const match = content.match(/^ASSISTANT_NAME=(.+)$/m);
+    if (match) name = match[1].trim().toLowerCase();
+  }
+  const pidFile = path.join(BASE_DIR, `.${name}.pid`);
+  if (!existsSync(pidFile)) return false;
+  try {
+    const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
+    if (isNaN(pid)) return false;
+    process.kill(pid, 0); // signal 0 = check if alive
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function cmdCronRunDue(): Promise<void> {
   process.env.CLEMENTINE_HOME = BASE_DIR;
+
+  // Skip if the daemon is running — it has its own CronScheduler
+  if (isDaemonRunning()) {
+    console.log('Daemon is running — skipping standalone cron (daemon handles scheduling)');
+    return;
+  }
 
   const jobs = parseCronJobs();
   const enabledJobs = jobs.filter((j) => j.enabled);

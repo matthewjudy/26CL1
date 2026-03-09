@@ -1062,7 +1062,21 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
   console.log(`  ${S()} Running health check...`);
   cmdDoctor();
 
-  // 11. Restart if requested or was running
+  // 11. Kill any running dashboard process so it picks up new code on next start
+  try {
+    const dashPids = execSync("pgrep -f 'clementine.*dashboard' || true", { encoding: 'utf-8' }).trim();
+    if (dashPids) {
+      for (const dp of dashPids.split('\n').filter(Boolean)) {
+        const dpid = parseInt(dp, 10);
+        if (!isNaN(dpid) && dpid !== process.pid) {
+          try { process.kill(dpid, 'SIGTERM'); } catch { /* ignore */ }
+        }
+      }
+      console.log(`  ${GREEN}OK${RESET}  Stopped dashboard process (restart with: clementine dashboard)`);
+    }
+  } catch { /* no dashboard running */ }
+
+  // 12. Restart daemon if requested or was running
   if (options.restart || wasRunning) {
     // Ensure build output is fully flushed before spawning new process
     execSync('sync', { stdio: 'pipe' });
@@ -1070,7 +1084,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     cmdLaunch({});
   }
 
-  // 12. Show current version
+  // 13. Show current version
   try {
     const hash = execSync('git rev-parse --short HEAD', {
       cwd: PACKAGE_ROOT,
@@ -1282,6 +1296,10 @@ ${calendarEntries}
       console.log(`  Runs every 5 minutes via launchd`);
       console.log(`  Plist: ${plistPath}`);
       console.log(`  Logs:  ${cronLog}`);
+      console.log();
+      console.log(`  Note: This is a fallback for when the daemon is not running.`);
+      console.log(`  If the daemon is active, its built-in scheduler handles cron jobs`);
+      console.log(`  and the standalone runner will skip automatically.`);
     } catch (err) {
       console.error(`  Failed to load LaunchAgent: ${err}`);
     }
