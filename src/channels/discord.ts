@@ -683,6 +683,7 @@ export async function startDiscord(
       }
     } catch (err) {
       logger.error({ err }, 'Failed to send Discord notification');
+      throw err;
     }
   }
 
