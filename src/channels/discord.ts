@@ -494,16 +494,20 @@ export async function startDiscord(
       }
     }
 
-    // ── Per-message model prefix ────────────────────────────────────
+    // ── Per-message model/mode prefix ──────────────────────────────
 
     let effectiveText = text;
     let oneOffModel: string | undefined;
+    let oneOffMaxTurns: number | undefined;
     if (text.startsWith('!q ')) {
       oneOffModel = MODELS.haiku;
       effectiveText = text.slice(3);
     } else if (text.startsWith('!d ')) {
       oneOffModel = MODELS.opus;
       effectiveText = text.slice(3);
+    } else if (text.startsWith('!deep ')) {
+      oneOffMaxTurns = 100;
+      effectiveText = text.slice(6);
     }
 
     // ── Reply context for watched channels ─────────────────────────
@@ -535,6 +539,7 @@ export async function startDiscord(
         effectiveText,
         (t) => streamer.update(t),
         oneOffModel,
+        oneOffMaxTurns,
       );
       await streamer.finalize(response);
 

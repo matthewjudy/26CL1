@@ -92,6 +92,7 @@ export class Gateway {
     text: string,
     onText?: OnTextCallback,
     model?: string,
+    maxTurns?: number,
   ): Promise<string> {
     const releaseLane = await lanes.acquire('chat');
     try {
@@ -155,7 +156,7 @@ export class Gateway {
           const [response] = await this.assistant.chat(
             text,
             effectiveSessionKey,
-            { onText, model: effectiveModel, securityAnnotation },
+            { onText, model: effectiveModel, maxTurns, securityAnnotation },
           );
 
           // Re-baseline integrity checksums after chat (auto-memory may write to vault)

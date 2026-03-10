@@ -697,7 +697,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     const disallowed = isHeartbeat && (!isCron || (cronTier ?? 0) < 2)
       ? getHeartbeatDisallowedTools()
       : [];
-    const effectiveMaxTurns = maxTurns ?? (isHeartbeat ? HEARTBEAT_MAX_TURNS : 15);
+    const effectiveMaxTurns = maxTurns ?? (isHeartbeat ? HEARTBEAT_MAX_TURNS : 30);
 
     // Determine security prompt for appendSystemPrompt
     // Plan steps are user-initiated — use the interactive security prompt, not cron
@@ -802,12 +802,14 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     options?: {
       onText?: OnTextCallback;
       model?: string;
+      maxTurns?: number;
       profile?: AgentProfile;
       securityAnnotation?: string;
     },
   ): Promise<[string, string]> {
     const onText = options?.onText;
     const model = options?.model;
+    const maxTurns = options?.maxTurns;
     const profile = options?.profile;
     const securityAnnotation = options?.securityAnnotation;
     const key = sessionKey ?? undefined;
@@ -902,7 +904,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     }
 
     let [responseText, sessionId] = await this.runQuery(
-      effectivePrompt, key, onText, model, profile, securityAnnotation,
+      effectivePrompt, key, onText, model, profile, securityAnnotation, maxTurns,
     );
 
     // If we got a context-length / prompt-too-long error, retry with a fresh session
@@ -927,7 +929,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
           `If this task involves pulling data for multiple entities, delegate each to a sub-agent using the Agent tool ` +
           `instead of calling data-heavy tools directly.\n\n${text}`;
       }
-      [responseText, sessionId] = await this.runQuery(retryPrompt, key, onText, model, profile, securityAnnotation);
+      [responseText, sessionId] = await this.runQuery(retryPrompt, key, onText, model, profile, securityAnnotation, maxTurns);
     }
 
     // Track exchange count, timestamp, and last exchange
@@ -979,6 +981,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     model?: string,
     profile?: AgentProfile,
     securityAnnotation?: string,
+    maxTurnsOverride?: number,
   ): Promise<[string, string]> {
     const rawContext = await this.retrieveContext(prompt, sessionKey);
     let retrievalContext = securityAnnotation
@@ -1000,7 +1003,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
 
     try {
       for (let attempt = 0; attempt <= PersonalAssistant.RATE_LIMIT_MAX_RETRIES; attempt++) {
-        const sdkOptions = this.buildOptions({ model, retrievalContext, profile, sessionKey, streaming: !!onText });
+        const sdkOptions = this.buildOptions({ model, maxTurns: maxTurnsOverride ?? null, retrievalContext, profile, sessionKey, streaming: !!onText });
 
         // If a project matched, switch cwd so the agent gets its tools/CLAUDE.md
         if (matchedProject) {
