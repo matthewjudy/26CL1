@@ -11,8 +11,8 @@ import type { NotificationSender } from '../types.js';
 
 const logger = pino({ name: 'clementine.notifications' });
 
-/** Message size limits for common platforms. */
-const MAX_MESSAGE_LENGTH = 1900; // Discord limit is 2000; leave margin
+/** Safety cap — prevent runaway messages, but each channel handles its own chunking/limits. */
+const MAX_MESSAGE_LENGTH = 8000;
 
 export interface SendResult {
   delivered: boolean;
@@ -42,8 +42,8 @@ export class NotificationDispatcher {
       return { delivered: false, channelErrors: { _: 'no channels registered' } };
     }
 
-    // Truncate oversized messages to avoid platform rejections
-    const truncated = text.length > MAX_MESSAGE_LENGTH
+    // Sanity cap only — each channel sender handles its own chunking/truncation
+    const capped = text.length > MAX_MESSAGE_LENGTH
       ? text.slice(0, MAX_MESSAGE_LENGTH - 20) + '\n\n_(truncated)_'
       : text;
 
@@ -52,7 +52,7 @@ export class NotificationDispatcher {
 
     for (const [name, sender] of this.senders) {
       try {
-        await sender(truncated);
+        await sender(capped);
         anySuccess = true;
       } catch (err) {
         const errMsg = String(err).slice(0, 200);

@@ -685,7 +685,7 @@ export async function startDiscord(
     // Try cached channel first (populated on every owner DM interaction)
     let channel = cachedDmChannel;
     if (!channel || !('send' in channel)) {
-      // Fallback: fetch from API + retry once with force flag
+      // Fallback: fetch from API with force flag
       try {
         const user = await client.users.fetch(DISCORD_OWNER_ID, { force: true });
         channel = await user.createDM();
@@ -701,14 +701,28 @@ export async function startDiscord(
         await (channel as any).send(chunk);
       }
     } catch (err) {
-      // Channel might be stale — clear cache so next attempt re-fetches
+      // Channel might be stale — clear cache, wait briefly, retry once
       cachedDmChannel = null;
-      logger.error({ err }, 'Failed to send Discord notification');
-      throw err;
+      logger.warn({ err }, 'Discord notification failed — retrying once');
+      try {
+        await new Promise(r => setTimeout(r, 2000));
+        const user = await client.users.fetch(DISCORD_OWNER_ID, { force: true });
+        channel = await user.createDM();
+        cachedDmChannel = channel;
+        for (const chunk of chunkText(text, 1900)) {
+          await (channel as any).send(chunk);
+        }
+      } catch (retryErr) {
+        logger.error({ err: retryErr }, 'Discord notification retry failed');
+        throw retryErr;
+      }
     }
   }
 
-  dispatcher.register('discord', discordNotify);
+  // Register sender only after Discord client is ready
+  client.once(Events.ClientReady, () => {
+    dispatcher.register('discord', discordNotify);
+  });
 
   logger.info('Starting Discord bot...');
   await client.login(DISCORD_TOKEN);

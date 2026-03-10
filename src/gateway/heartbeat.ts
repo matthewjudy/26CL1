@@ -725,7 +725,13 @@ export class CronScheduler {
             if (!result.delivered) {
               entry.deliveryFailed = true;
               entry.deliveryError = Object.values(result.channelErrors).join('; ').slice(0, 300);
+              // Preserve more output when delivery fails so it's recoverable
+              entry.outputPreview = response.slice(0, 2000);
               logger.warn({ job: job.name, errors: result.channelErrors }, 'Cron output not delivered to any channel');
+            } else if (Object.keys(result.channelErrors).length > 0) {
+              // Partial success — some channels failed. Log so broken channels are visible.
+              entry.deliveryError = `partial: ${Object.entries(result.channelErrors).map(([ch, e]) => `${ch}: ${e}`).join('; ').slice(0, 300)}`;
+              logger.warn({ job: job.name, errors: result.channelErrors }, 'Cron output delivered but some channels failed');
             }
             // Inject into owner's DM session so follow-up conversation has context
             if (DISCORD_OWNER_ID && DISCORD_OWNER_ID !== '0') {
@@ -820,6 +826,10 @@ export class CronScheduler {
   private static isCronNoise(response: string): boolean {
     const trimmed = response.trim();
     if (trimmed === '__NOTHING__') return true;
+
+    // Only treat as noise if the response is short — avoids filtering out
+    // substantive responses that happen to start with "No updates, but..."
+    if (trimmed.length > 80) return false;
 
     const lower = trimmed.toLowerCase();
     const noisePatterns = [
