@@ -320,6 +320,9 @@ export async function startDiscord(
     const isWatchedChannel = !isDm && watchedChannels.has(message.channelId);
     if (!isDm && !isWatchedChannel) return;
 
+    // Cache the DM channel for cron/heartbeat notifications
+    if (isDm) cachedDmChannel = message.channel;
+
     // Owner-only (applies to both DM and watched channels)
     if (DISCORD_OWNER_ID && message.author.id !== DISCORD_OWNER_ID) {
       logger.warn(`Ignored message from non-owner: ${message.author.tag} (${message.author.id})`);
@@ -674,14 +677,32 @@ export async function startDiscord(
 
   // ── Register notification sender ──────────────────────────────────
 
+  // Cache the owner's DM channel from successful interactions so
+  // cron/heartbeat notifications don't depend on a fresh API fetch.
+  let cachedDmChannel: Message['channel'] | null = null;
+
   async function discordNotify(text: string): Promise<void> {
+    // Try cached channel first (populated on every owner DM interaction)
+    let channel = cachedDmChannel;
+    if (!channel || !('send' in channel)) {
+      // Fallback: fetch from API + retry once with force flag
+      try {
+        const user = await client.users.fetch(DISCORD_OWNER_ID, { force: true });
+        channel = await user.createDM();
+        cachedDmChannel = channel;
+      } catch (err) {
+        logger.error({ err }, 'Failed to open DM channel for notification');
+        throw err;
+      }
+    }
+
     try {
-      const user = await client.users.fetch(DISCORD_OWNER_ID);
-      const dm = await user.createDM();
       for (const chunk of chunkText(text, 1900)) {
-        await dm.send(chunk);
+        await (channel as any).send(chunk);
       }
     } catch (err) {
+      // Channel might be stale — clear cache so next attempt re-fetches
+      cachedDmChannel = null;
       logger.error({ err }, 'Failed to send Discord notification');
       throw err;
     }
