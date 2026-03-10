@@ -47,6 +47,48 @@ const logger = pino({ name: 'clementine.heartbeat' });
 /** Default timeout for standard cron jobs (10 minutes). */
 const CRON_STANDARD_TIMEOUT_MS = 10 * 60 * 1000;
 
+// ── Daily Note Activity Logger ───────────────────────────────────────
+
+/** Local-time YYYY-MM-DD for daily note path. */
+function todayISO(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Append a line to today's daily note under ## Interactions.
+ * Creates the section if it doesn't exist. Non-fatal — never throws.
+ */
+function logToDailyNote(line: string): void {
+  try {
+    const notePath = path.join(DAILY_NOTES_DIR, `${todayISO()}.md`);
+    if (!existsSync(notePath)) return; // template hasn't created the note yet
+
+    let content = readFileSync(notePath, 'utf-8');
+    const marker = '## Interactions';
+    const idx = content.indexOf(marker);
+    if (idx === -1) {
+      // No Interactions section — append one
+      content += `\n\n${marker}\n\n- ${line}`;
+    } else {
+      // Find the end of the marker line and insert after it
+      const afterMarker = idx + marker.length;
+      const nextNewline = content.indexOf('\n', afterMarker);
+      const insertAt = nextNewline === -1 ? content.length : nextNewline;
+      // Check if there's already content in this section
+      const nextSection = content.indexOf('\n## ', insertAt + 1);
+      const sectionEnd = nextSection === -1 ? content.length : nextSection;
+      const sectionContent = content.slice(insertAt, sectionEnd).trim();
+      // Insert at the end of the section (before next ## or EOF)
+      const insertPoint = nextSection === -1 ? content.length : nextSection;
+      content = content.slice(0, insertPoint) + `\n- ${line}` + content.slice(insertPoint);
+    }
+    writeFileSync(notePath, content);
+  } catch {
+    // Non-fatal — daily note logging should never break cron/heartbeat
+  }
+}
+
 // ── HeartbeatScheduler ────────────────────────────────────────────────
 
 export class HeartbeatScheduler {
@@ -179,12 +221,13 @@ export class HeartbeatScheduler {
         timeContext,
       );
 
+      const timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
       if (response && !HeartbeatScheduler.isSilent(response)) {
-        const timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
         await this.dispatcher.send(`**[Heartbeat — ${timeStr}]**\n\n${response}`);
+        logToDailyNote(`**Heartbeat ${timeStr}**: ${response.slice(0, 100).replace(/\n/g, ' ')}`);
       } else {
-        const timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
         logger.info(`Heartbeat silent at ${timeStr}`);
+        logToDailyNote(`**Heartbeat ${timeStr}**: all clear`);
       }
     } catch (err) {
       logger.error({ err }, 'Heartbeat tick failed');
@@ -695,6 +738,12 @@ export class CronScheduler {
           }
 
           this.runLog.append(entry);
+
+          // Log to daily note so end-of-day summary has data to work with
+          const durationSec = Math.round(entry.durationMs / 1000);
+          const preview = response ? response.slice(0, 100).replace(/\n/g, ' ') : 'no output';
+          logToDailyNote(`**${job.name}** (${durationSec}s): ${preview}`);
+
           return; // done
         } catch (err) {
           const finishedAt = new Date();
