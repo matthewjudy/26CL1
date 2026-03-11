@@ -227,7 +227,7 @@ export class HeartbeatScheduler {
         logToDailyNote(`**Heartbeat ${timeStr}**: ${response.slice(0, 100).replace(/\n/g, ' ')}`);
       } else {
         logger.info(`Heartbeat silent at ${timeStr}`);
-        logToDailyNote(`**Heartbeat ${timeStr}**: all clear`);
+        // Don't log "all clear" heartbeats to daily notes — they create noise
       }
     } catch (err) {
       logger.error({ err }, 'Heartbeat tick failed');

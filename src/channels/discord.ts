@@ -3,7 +3,7 @@
  *
  * DM-only personal assistant bot using discord.js v14.
  * Features: streaming responses, message chunking, model switching,
- * heartbeat/cron commands, and autonomous notifications.
+ * heartbeat/cron commands, slash commands, and autonomous notifications.
  */
 
 import {
@@ -12,6 +12,10 @@ import {
   GatewayIntentBits,
   Partials,
   Message,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  type ChatInputCommandInteraction,
   type MessageReaction,
   type PartialMessageReaction,
   type User,
@@ -42,6 +46,39 @@ const STREAM_EDIT_INTERVAL = 800; // ms — tuned for token-level streaming
 const THINKING_INDICATOR = '\u2728 *thinking...*';
 const DISCORD_MSG_LIMIT = 2000;
 const BOT_MESSAGE_TRACKING_LIMIT = 100;
+
+// ── Slash command definitions ──────────────────────────────────────────
+
+const slashCommands = [
+  new SlashCommandBuilder().setName('plan').setDescription('Break a task into parallel steps')
+    .addStringOption(o => o.setName('task').setDescription('What to plan').setRequired(true)),
+  new SlashCommandBuilder().setName('deep').setDescription('Extended mode (100 turns) for heavy tasks')
+    .addStringOption(o => o.setName('message').setDescription('Your message').setRequired(true)),
+  new SlashCommandBuilder().setName('quick').setDescription('Quick reply using Haiku model')
+    .addStringOption(o => o.setName('message').setDescription('Your message').setRequired(true)),
+  new SlashCommandBuilder().setName('opus').setDescription('Deep reply using Opus model')
+    .addStringOption(o => o.setName('message').setDescription('Your message').setRequired(true)),
+  new SlashCommandBuilder().setName('model').setDescription('Switch default model')
+    .addStringOption(o => o.setName('tier').setDescription('Model tier').setRequired(true)
+      .addChoices(
+        { name: 'Haiku', value: 'haiku' },
+        { name: 'Sonnet', value: 'sonnet' },
+        { name: 'Opus', value: 'opus' },
+      )),
+  new SlashCommandBuilder().setName('cron').setDescription('Manage scheduled tasks')
+    .addStringOption(o => o.setName('action').setDescription('Action').setRequired(true)
+      .addChoices(
+        { name: 'List jobs', value: 'list' },
+        { name: 'Run a job', value: 'run' },
+        { name: 'Enable a job', value: 'enable' },
+        { name: 'Disable a job', value: 'disable' },
+      ))
+    .addStringOption(o => o.setName('job').setDescription('Job name (for run/enable/disable)')),
+  new SlashCommandBuilder().setName('heartbeat').setDescription('Run heartbeat check manually'),
+  new SlashCommandBuilder().setName('tools').setDescription('List available MCP tools'),
+  new SlashCommandBuilder().setName('clear').setDescription('Reset conversation session'),
+  new SlashCommandBuilder().setName('help').setDescription('Show all available commands'),
+];
 
 // ── Bot message tracking for feedback reactions ─────────────────────────
 
@@ -285,6 +322,56 @@ function formatToolsList(): string {
   return lines.join('\n');
 }
 
+// ── Shared command helpers ────────────────────────────────────────────
+
+function handleHelp(): string {
+  return [
+    '**Commands** \u2014 also available as /slash commands',
+    '`!plan <task>` \u2014 Break a task into parallel steps',
+    '`!deep <msg>` \u2014 Extended mode (100 turns)',
+    '`!q <msg>` \u2014 Quick reply (Haiku) \u00b7 `!d <msg>` \u2014 Deep reply (Opus)',
+    '`!model [haiku|sonnet|opus]` \u2014 Switch default model',
+    '`!cron list|run|enable|disable` \u2014 Manage scheduled tasks',
+    '`!heartbeat` \u2014 Run heartbeat \u00b7 `!tools` \u2014 List tools \u00b7 `!clear` \u2014 Reset',
+    '`!help` \u2014 This message',
+  ].join('\n');
+}
+
+function handleModelSwitch(
+  gateway: Gateway,
+  sessionKey: string,
+  tier: string | undefined,
+): string {
+  const t = tier?.toLowerCase() as keyof typeof MODELS | undefined;
+  if (t && t in MODELS) {
+    gateway.setSessionModel(sessionKey, MODELS[t]);
+    return `Model switched to **${t}** (\`${MODELS[t]}\`).`;
+  }
+  const current = gateway.getSessionModel(sessionKey) ?? 'default';
+  return `Current model: \`${current}\`\nOptions: \`!model haiku\`, \`!model sonnet\`, \`!model opus\``;
+}
+
+function handleCronCommand(
+  cronScheduler: CronScheduler,
+  action: string | undefined,
+  jobName: string,
+): string | null {
+  // Returns a string for immediate replies, or null when async handling is needed (run)
+  if (action === 'list' || !action) {
+    return cronScheduler.listJobs();
+  }
+  if (action === 'disable' && jobName) {
+    return cronScheduler.disableJob(jobName);
+  }
+  if (action === 'enable' && jobName) {
+    return cronScheduler.enableJob(jobName);
+  }
+  if (!jobName) {
+    return 'Usage: `!cron list|run|disable|enable <job>`';
+  }
+  return null; // caller handles 'run' async
+}
+
 // ── Entry point ───────────────────────────────────────────────────────
 
 export async function startDiscord(
@@ -307,8 +394,18 @@ export async function startDiscord(
     partials: [Partials.Channel, Partials.Reaction, Partials.Message],
   });
 
-  client.once(Events.ClientReady, (readyClient) => {
+  client.once(Events.ClientReady, async (readyClient) => {
     logger.info(`${ASSISTANT_NAME} online as ${readyClient.user.tag}`);
+
+    // Register slash commands (global — takes up to 1hr to propagate, but works in DMs)
+    try {
+      const rest = new REST().setToken(DISCORD_TOKEN!);
+      await rest.put(Routes.applicationCommands(readyClient.user.id),
+        { body: slashCommands.map(c => c.toJSON()) });
+      logger.info(`Registered ${slashCommands.length} slash commands`);
+    } catch (err) {
+      logger.error({ err }, 'Failed to register slash commands');
+    }
   });
 
   client.on(Events.MessageCreate, async (message: Message) => {
@@ -353,18 +450,14 @@ export async function startDiscord(
       return;
     }
 
+    if (isDm && (text === '!help' || text === '!h')) {
+      await message.reply(handleHelp());
+      return;
+    }
+
     if (isDm && text.startsWith('!model')) {
       const parts = text.split(/\s+/);
-      const tier = parts[1]?.toLowerCase() as keyof typeof MODELS | undefined;
-      if (tier && tier in MODELS) {
-        gateway.setSessionModel(sessionKey, MODELS[tier]);
-        await message.reply(`Model switched to **${tier}** (\`${MODELS[tier]}\`).`);
-      } else {
-        const current = gateway.getSessionModel(sessionKey) ?? 'default';
-        await message.reply(
-          `Current model: \`${current}\`\nOptions: \`!model haiku\`, \`!model sonnet\`, \`!model opus\``,
-        );
-      }
+      await message.reply(handleModelSwitch(gateway, sessionKey, parts[1]));
       return;
     }
 
@@ -388,37 +481,34 @@ export async function startDiscord(
       const subCmd = parts[1]?.toLowerCase();
       const jobName = parts.slice(2).join(' ');
 
-      if (subCmd === 'list' || !subCmd) {
-        await message.reply(cronScheduler.listJobs());
-      } else if (subCmd === 'run' && jobName) {
-        const job = cronScheduler.getJob(jobName);
-        if (!job) {
-          await message.reply(`Cron job '${jobName}' not found. Use \`!cron list\` to see available jobs.`);
-        } else if (cronScheduler.isJobRunning(jobName)) {
-          await message.reply(`Cron job '${jobName}' is already running.`);
-        } else if (job.mode === 'unleashed') {
-          // Unleashed tasks run in background — don't block the channel
-          await message.reply(`Unleashed task "${jobName}" started in background (max ${job.maxHours ?? 6}h). Check the dashboard for progress.`);
-          cronScheduler.runManual(jobName).then((result) => {
-            message.reply(`**[Unleashed: ${jobName} — done]**\n\n${result.slice(0, 1800)}`).catch(() => {});
-            gateway.injectContext(sessionKey, `!cron run ${jobName}`, result);
-          }).catch((err) => {
-            message.reply(`**[Unleashed: ${jobName} — error]**\n\n${err}`).catch(() => {});
-          });
-        } else {
-          const streamer = new DiscordStreamingMessage(message.channel);
-          await streamer.start();
-          const response = await cronScheduler.runManual(jobName);
-          await streamer.finalize(response);
-          // Inject into DM session so follow-up conversation has context
-          gateway.injectContext(sessionKey, `!cron run ${jobName}`, response);
-        }
-      } else if (subCmd === 'disable' && jobName) {
-        await message.reply(cronScheduler.disableJob(jobName));
-      } else if (subCmd === 'enable' && jobName) {
-        await message.reply(cronScheduler.enableJob(jobName));
+      const immediateResult = handleCronCommand(cronScheduler, subCmd, jobName);
+      if (immediateResult !== null) {
+        await message.reply(immediateResult);
+        return;
+      }
+
+      // Handle 'run' — async with streaming
+      const job = cronScheduler.getJob(jobName);
+      if (!job) {
+        await message.reply(`Cron job '${jobName}' not found. Use \`!cron list\` to see available jobs.`);
+      } else if (cronScheduler.isJobRunning(jobName)) {
+        await message.reply(`Cron job '${jobName}' is already running.`);
+      } else if (job.mode === 'unleashed') {
+        // Unleashed tasks run in background — don't block the channel
+        await message.reply(`Unleashed task "${jobName}" started in background (max ${job.maxHours ?? 6}h). Check the dashboard for progress.`);
+        cronScheduler.runManual(jobName).then((result) => {
+          message.reply(`**[Unleashed: ${jobName} — done]**\n\n${result.slice(0, 1800)}`).catch(() => {});
+          gateway.injectContext(sessionKey, `!cron run ${jobName}`, result);
+        }).catch((err) => {
+          message.reply(`**[Unleashed: ${jobName} — error]**\n\n${err}`).catch(() => {});
+        });
       } else {
-        await message.reply('Usage: `!cron list|run|disable|enable <job>`');
+        const streamer = new DiscordStreamingMessage(message.channel);
+        await streamer.start();
+        const response = await cronScheduler.runManual(jobName);
+        await streamer.finalize(response);
+        // Inject into DM session so follow-up conversation has context
+        gateway.injectContext(sessionKey, `!cron run ${jobName}`, response);
       }
       return;
     }
@@ -432,50 +522,7 @@ export async function startDiscord(
         return;
       }
 
-      const streamer = new DiscordStreamingMessage(message.channel);
-      await streamer.start();
-      await streamer.update('Planning...');
-
-      let progressTimer: ReturnType<typeof setInterval> | null = null;
-      try {
-        const result = await gateway.handlePlan(
-          sessionKey,
-          taskDescription,
-          async (updates) => {
-            // Build progress display (truncate descriptions to fit Discord limit)
-            const lines = [
-              `**Plan:** ${taskDescription.slice(0, 100)}`,
-              '',
-              ...updates.map((u, i) => {
-                const num = `[${i + 1}/${updates.length}]`;
-                const desc = u.description.slice(0, 60);
-                switch (u.status) {
-                  case 'done': return `${num} ${desc} \u2713 (${Math.round((u.durationMs ?? 0) / 1000)}s)`;
-                  case 'running': return `${num} ${desc} \u23f3 running...`;
-                  case 'failed': return `${num} ${desc} \u2717 failed`;
-                  default: return `${num} ${desc} \u25cb waiting`;
-                }
-              }),
-            ];
-            await streamer.update(lines.join('\n').slice(0, 1800));
-
-            // Start progress timer on first running step
-            if (!progressTimer && updates.some(u => u.status === 'running')) {
-              progressTimer = setInterval(async () => {
-                // Re-render with live elapsed times (static snapshot — no orchestrator ref needed)
-                await streamer.update(lines.join('\n').slice(0, 1800));
-              }, 5000);
-            }
-          },
-        );
-
-        await streamer.finalize(result);
-      } catch (err) {
-        logger.error({ err }, 'Plan execution failed');
-        await streamer.finalize(`Plan failed: ${err}`);
-      } finally {
-        if (progressTimer) clearInterval(progressTimer);
-      }
+      await handlePlanCommand(gateway, sessionKey, taskDescription, message.channel);
       return;
     }
 
@@ -557,9 +604,152 @@ export async function startDiscord(
     }
   });
 
-  // ── Button interaction handler ────────────────────────────────────
+  // ── Slash command + button interaction handler ──────────────────────
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+    // ── Slash commands ───────────────────────────────────────────────
+    if (interaction.isChatInputCommand()) {
+      const cmd = interaction as ChatInputCommandInteraction;
+
+      // Owner-only guard
+      if (DISCORD_OWNER_ID && cmd.user.id !== DISCORD_OWNER_ID) {
+        await cmd.reply({ content: 'Owner only.', ephemeral: true });
+        return;
+      }
+
+      // Cache DM channel for notifications
+      if (cmd.channel?.isDMBased()) cachedDmChannel = cmd.channel as any;
+
+      const sessionKey = cmd.channel?.isDMBased()
+        ? `discord:user:${cmd.user.id}`
+        : `discord:channel:${cmd.channelId}:${cmd.user.id}`;
+
+      const name = cmd.commandName;
+
+      // Simple immediate-response commands
+      if (name === 'help') {
+        await cmd.reply(handleHelp());
+        return;
+      }
+      if (name === 'clear') {
+        gateway.clearSession(sessionKey);
+        await cmd.reply('Session cleared.');
+        return;
+      }
+      if (name === 'tools') {
+        await cmd.reply(formatToolsList());
+        return;
+      }
+      if (name === 'model') {
+        const tier = cmd.options.getString('tier', true);
+        await cmd.reply(handleModelSwitch(gateway, sessionKey, tier));
+        return;
+      }
+
+      // Cron command
+      if (name === 'cron') {
+        const action = cmd.options.getString('action', true);
+        const jobName = cmd.options.getString('job') ?? '';
+
+        const immediateResult = handleCronCommand(cronScheduler, action, jobName);
+        if (immediateResult !== null) {
+          await cmd.reply(immediateResult);
+          return;
+        }
+
+        // Handle 'run' — async with deferred reply
+        const job = cronScheduler.getJob(jobName);
+        if (!job) {
+          await cmd.reply(`Cron job '${jobName}' not found. Use \`/cron list\` to see available jobs.`);
+          return;
+        }
+        if (cronScheduler.isJobRunning(jobName)) {
+          await cmd.reply(`Cron job '${jobName}' is already running.`);
+          return;
+        }
+        if (job.mode === 'unleashed') {
+          await cmd.reply(`Unleashed task "${jobName}" started in background (max ${job.maxHours ?? 6}h). Check the dashboard for progress.`);
+          cronScheduler.runManual(jobName).then((result) => {
+            cmd.followUp(`**[Unleashed: ${jobName} — done]**\n\n${result.slice(0, 1800)}`).catch(() => {});
+            gateway.injectContext(sessionKey, `!cron run ${jobName}`, result);
+          }).catch((err) => {
+            cmd.followUp(`**[Unleashed: ${jobName} — error]**\n\n${err}`).catch(() => {});
+          });
+          return;
+        }
+
+        await cmd.deferReply();
+        const response = await cronScheduler.runManual(jobName);
+        const chunks = chunkText(response || `*(cron job '${jobName}' completed — no output)*`, 1900);
+        await cmd.editReply(chunks[0]);
+        for (let i = 1; i < chunks.length; i++) {
+          await cmd.followUp(chunks[i]);
+        }
+        gateway.injectContext(sessionKey, `!cron run ${jobName}`, response);
+        return;
+      }
+
+      // Heartbeat command
+      if (name === 'heartbeat') {
+        await cmd.deferReply();
+        const response = await heartbeat.runManual();
+        const chunks = chunkText(response, 1900);
+        await cmd.editReply(chunks[0]);
+        for (let i = 1; i < chunks.length; i++) {
+          await cmd.followUp(chunks[i]);
+        }
+        gateway.injectContext(sessionKey, '!heartbeat', response);
+        return;
+      }
+
+      // Plan command
+      if (name === 'plan') {
+        const task = cmd.options.getString('task', true);
+        await cmd.deferReply();
+        try {
+          const result = await gateway.handlePlan(sessionKey, task, async () => {});
+          const chunks = chunkText(result, 1900);
+          await cmd.editReply(chunks[0]);
+          for (let i = 1; i < chunks.length; i++) {
+            await cmd.followUp(chunks[i]);
+          }
+        } catch (err) {
+          logger.error({ err }, 'Plan execution failed (slash)');
+          await cmd.editReply(`Plan failed: ${err}`);
+        }
+        return;
+      }
+
+      // Chat commands: /deep, /quick, /opus — route through gateway
+      if (name === 'deep' || name === 'quick' || name === 'opus') {
+        const msg = cmd.options.getString('message', true);
+        await cmd.deferReply();
+        const oneOffModel = name === 'quick' ? MODELS.haiku : name === 'opus' ? MODELS.opus : undefined;
+        const oneOffMaxTurns = name === 'deep' ? 100 : undefined;
+        try {
+          const response = await gateway.handleMessage(
+            sessionKey,
+            msg,
+            async () => {},
+            oneOffModel,
+            oneOffMaxTurns,
+          );
+          const chunks = chunkText(response || '*(no response)*', 1900);
+          await cmd.editReply(chunks[0]);
+          for (let i = 1; i < chunks.length; i++) {
+            await cmd.followUp(chunks[i]);
+          }
+        } catch (err) {
+          logger.error({ err }, `/${name} command failed`);
+          await cmd.editReply(`Something went wrong: ${err}`);
+        }
+        return;
+      }
+
+      return;
+    }
+
+    // ── Button interactions ──────────────────────────────────────────
     if (!interaction.isButton()) return;
 
     const button = interaction as ButtonInteraction;
@@ -731,4 +921,58 @@ export async function startDiscord(
 
   logger.info('Starting Discord bot...');
   await client.login(DISCORD_TOKEN);
+}
+
+// ── Plan orchestration helper ─────────────────────────────────────────
+
+async function handlePlanCommand(
+  gateway: Gateway,
+  sessionKey: string,
+  taskDescription: string,
+  channel: Message['channel'],
+): Promise<void> {
+  const streamer = new DiscordStreamingMessage(channel);
+  await streamer.start();
+  await streamer.update('Planning...');
+
+  let progressTimer: ReturnType<typeof setInterval> | null = null;
+  try {
+    const result = await gateway.handlePlan(
+      sessionKey,
+      taskDescription,
+      async (updates) => {
+        // Build progress display (truncate descriptions to fit Discord limit)
+        const lines = [
+          `**Plan:** ${taskDescription.slice(0, 100)}`,
+          '',
+          ...updates.map((u, i) => {
+            const num = `[${i + 1}/${updates.length}]`;
+            const desc = u.description.slice(0, 60);
+            switch (u.status) {
+              case 'done': return `${num} ${desc} \u2713 (${Math.round((u.durationMs ?? 0) / 1000)}s)`;
+              case 'running': return `${num} ${desc} \u23f3 running...`;
+              case 'failed': return `${num} ${desc} \u2717 failed`;
+              default: return `${num} ${desc} \u25cb waiting`;
+            }
+          }),
+        ];
+        await streamer.update(lines.join('\n').slice(0, 1800));
+
+        // Start progress timer on first running step
+        if (!progressTimer && updates.some(u => u.status === 'running')) {
+          progressTimer = setInterval(async () => {
+            // Re-render with live elapsed times (static snapshot — no orchestrator ref needed)
+            await streamer.update(lines.join('\n').slice(0, 1800));
+          }, 5000);
+        }
+      },
+    );
+
+    await streamer.finalize(result);
+  } catch (err) {
+    logger.error({ err }, 'Plan execution failed');
+    await streamer.finalize(`Plan failed: ${err}`);
+  } finally {
+    if (progressTimer) clearInterval(progressTimer);
+  }
 }

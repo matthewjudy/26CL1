@@ -1564,8 +1564,16 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       `[Scheduled task: ${jobName}]\n\n` +
       `${jobPrompt}\n\n` +
       `## How to respond\n` +
-      `You're sending this directly to ${ownerName} as a DM. Write like you're texting them — casual, concise, no headers or section dividers unless the info genuinely needs structure. Skip narrating your process. If there's nothing worth reporting, output ONLY: __NOTHING__\n` +
-      `After finishing your work, you MUST write a final text response with your findings — only that final message gets delivered.`;
+      `You're sending this directly to ${ownerName} as a DM. ` +
+      `Write like you're texting a friend — casual, warm, concise. ` +
+      `Use their name naturally. No headers, bullet lists, or formal structure unless the content genuinely needs it. ` +
+      `Skip narrating your process ("I checked X, then Y..."). Just share the interesting stuff.\n\n` +
+      `If there's genuinely nothing worth mentioning (no new data, no changes, no alerts), ` +
+      `output ONLY: __NOTHING__\n` +
+      `But lean toward sharing something — a one-liner is better than silence. ` +
+      `"Quiet morning, inbox is clean" beats __NOTHING__ if you did check things.\n\n` +
+      `After finishing your work, you MUST write a final text response with your findings — ` +
+      `only that final message gets delivered.`;
 
     try {
       // Collect execution trace
