@@ -382,6 +382,12 @@ function startTimerChecker(dispatcher: import('./gateway/notifications.js').Noti
 // ── Async main ───────────────────────────────────────────────────────
 
 async function asyncMain(): Promise<void> {
+  // ── Validate secrets (fail closed on misconfiguration) ──────────
+  const secretWarnings = config.validateSecrets();
+  for (const warning of secretWarnings) {
+    logger.warn(warning);
+  }
+
   // ── Initialize layers ────────────────────────────────────────────
 
   // Agent layer

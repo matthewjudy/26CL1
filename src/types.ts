@@ -42,6 +42,28 @@ export interface SessionData {
   pendingContext?: Array<{ user: string; assistant: string }>;
 }
 
+// ── Session Provenance ──────────────────────────────────────────────
+
+/** Origin context for a session — who/what created it and with what authority. */
+export interface SessionProvenance {
+  /** Channel that originated this session (e.g., 'discord', 'slack', 'cron', 'heartbeat', 'dashboard'). */
+  channel: string;
+  /** User ID within the channel (e.g., Discord user ID), or 'system' for autonomous. */
+  userId: string;
+  /** Interaction source determines trust level. */
+  source: 'owner-dm' | 'owner-channel' | 'autonomous';
+  /** Parent session key if spawned by another session (e.g., !plan sub-tasks). */
+  spawnedBy?: string;
+  /** Depth in the spawn hierarchy: 0 = top-level, 1 = sub-task, etc. */
+  spawnDepth: number;
+  /** Role assigned at spawn time — immutable once set. */
+  role: 'primary' | 'orchestrator' | 'worker';
+  /** What this session can control: 'children' = own spawns only, 'none' = no control. */
+  controlScope: 'children' | 'none';
+  /** ISO timestamp of session creation. */
+  createdAt: string;
+}
+
 // ── Channel Messages ─────────────────────────────────────────────────
 
 export interface ChannelMessage {

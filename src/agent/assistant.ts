@@ -124,15 +124,29 @@ function inferInteractionSource(
   return 'autonomous';
 }
 
-const SAFE_ENV: Record<string, string> = {
-  PATH: process.env.PATH ?? '',
-  HOME: process.env.HOME ?? '',
-  LANG: process.env.LANG ?? 'en_US.UTF-8',
-  TERM: process.env.TERM ?? 'xterm-256color',
-  USER: process.env.USER ?? '',
-  SHELL: process.env.SHELL ?? '',
-  CLEMENTINE_HOME: BASE_DIR,
-};
+/**
+ * Build a sanitized env for SDK subprocesses.
+ * Order matters: sanitize first, then add trusted markers.
+ * This prevents malicious env vars from overriding trusted flags.
+ */
+function buildSafeEnv(): Record<string, string> {
+  // Step 1: Start with only known-safe system vars
+  const sanitized: Record<string, string> = {
+    PATH: process.env.PATH ?? '',
+    HOME: process.env.HOME ?? '',
+    LANG: process.env.LANG ?? 'en_US.UTF-8',
+    TERM: process.env.TERM ?? 'xterm-256color',
+    USER: process.env.USER ?? '',
+    SHELL: process.env.SHELL ?? '',
+  };
+
+  // Step 2: Add trusted markers AFTER sanitization
+  sanitized.CLEMENTINE_HOME = BASE_DIR;
+
+  return sanitized;
+}
+
+const SAFE_ENV = buildSafeEnv();
 
 const AUTO_MEMORY_PROMPT = `You are a memory extraction agent. Your ONLY job is to read the exchange below and save anything worth remembering to the Obsidian vault.
 

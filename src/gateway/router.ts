@@ -7,7 +7,7 @@
 
 import pino from 'pino';
 import type { PersonalAssistant } from '../agent/assistant.js';
-import type { OnTextCallback, PlanProgressUpdate } from '../types.js';
+import type { OnTextCallback, PlanProgressUpdate, SessionProvenance } from '../types.js';
 import { scanner } from '../security/scanner.js';
 import { lanes } from './lanes.js';
 
@@ -21,10 +21,156 @@ export class Gateway {
   private sessionModels = new Map<string, string>();
   private sessionProfiles = new Map<string, string>();
   private sessionLocks = new Map<string, Promise<void>>();
+  private sessionProvenance = new Map<string, SessionProvenance>();
   private auditLog: string[] = [];
 
   constructor(assistant: PersonalAssistant) {
     this.assistant = assistant;
+  }
+
+  // ── Session provenance ────────────────────────────────────────────────
+
+  /**
+   * Register provenance for a session. Write-once: once set, spawnedBy,
+   * spawnDepth, role, and controlScope are immutable (prevents re-parenting
+   * or privilege escalation).
+   */
+  setProvenance(sessionKey: string, provenance: SessionProvenance): void {
+    const existing = this.sessionProvenance.get(sessionKey);
+    if (existing) {
+      // Lineage fields are immutable — only allow updating mutable fields
+      if (existing.spawnedBy !== provenance.spawnedBy ||
+          existing.spawnDepth !== provenance.spawnDepth ||
+          existing.role !== provenance.role ||
+          existing.controlScope !== provenance.controlScope) {
+        logger.warn(
+          { sessionKey, existing, attempted: provenance },
+          'Attempted to modify immutable provenance fields — denied',
+        );
+        return;
+      }
+    }
+    this.sessionProvenance.set(sessionKey, provenance);
+  }
+
+  getProvenance(sessionKey: string): SessionProvenance | undefined {
+    return this.sessionProvenance.get(sessionKey);
+  }
+
+  /**
+   * Create provenance from a session key using naming conventions.
+   * Called automatically on first message if no provenance exists.
+   */
+  private ensureProvenance(sessionKey: string): SessionProvenance {
+    const existing = this.sessionProvenance.get(sessionKey);
+    if (existing) return existing;
+
+    const provenance = Gateway.inferProvenance(sessionKey);
+    this.sessionProvenance.set(sessionKey, provenance);
+    return provenance;
+  }
+
+  /**
+   * Verify that a session is allowed to control (kill/steer) a target session.
+   * A session can only control sessions it directly spawned.
+   */
+  canControl(controllerKey: string, targetKey: string): boolean {
+    const targetProv = this.sessionProvenance.get(targetKey);
+    if (!targetProv) return false; // can't control unknown sessions
+
+    const controllerProv = this.sessionProvenance.get(controllerKey);
+    if (!controllerProv) return false;
+
+    // Workers (controlScope: 'none') can never control anything
+    if (controllerProv.controlScope === 'none') return false;
+
+    // Must be the direct parent
+    return targetProv.spawnedBy === controllerKey;
+  }
+
+  /** Derive provenance from session key naming conventions. */
+  static inferProvenance(sessionKey: string): SessionProvenance {
+    const now = new Date().toISOString();
+
+    if (sessionKey.startsWith('discord:user:')) {
+      return {
+        channel: 'discord', userId: sessionKey.split(':')[2],
+        source: 'owner-dm', spawnDepth: 0, role: 'primary',
+        controlScope: 'children', createdAt: now,
+      };
+    }
+    if (sessionKey.startsWith('discord:channel:')) {
+      const parts = sessionKey.split(':');
+      return {
+        channel: 'discord', userId: parts[3],
+        source: 'owner-channel', spawnDepth: 0, role: 'primary',
+        controlScope: 'children', createdAt: now,
+      };
+    }
+    if (sessionKey.startsWith('slack:')) {
+      return {
+        channel: 'slack', userId: sessionKey.split(':')[2] ?? 'unknown',
+        source: sessionKey.includes(':dm:') ? 'owner-dm' : 'owner-channel',
+        spawnDepth: 0, role: 'primary', controlScope: 'children', createdAt: now,
+      };
+    }
+    if (sessionKey.startsWith('telegram:')) {
+      return {
+        channel: 'telegram', userId: sessionKey.split(':')[1],
+        source: 'owner-dm', spawnDepth: 0, role: 'primary',
+        controlScope: 'children', createdAt: now,
+      };
+    }
+    if (sessionKey.startsWith('dashboard:')) {
+      return {
+        channel: 'dashboard', userId: 'owner',
+        source: 'owner-dm', spawnDepth: 0, role: 'primary',
+        controlScope: 'children', createdAt: now,
+      };
+    }
+    // Cron, heartbeat, and other autonomous sessions
+    return {
+      channel: 'system', userId: 'system',
+      source: 'autonomous', spawnDepth: 0, role: 'primary',
+      controlScope: 'children', createdAt: now,
+    };
+  }
+
+  /**
+   * Create provenance for a spawned sub-session (e.g., !plan worker).
+   * Enforces depth limits and inherits source from parent.
+   */
+  spawnChildProvenance(
+    parentKey: string,
+    childKey: string,
+    role: 'orchestrator' | 'worker' = 'worker',
+    maxDepth = 3,
+  ): SessionProvenance | null {
+    const parent = this.ensureProvenance(parentKey);
+    const childDepth = parent.spawnDepth + 1;
+
+    if (childDepth > maxDepth) {
+      logger.warn(
+        { parentKey, childKey, depth: childDepth, maxDepth },
+        'Spawn depth exceeded — denied',
+      );
+      return null;
+    }
+
+    const child: SessionProvenance = {
+      channel: parent.channel,
+      userId: parent.userId,
+      source: parent.source,
+      spawnedBy: parentKey,
+      spawnDepth: childDepth,
+      role,
+      // Workers can't spawn or control anything; orchestrators can control children
+      controlScope: role === 'worker' ? 'none' : 'children',
+      createdAt: new Date().toISOString(),
+    };
+
+    this.sessionProvenance.set(childKey, child);
+    return child;
   }
 
   setUnleashedCompleteCallback(cb: (jobName: string, result: string) => void): void {
@@ -100,6 +246,9 @@ export class Gateway {
 
       try {
         logger.info(`Message from ${sessionKey}: ${text.slice(0, 100)}...`);
+
+        // ── Register provenance on first interaction ────────────────
+        this.ensureProvenance(sessionKey);
 
         // ── Pre-flight injection scan ───────────────────────────────
         // Re-baseline integrity before scanning — auto-memory, crons, and heartbeats
@@ -278,6 +427,9 @@ export class Gateway {
           );
         }
 
+        // Register provenance for the orchestrator session
+        this.ensureProvenance(sessionKey);
+
         const { PlanOrchestrator } = await import('../agent/orchestrator.js');
         const orchestrator = new PlanOrchestrator(this.assistant);
         const result = await orchestrator.run(taskDescription, onProgress);
@@ -383,5 +535,11 @@ export class Gateway {
     this.assistant.clearSession(sessionKey);
     this.sessionProfiles.delete(sessionKey);
     this.sessionLocks.delete(sessionKey);
+    this.sessionProvenance.delete(sessionKey);
+  }
+
+  /** Get all active session provenance entries (for dashboard/monitoring). */
+  getAllProvenance(): Map<string, SessionProvenance> {
+    return new Map(this.sessionProvenance);
   }
 }

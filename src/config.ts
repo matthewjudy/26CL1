@@ -201,6 +201,62 @@ export const CHANNEL_WHATSAPP = Boolean(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN 
 export const CHANNEL_WEBHOOK = WEBHOOK_ENABLED && Boolean(WEBHOOK_SECRET);
 export const CHANNEL_OUTLOOK = Boolean(MS_TENANT_ID && MS_CLIENT_ID && MS_CLIENT_SECRET && MS_USER_EMAIL);
 
+// ── Fail-closed secret validation ───────────────────────────────────
+//
+// If a secret is explicitly configured in .env but resolves to empty,
+// that's a misconfiguration — fail loud instead of silently degrading.
+// Only checks keys that are present in .env (not absent ones).
+
+interface SecretValidation {
+  key: string;
+  channel: string;
+  requiredWith?: string[]; // other keys that must also be set
+}
+
+const SECRET_VALIDATIONS: SecretValidation[] = [
+  { key: 'DISCORD_TOKEN', channel: 'Discord' },
+  { key: 'SLACK_BOT_TOKEN', channel: 'Slack', requiredWith: ['SLACK_APP_TOKEN'] },
+  { key: 'SLACK_APP_TOKEN', channel: 'Slack', requiredWith: ['SLACK_BOT_TOKEN'] },
+  { key: 'TELEGRAM_BOT_TOKEN', channel: 'Telegram' },
+  { key: 'TWILIO_ACCOUNT_SID', channel: 'WhatsApp', requiredWith: ['TWILIO_AUTH_TOKEN', 'WHATSAPP_OWNER_PHONE'] },
+  { key: 'ANTHROPIC_API_KEY', channel: 'API' },
+];
+
+/**
+ * Validate that explicitly configured secrets actually resolved.
+ * Call at startup — throws on misconfiguration.
+ */
+export function validateSecrets(): string[] {
+  const warnings: string[] = [];
+  for (const v of SECRET_VALIDATIONS) {
+    // Only check if the key is explicitly present in .env (not process.env fallback)
+    const explicitlyConfigured = v.key in env;
+    if (!explicitlyConfigured) continue;
+
+    const value = getSecret(v.key);
+    if (!value) {
+      warnings.push(
+        `${v.channel}: ${v.key} is configured in .env but resolved to empty. ` +
+        `Check your .env file or Keychain entry.`,
+      );
+    }
+
+    // Check companion keys
+    if (value && v.requiredWith) {
+      for (const companion of v.requiredWith) {
+        const companionValue = env[companion] ?? '';
+        // Only warn if the companion is also in .env but empty
+        if (companion in env && !companionValue) {
+          warnings.push(
+            `${v.channel}: ${v.key} is set but companion ${companion} is empty.`,
+          );
+        }
+      }
+    }
+  }
+  return warnings;
+}
+
 // ── Memory / Search ──────────────────────────────────────────────────
 
 export const MEMORY_DB_PATH = path.join(VAULT_DIR, '.memory.db');
