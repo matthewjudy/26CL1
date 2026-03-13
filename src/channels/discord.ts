@@ -743,6 +743,7 @@ export async function startDiscord(
       if (name === 'clear') {
         gateway.clearSession(sessionKey);
         await cmd.reply('Session cleared.');
+        updatePresence(sessionKey);
         return;
       }
       if (name === 'tools') {
@@ -752,12 +753,14 @@ export async function startDiscord(
       if (name === 'model') {
         const tier = cmd.options.getString('tier', true);
         await cmd.reply(handleModelSwitch(gateway, sessionKey, tier));
+        updatePresence(sessionKey);
         return;
       }
       if (name === 'project') {
         const action = cmd.options.getString('action', true);
         const projName = cmd.options.getString('name') ?? undefined;
         await cmd.reply(handleProjectCommand(gateway, sessionKey, action, projName));
+        updatePresence(sessionKey);
         return;
       }
 
