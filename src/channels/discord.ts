@@ -474,7 +474,7 @@ export async function startDiscord(
       `${info.memoryCount}m`,
     ];
     client.user.setPresence({
-      activities: [{ name: parts.join(' · '), type: ActivityType.Custom, state: parts.join(' · ') }],
+      activities: [{ name: parts.join(' · '), type: ActivityType.Watching }],
       status: 'online',
     });
   }
