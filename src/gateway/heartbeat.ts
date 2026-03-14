@@ -28,6 +28,7 @@ import {
   VAULT_DIR,
   HEARTBEAT_FILE,
   CRON_FILE,
+  WORKFLOWS_DIR,
   TASKS_FILE,
   INBOX_DIR,
   DAILY_NOTES_DIR,
@@ -37,10 +38,11 @@ import {
   BASE_DIR,
   DISCORD_OWNER_ID,
 } from '../config.js';
-import type { CronJobDefinition, CronRunEntry, HeartbeatState } from '../types.js';
+import type { CronJobDefinition, CronRunEntry, HeartbeatState, WorkflowDefinition } from '../types.js';
 import type { NotificationDispatcher } from './notifications.js';
 import type { Gateway } from './router.js';
 import { scanner } from '../security/scanner.js';
+import { parseAllWorkflows as parseAllWorkflowsSync } from '../agent/workflow-runner.js';
 
 const logger = pino({ name: 'clementine.heartbeat' });
 
@@ -612,6 +614,12 @@ export class CronScheduler {
   private watching = false;
   readonly runLog: CronRunLog;
 
+  // Workflow support
+  private workflowDefs: WorkflowDefinition[] = [];
+  private workflowTasks = new Map<string, cron.ScheduledTask>();
+  private runningWorkflows = new Set<string>();
+  private watchingWorkflows = false;
+
   constructor(gateway: Gateway, dispatcher: NotificationDispatcher) {
     this.gateway = gateway;
     this.dispatcher = dispatcher;
@@ -620,7 +628,9 @@ export class CronScheduler {
 
   start(): void {
     this.reloadJobs();
+    this.reloadWorkflows();
     this.watchCronFile();
+    this.watchWorkflowDir();
 
     // Wire up push notifications for unleashed task completions
     this.gateway.setUnleashedCompleteCallback((jobName, result) => {
@@ -638,7 +648,13 @@ export class CronScheduler {
       logger.debug(`Stopped cron task: ${name}`);
     }
     this.scheduledTasks.clear();
+    for (const [name, task] of this.workflowTasks) {
+      task.stop();
+      logger.debug(`Stopped workflow task: ${name}`);
+    }
+    this.workflowTasks.clear();
     this.unwatchCronFile();
+    this.unwatchWorkflowDir();
     logger.info('Cron scheduler stopped');
   }
 
@@ -950,6 +966,10 @@ export class CronScheduler {
     return lines.join('\n');
   }
 
+  getJobNames(): string[] {
+    return this.jobs.map((j) => j.name);
+  }
+
   getJob(jobName: string): CronJobDefinition | undefined {
     return this.jobs.find((j) => j.name === jobName);
   }
@@ -975,5 +995,146 @@ export class CronScheduler {
     this.disabledJobs.delete(jobName);
     this.reloadJobs();
     return `Enabled cron job: ${jobName}`;
+  }
+
+  // ── Workflow support ──────────────────────────────────────────────
+
+  reloadWorkflows(): void {
+    // Stop existing workflow scheduled tasks
+    for (const [name, task] of this.workflowTasks) {
+      task.stop();
+      logger.debug(`Stopped workflow task: ${name}`);
+    }
+    this.workflowTasks.clear();
+
+    try {
+      this.workflowDefs = parseAllWorkflowsSync(WORKFLOWS_DIR);
+    } catch {
+      this.workflowDefs = [];
+    }
+
+    if (this.workflowDefs.length === 0) {
+      logger.debug('No workflows found');
+      return;
+    }
+
+    // Schedule workflows with cron triggers
+    for (const wf of this.workflowDefs) {
+      if (!wf.enabled || !wf.trigger.schedule) continue;
+
+      if (!cron.validate(wf.trigger.schedule)) {
+        logger.error(`Invalid cron schedule for workflow '${wf.name}': ${wf.trigger.schedule}`);
+        continue;
+      }
+
+      const task = cron.schedule(wf.trigger.schedule, () => {
+        this.runWorkflow(wf.name).catch(err => {
+          logger.error({ err, workflow: wf.name }, `Scheduled workflow '${wf.name}' failed`);
+        });
+      });
+      this.workflowTasks.set(wf.name, task);
+      logger.info(`Workflow '${wf.name}' scheduled: ${wf.trigger.schedule}`);
+    }
+
+    logger.info(`Loaded ${this.workflowDefs.length} workflow(s), ${this.workflowTasks.size} scheduled`);
+  }
+
+  private watchWorkflowDir(): void {
+    if (this.watchingWorkflows) return;
+    if (!existsSync(WORKFLOWS_DIR)) return;
+
+    watchFile(WORKFLOWS_DIR, { interval: 2000 }, () => {
+      logger.info('Workflows directory changed — reloading');
+      try {
+        this.reloadWorkflows();
+        scanner.refreshIntegrity();
+      } catch (err) {
+        logger.error({ err }, 'Failed to reload workflows');
+      }
+    });
+    this.watchingWorkflows = true;
+  }
+
+  private unwatchWorkflowDir(): void {
+    if (!this.watchingWorkflows) return;
+    try {
+      unwatchFile(WORKFLOWS_DIR);
+    } catch { /* ignore */ }
+    this.watchingWorkflows = false;
+  }
+
+  async runWorkflow(name: string, inputs?: Record<string, string>): Promise<string> {
+    const wf = this.workflowDefs.find(w => w.name === name);
+    if (!wf) {
+      return `Workflow '${name}' not found. Use \`!workflow list\` to see available workflows.`;
+    }
+
+    if (this.runningWorkflows.has(name)) {
+      return `Workflow '${name}' is already running.`;
+    }
+
+    this.runningWorkflows.add(name);
+    const startedAt = new Date();
+    try {
+      logger.info({ workflow: name, inputs }, `Running workflow: ${name}`);
+      const response = await this.gateway.handleWorkflow(wf, inputs ?? {});
+
+      if (response && response !== '*(workflow completed — no output)*') {
+        await this.dispatcher.send(`**[Workflow: ${name}]**\n\n${response.slice(0, 1500)}`);
+        // Inject into owner's DM session
+        if (DISCORD_OWNER_ID && DISCORD_OWNER_ID !== '0') {
+          this.gateway.injectContext(
+            `discord:user:${DISCORD_OWNER_ID}`,
+            `[Workflow: ${name}]`,
+            response,
+          );
+        }
+      }
+
+      const durationSec = Math.round((Date.now() - startedAt.getTime()) / 1000);
+      logToDailyNote(`**Workflow: ${name}** (${durationSec}s): ${(response || 'no output').slice(0, 100).replace(/\n/g, ' ')}`);
+
+      return response;
+    } catch (err) {
+      logger.error({ err, workflow: name }, `Workflow '${name}' failed`);
+      const errMsg = `Workflow '${name}' failed: ${String(err).slice(0, 300)}`;
+      await this.dispatcher.send(errMsg);
+      return errMsg;
+    } finally {
+      this.runningWorkflows.delete(name);
+    }
+  }
+
+  getWorkflowNames(): string[] {
+    return this.workflowDefs.map(w => w.name);
+  }
+
+  getWorkflow(name: string): WorkflowDefinition | undefined {
+    return this.workflowDefs.find(w => w.name === name);
+  }
+
+  isWorkflowRunning(name: string): boolean {
+    return this.runningWorkflows.has(name);
+  }
+
+  listWorkflows(): string {
+    if (this.workflowDefs.length === 0) {
+      this.reloadWorkflows();
+    }
+
+    if (this.workflowDefs.length === 0) {
+      return 'No workflows configured. Add workflow files to `vault/00-System/workflows/`.';
+    }
+
+    const lines = ['**Workflows:**\n'];
+    for (const wf of this.workflowDefs) {
+      const status = wf.enabled ? 'enabled' : 'disabled';
+      const schedule = wf.trigger.schedule ? ` (\`${wf.trigger.schedule}\`)` : ' (manual)';
+      const running = this.runningWorkflows.has(wf.name) ? ' [running]' : '';
+      lines.push(`- **${wf.name}**${schedule} — ${status}${running}`);
+      if (wf.description) lines.push(`  _${wf.description.slice(0, 80)}_`);
+      lines.push(`  Steps: ${wf.steps.map(s => s.id).join(' → ')}`);
+    }
+    return lines.join('\n');
   }
 }

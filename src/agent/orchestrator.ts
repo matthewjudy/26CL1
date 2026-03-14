@@ -55,7 +55,7 @@ const PLANNER_PROMPT_SUFFIX = `
  * Compute execution waves from a dependency graph via topological sort.
  * Steps with empty dependsOn = wave 0. Steps whose deps are all in wave N = wave N+1.
  */
-function computeWaves(steps: PlanStep[]): PlanStep[][] {
+export function computeWaves(steps: PlanStep[]): PlanStep[][] {
   const stepMap = new Map(steps.map(s => [s.id, s]));
   const waveOf = new Map<string, number>();
   const visiting = new Set<string>(); // shared across all roots for cycle detection
@@ -98,7 +98,7 @@ function computeWaves(steps: PlanStep[]): PlanStep[][] {
 /**
  * Run promises with a concurrency limit.
  */
-async function settledWithLimit<T>(
+export async function settledWithLimit<T>(
   tasks: (() => Promise<T>)[],
   limit: number,
 ): Promise<PromiseSettledResult<T>[]> {

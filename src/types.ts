@@ -220,6 +220,53 @@ export interface PlanProgressUpdate {
   resultPreview?: string;
 }
 
+// ── Workflow Automation ─────────────────────────────────────────────
+
+export interface WorkflowInput {
+  type: 'string' | 'number';
+  default?: string;
+  description?: string;
+}
+
+export interface WorkflowStep {
+  id: string;
+  prompt: string;
+  dependsOn: string[];
+  model?: string;
+  tier: number;
+  maxTurns: number;
+  workDir?: string;
+}
+
+export interface WorkflowDefinition {
+  name: string;
+  description: string;
+  enabled: boolean;
+  trigger: { schedule?: string; manual?: boolean };
+  inputs: Record<string, WorkflowInput>;
+  steps: WorkflowStep[];
+  synthesis?: { prompt: string };
+  sourceFile: string;
+}
+
+export interface WorkflowRunEntry {
+  workflowName: string;
+  runId: string;
+  startedAt: string;
+  finishedAt: string;
+  status: 'ok' | 'error' | 'partial';
+  durationMs: number;
+  inputs: Record<string, string>;
+  stepResults: Array<{
+    stepId: string;
+    status: 'done' | 'failed' | 'skipped';
+    durationMs: number;
+    outputPreview?: string;
+  }>;
+  outputPreview?: string;
+  error?: string;
+}
+
 // ── Utility types ────────────────────────────────────────────────────
 
 type float = number;

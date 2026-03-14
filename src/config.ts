@@ -74,6 +74,7 @@ export const AGENTS_FILE = path.join(SYSTEM_DIR, 'AGENTS.md');
 export const MEMORY_FILE = path.join(SYSTEM_DIR, 'MEMORY.md');
 export const HEARTBEAT_FILE = path.join(SYSTEM_DIR, 'HEARTBEAT.md');
 export const CRON_FILE = path.join(SYSTEM_DIR, 'CRON.md');
+export const WORKFLOWS_DIR = path.join(SYSTEM_DIR, 'workflows');
 export const TASKS_FILE = path.join(TASKS_DIR, 'TASKS.md');
 export const DAILY_TEMPLATE = path.join(TEMPLATES_DIR, '_Daily-Template.md');
 export const PEOPLE_TEMPLATE = path.join(TEMPLATES_DIR, '_People-Template.md');

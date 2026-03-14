@@ -76,7 +76,7 @@ const slashCommands = [
         { name: 'Enable a job', value: 'enable' },
         { name: 'Disable a job', value: 'disable' },
       ))
-    .addStringOption(o => o.setName('job').setDescription('Job name (for run/enable/disable)')),
+    .addStringOption(o => o.setName('job').setDescription('Job name (for run/enable/disable)').setAutocomplete(true)),
   new SlashCommandBuilder().setName('heartbeat').setDescription('Run heartbeat check manually'),
   new SlashCommandBuilder().setName('tools').setDescription('List available MCP tools'),
   new SlashCommandBuilder().setName('project').setDescription('Set active project context')
@@ -88,6 +88,14 @@ const slashCommands = [
         { name: 'Show current', value: 'status' },
       ))
     .addStringOption(o => o.setName('name').setDescription('Project name (for set)').setAutocomplete(true)),
+  new SlashCommandBuilder().setName('workflow').setDescription('Manage multi-step workflows')
+    .addStringOption(o => o.setName('action').setDescription('Action').setRequired(true)
+      .addChoices(
+        { name: 'List workflows', value: 'list' },
+        { name: 'Run a workflow', value: 'run' },
+      ))
+    .addStringOption(o => o.setName('name').setDescription('Workflow name (for run)').setAutocomplete(true))
+    .addStringOption(o => o.setName('inputs').setDescription('Input overrides (key=val key=val)')),
   new SlashCommandBuilder().setName('status').setDescription('Check unleashed task progress')
     .addStringOption(o => o.setName('job').setDescription('Job name (omit for all)')),
   new SlashCommandBuilder().setName('clear').setDescription('Reset conversation session'),
@@ -411,6 +419,7 @@ function handleHelp(): string {
     '`!model [haiku|sonnet|opus]` \u2014 Switch default model',
     '`!project <name>` \u2014 Set active project \u00b7 `!project list|clear|status`',
     '`!cron list|run|enable|disable` \u2014 Manage scheduled tasks',
+    '`!workflow list|run <name>` \u2014 Manage multi-step workflows',
     '`!status [job]` \u2014 Check unleashed task progress',
     '`!heartbeat` \u2014 Run heartbeat \u00b7 `!tools` \u2014 List tools \u00b7 `!clear` \u2014 Reset',
     '`!help` \u2014 This message',
@@ -696,6 +705,57 @@ export async function startDiscord(
       return;
     }
 
+    // ── Workflow command (DM only) ──────────────────────────────────
+
+    if (isDm && text.startsWith('!workflow')) {
+      const parts = text.split(/\s+/);
+      const subCmd = parts[1]?.toLowerCase();
+
+      if (subCmd === 'list' || !subCmd) {
+        await message.reply(cronScheduler.listWorkflows());
+        return;
+      }
+
+      if (subCmd === 'run') {
+        const rest = parts.slice(2).join(' ');
+        // Parse "name key=val key=val"
+        const tokens = rest.split(/\s+/);
+        const wfName = tokens[0];
+        if (!wfName) {
+          await message.reply('Usage: `!workflow run <name> [key=val ...]`');
+          return;
+        }
+        const wf = cronScheduler.getWorkflow(wfName);
+        if (!wf) {
+          await message.reply(`Workflow '${wfName}' not found. Use \`!workflow list\` to see available workflows.`);
+          return;
+        }
+        if (cronScheduler.isWorkflowRunning(wfName)) {
+          await message.reply(`Workflow '${wfName}' is already running.`);
+          return;
+        }
+
+        // Parse input overrides
+        const inputs: Record<string, string> = {};
+        for (const token of tokens.slice(1)) {
+          const eq = token.indexOf('=');
+          if (eq > 0) {
+            inputs[token.slice(0, eq)] = token.slice(eq + 1);
+          }
+        }
+
+        const streamer = new DiscordStreamingMessage(message.channel);
+        await streamer.start();
+        const response = await cronScheduler.runWorkflow(wfName, inputs);
+        await streamer.finalize(response);
+        gateway.injectContext(sessionKey, `!workflow run ${wfName}`, response);
+        return;
+      }
+
+      await message.reply('Usage: `!workflow list` or `!workflow run <name> [key=val ...]`');
+      return;
+    }
+
     // ── Plan orchestration (DM only) ─────────────────────────────────
 
     if (isDm && text.startsWith('!plan ')) {
@@ -802,6 +862,24 @@ export async function startDiscord(
         await interaction.respond(
           filtered.map(name => ({ name, value: name })),
         );
+      } else if (interaction.commandName === 'cron') {
+        const focused = interaction.options.getFocused().toLowerCase();
+        const jobNames = cronScheduler.getJobNames();
+        const filtered = jobNames
+          .filter(name => name.toLowerCase().includes(focused))
+          .slice(0, 25);
+        await interaction.respond(
+          filtered.map(name => ({ name, value: name })),
+        );
+      } else if (interaction.commandName === 'workflow') {
+        const focused = interaction.options.getFocused().toLowerCase();
+        const wfNames = cronScheduler.getWorkflowNames();
+        const filtered = wfNames
+          .filter(name => name.toLowerCase().includes(focused))
+          .slice(0, 25);
+        await interaction.respond(
+          filtered.map(name => ({ name, value: name })),
+        );
       }
       return;
     }
@@ -899,6 +977,55 @@ export async function startDiscord(
           await cmd.followUp(chunks[i]);
         }
         gateway.injectContext(sessionKey, `!cron run ${jobName}`, response);
+        return;
+      }
+
+      // Workflow command
+      if (name === 'workflow') {
+        const action = cmd.options.getString('action', true);
+        const wfName = cmd.options.getString('name') ?? '';
+
+        if (action === 'list') {
+          await cmd.reply(cronScheduler.listWorkflows());
+          return;
+        }
+
+        if (action === 'run') {
+          if (!wfName) {
+            await cmd.reply('Specify a workflow name.');
+            return;
+          }
+          const wf = cronScheduler.getWorkflow(wfName);
+          if (!wf) {
+            await cmd.reply(`Workflow '${wfName}' not found.`);
+            return;
+          }
+          if (cronScheduler.isWorkflowRunning(wfName)) {
+            await cmd.reply(`Workflow '${wfName}' is already running.`);
+            return;
+          }
+
+          // Parse input overrides from the inputs string
+          const inputsStr = cmd.options.getString('inputs') ?? '';
+          const inputs: Record<string, string> = {};
+          for (const token of inputsStr.split(/\s+/).filter(Boolean)) {
+            const eq = token.indexOf('=');
+            if (eq > 0) {
+              inputs[token.slice(0, eq)] = token.slice(eq + 1);
+            }
+          }
+
+          await cmd.deferReply();
+          const response = await cronScheduler.runWorkflow(wfName, inputs);
+          const chunks = chunkText(response || `*(workflow '${wfName}' completed — no output)*`, 1900);
+          await cmd.editReply(chunks[0]);
+          for (let i = 1; i < chunks.length; i++) {
+            await cmd.followUp(chunks[i]);
+          }
+          gateway.injectContext(sessionKey, `!workflow run ${wfName}`, response);
+          return;
+        }
+
         return;
       }
 

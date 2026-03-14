@@ -1205,6 +1205,94 @@ cronCmd
   .description('Remove OS-level cron scheduler')
   .action(cmdCronUninstall);
 
+// ── Workflow commands ────────────────────────────────────────────────
+
+const workflowCmd = program
+  .command('workflow')
+  .description('Manage and run multi-step workflows');
+
+workflowCmd
+  .command('list')
+  .description('List all workflows from vault/00-System/workflows/')
+  .action(async () => {
+    try {
+      const { parseAllWorkflows } = await import('../agent/workflow-runner.js');
+      const config = await import('../config.js');
+      const workflows = parseAllWorkflows(config.WORKFLOWS_DIR);
+
+      if (workflows.length === 0) {
+        console.log('No workflows found. Add .md files to vault/00-System/workflows/.');
+        return;
+      }
+
+      for (const wf of workflows) {
+        const status = wf.enabled ? 'enabled' : 'disabled';
+        const trigger = wf.trigger.schedule ? `schedule: ${wf.trigger.schedule}` : 'manual';
+        console.log(`  ${wf.name} [${status}] — ${trigger}`);
+        if (wf.description) console.log(`    ${wf.description}`);
+        console.log(`    Steps: ${wf.steps.map(s => s.id).join(' → ')}`);
+        if (Object.keys(wf.inputs).length > 0) {
+          const inputStr = Object.entries(wf.inputs)
+            .map(([k, v]) => `${k}${v.default ? `="${v.default}"` : ''}`)
+            .join(', ');
+          console.log(`    Inputs: ${inputStr}`);
+        }
+      }
+    } catch (err) {
+      console.error('Error:', err);
+      process.exit(1);
+    }
+  });
+
+workflowCmd
+  .command('run <name>')
+  .description('Run a workflow by name')
+  .option('--input <key=val...>', 'Input overrides', (val: string, prev: string[]) => {
+    prev.push(val);
+    return prev;
+  }, [] as string[])
+  .action(async (name: string, opts: { input: string[] }) => {
+    try {
+      const { parseAllWorkflows, WorkflowRunner } = await import('../agent/workflow-runner.js');
+      const config = await import('../config.js');
+      const { PersonalAssistant } = await import('../agent/assistant.js');
+
+      const workflows = parseAllWorkflows(config.WORKFLOWS_DIR);
+      const wf = workflows.find(w => w.name === name);
+      if (!wf) {
+        const available = workflows.map(w => w.name).join(', ');
+        console.error(`Workflow "${name}" not found. Available: ${available || 'none'}`);
+        process.exit(1);
+      }
+
+      // Parse inputs
+      const inputs: Record<string, string> = {};
+      for (const kv of opts.input) {
+        const eq = kv.indexOf('=');
+        if (eq > 0) inputs[kv.slice(0, eq)] = kv.slice(eq + 1);
+      }
+
+      console.log(`Running workflow: ${name} (${wf.steps.length} steps)`);
+
+      const assistant = new PersonalAssistant();
+      const runner = new WorkflowRunner(assistant);
+
+      const result = await runner.run(wf, inputs, (updates) => {
+        // Print progress
+        for (const u of updates) {
+          if (u.status === 'running') console.log(`  [running] ${u.stepId}`);
+          else if (u.status === 'done') console.log(`  [done]    ${u.stepId} (${Math.round((u.durationMs ?? 0) / 1000)}s)`);
+          else if (u.status === 'failed') console.log(`  [failed]  ${u.stepId}`);
+        }
+      });
+
+      console.log(`\nResult (${result.status}):\n${result.output}`);
+    } catch (err) {
+      console.error('Error:', err);
+      process.exit(1);
+    }
+  });
+
 // ── Heartbeat command ───────────────────────────────────────────────
 
 program

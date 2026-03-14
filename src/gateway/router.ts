@@ -8,7 +8,7 @@
 import path from 'node:path';
 import pino from 'pino';
 import { PersonalAssistant, type ProjectMeta } from '../agent/assistant.js';
-import type { OnTextCallback, PlanProgressUpdate, SessionProvenance } from '../types.js';
+import type { OnTextCallback, PlanProgressUpdate, SessionProvenance, WorkflowDefinition } from '../types.js';
 import { MODELS } from '../config.js';
 import { scanner } from '../security/scanner.js';
 import { lanes } from './lanes.js';
@@ -467,6 +467,33 @@ export class Gateway {
         return result;
       } finally {
         release();
+      }
+    } finally {
+      releaseLane();
+    }
+  }
+
+  // ── Workflow execution ─────────────────────────────────────────────
+
+  async handleWorkflow(
+    workflow: WorkflowDefinition,
+    inputs: Record<string, string> = {},
+  ): Promise<string> {
+    const releaseLane = await lanes.acquire('cron');
+    try {
+      logger.info({ workflow: workflow.name, inputs }, 'Running workflow');
+      try {
+        const { WorkflowRunner } = await import('../agent/workflow-runner.js');
+        const runner = new WorkflowRunner(this.assistant);
+        const result = await runner.run(workflow, inputs);
+
+        // Re-baseline integrity checksums after workflow (may write to vault)
+        scanner.refreshIntegrity();
+
+        return result.output || '*(workflow completed — no output)*';
+      } catch (err) {
+        logger.error({ err, workflow: workflow.name }, 'Workflow error');
+        throw err;
       }
     } finally {
       releaseLane();
