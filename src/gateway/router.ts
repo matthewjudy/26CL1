@@ -8,7 +8,7 @@
 import path from 'node:path';
 import pino from 'pino';
 import { PersonalAssistant, type ProjectMeta } from '../agent/assistant.js';
-import type { OnTextCallback, PlanProgressUpdate, SessionProvenance, WorkflowDefinition } from '../types.js';
+import type { OnTextCallback, PlanProgressUpdate, PlanStep, SessionProvenance, WorkflowDefinition } from '../types.js';
 import { MODELS } from '../config.js';
 import { scanner } from '../security/scanner.js';
 import { lanes } from './lanes.js';
@@ -421,6 +421,7 @@ export class Gateway {
     sessionKey: string,
     taskDescription: string,
     onProgress?: (updates: PlanProgressUpdate[]) => Promise<void>,
+    onApproval?: (planSummary: string, steps: PlanStep[]) => Promise<boolean>,
   ): Promise<string> {
     const releaseLane = await lanes.acquire('chat');
     try {
@@ -460,7 +461,7 @@ export class Gateway {
 
         const { PlanOrchestrator } = await import('../agent/orchestrator.js');
         const orchestrator = new PlanOrchestrator(this.assistant);
-        const result = await orchestrator.run(taskDescription, onProgress);
+        const result = await orchestrator.run(taskDescription, onProgress, onApproval);
 
         scanner.refreshIntegrity();
         this.assistant.injectContext(sessionKey, `[Plan: ${taskDescription}]`, result);
@@ -523,11 +524,10 @@ export class Gateway {
 
   // ── Approval system ─────────────────────────────────────────────────
 
-  async requestApproval(description: string): Promise<boolean> {
-    this.approvalCounter++;
-    const requestId = `approval-${this.approvalCounter}`;
+  async requestApproval(descriptionOrId: string, explicitId?: string): Promise<boolean> {
+    const requestId = explicitId ?? `approval-${++this.approvalCounter}`;
 
-    logger.info(`Approval requested: ${description} (id=${requestId})`);
+    logger.info(`Approval requested: ${descriptionOrId} (id=${requestId})`);
 
     return new Promise<boolean>((resolve) => {
       this.approvalResolvers.set(requestId, resolve);

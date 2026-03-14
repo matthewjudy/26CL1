@@ -171,6 +171,41 @@ function sanitizeResponse(text: string): string {
   return text;
 }
 
+// ── Approval buttons helper ──────────────────────────────────────────
+
+/**
+ * Send a message with approve/deny buttons and return the message.
+ * The requestId is embedded in the button customId for routing.
+ */
+async function sendApprovalButtons(
+  channel: Message['channel'],
+  content: string,
+  prefix: string,
+  requestId: string,
+): Promise<Message | null> {
+  if (!('send' in channel)) return null;
+
+  const components = [{
+    type: 1 as const, // ActionRow
+    components: [
+      {
+        type: 2 as const, // Button
+        style: 3 as const, // Green
+        label: 'Approve',
+        custom_id: `${prefix}_${requestId}_approve`,
+      },
+      {
+        type: 2 as const, // Button
+        style: 4 as const, // Red
+        label: 'Cancel',
+        custom_id: `${prefix}_${requestId}_deny`,
+      },
+    ],
+  }];
+
+  return channel.send({ content: content.slice(0, 2000), components: components as any });
+}
+
 // ── Chunked sending ───────────────────────────────────────────────────
 
 function chunkText(text: string, maxLen = 1900): string[] {
@@ -795,9 +830,27 @@ export async function startDiscord(
     } else if (text.startsWith('!d ')) {
       oneOffModel = MODELS.opus;
       effectiveText = text.slice(3);
-    } else if (text.startsWith('!deep ')) {
+    } else if (isDm && text.startsWith('!deep ')) {
+      // Deep mode requires approval before running 100 turns
+      const deepMsg = text.slice(6).trim();
+      if (!deepMsg) {
+        await message.reply('Usage: `!deep <message>`');
+        return;
+      }
+      const requestId = `deep-${Date.now()}`;
+      await sendApprovalButtons(
+        message.channel,
+        `**Deep mode** (100 turns) requested for:\n_${deepMsg.slice(0, 200)}_\n\nApprove?`,
+        'deep',
+        requestId,
+      );
+      const approved = await gateway.requestApproval('Pending approval', requestId);
+      if (!approved) {
+        await message.reply('Deep mode cancelled.');
+        return;
+      }
       oneOffMaxTurns = 100;
-      effectiveText = text.slice(6);
+      effectiveText = deepMsg;
     }
 
     // ── Reply context for watched channels ─────────────────────────
@@ -1042,30 +1095,45 @@ export async function startDiscord(
         return;
       }
 
-      // Plan command
+      // Plan command — uses same approval-gated function as !plan
       if (name === 'plan') {
         const task = cmd.options.getString('task', true);
         await cmd.deferReply();
-        try {
-          const result = await gateway.handlePlan(sessionKey, task, async () => {});
-          const chunks = chunkText(result, 1900);
-          await cmd.editReply(chunks[0]);
-          for (let i = 1; i < chunks.length; i++) {
-            await cmd.followUp(chunks[i]);
-          }
-        } catch (err) {
-          logger.error({ err }, 'Plan execution failed (slash)');
-          await cmd.editReply(`Plan failed: ${err}`);
+        await cmd.editReply(`Planning: _${task.slice(0, 100)}_...`);
+
+        // Route through the shared handlePlanCommand (it handles approval + progress)
+        // We need the channel for buttons, so get it from the interaction
+        if (cmd.channel) {
+          await handlePlanCommand(gateway, sessionKey, task, cmd.channel);
+        } else {
+          await cmd.editReply('Could not access channel for plan approval.');
         }
         return;
       }
 
-      // Chat commands: /deep, /quick, /opus — route through gateway
+      // Chat commands: /deep (with approval), /quick, /opus
       if (name === 'deep' || name === 'quick' || name === 'opus') {
         const msg = cmd.options.getString('message', true);
-        await cmd.deferReply();
         const oneOffModel = name === 'quick' ? MODELS.haiku : name === 'opus' ? MODELS.opus : undefined;
         const oneOffMaxTurns = name === 'deep' ? 100 : undefined;
+
+        // /deep requires approval before running 100 turns
+        if (name === 'deep' && cmd.channel) {
+          await cmd.deferReply();
+          await cmd.editReply(`**Deep mode** (100 turns) requested for:\n_${msg.slice(0, 200)}_`);
+
+          const requestId = `deep-${Date.now()}`;
+          await sendApprovalButtons(cmd.channel, 'Approve deep mode?', 'deep', requestId);
+          const approved = await gateway.requestApproval('Pending approval', requestId);
+
+          if (!approved) {
+            await cmd.followUp('Deep mode cancelled.');
+            return;
+          }
+        } else {
+          await cmd.deferReply();
+        }
+
         try {
           const response = await gateway.handleMessage(
             sessionKey,
@@ -1075,13 +1143,26 @@ export async function startDiscord(
             oneOffMaxTurns,
           );
           const chunks = chunkText(response || '*(no response)*', 1900);
-          await cmd.editReply(chunks[0]);
-          for (let i = 1; i < chunks.length; i++) {
-            await cmd.followUp(chunks[i]);
+          if (name === 'deep') {
+            // Deep mode already has a deferred reply, use followUp
+            await cmd.followUp(chunks[0]);
+            for (let i = 1; i < chunks.length; i++) {
+              await cmd.followUp(chunks[i]);
+            }
+          } else {
+            await cmd.editReply(chunks[0]);
+            for (let i = 1; i < chunks.length; i++) {
+              await cmd.followUp(chunks[i]);
+            }
           }
         } catch (err) {
           logger.error({ err }, `/${name} command failed`);
-          await cmd.editReply(`Something went wrong: ${err}`);
+          const errMsg = `Something went wrong: ${err}`;
+          if (name === 'deep') {
+            await cmd.followUp(errMsg);
+          } else {
+            await cmd.editReply(errMsg);
+          }
         }
         return;
       }
@@ -1100,14 +1181,14 @@ export async function startDiscord(
       return;
     }
 
-    const customId = button.customId; // e.g. "audit_approve" or "audit_deny"
+    const customId = button.customId; // e.g. "plan_plan-123_approve" or "deep_deep-456_deny"
     const isApprove = customId.endsWith('_approve');
     const isDeny = customId.endsWith('_deny');
 
     if (!isApprove && !isDeny) return;
 
     const action = isApprove ? 'approved' : 'denied';
-    const emoji = isApprove ? '✅' : '❌';
+    const emoji = isApprove ? '\u2705' : '\u274c';
 
     // Acknowledge immediately — Discord requires response within 3 seconds
     await button.deferUpdate();
@@ -1137,12 +1218,22 @@ export async function startDiscord(
       logger.error({ err }, 'Failed to update button message');
     }
 
-    // Route the decision to the agent as a message in the channel's session
+    // ── Plan/Deep approval buttons → resolve the gateway approval gate
+    if (customId.startsWith('plan_') || customId.startsWith('deep_')) {
+      // Extract requestId: "plan_{requestId}_approve" → requestId
+      const parts = customId.split('_');
+      // Remove prefix (plan/deep) and suffix (approve/deny), join middle parts
+      const requestId = parts.slice(1, -1).join('_');
+      gateway.resolveApproval(requestId, isApprove);
+      return;
+    }
+
+    // ── Other buttons — route the decision to the agent as a message
     const sessionKey = `discord:channel:${button.channelId}:${button.user.id}`;
     const originalContent = button.message.content ?? '';
 
     // Build context message for the agent
-    const agentMessage = `[Button clicked: ${action}]\n\nOriginal request:\n${originalContent}\n\nNate ${action} this request. ${isApprove ? 'Proceed with building the audit brief, deploying to Netlify, and drafting the response email.' : 'Skip this request and log that it was denied.'}`;
+    const agentMessage = `[Button clicked: ${action}]\n\nOriginal request:\n${originalContent}\n\nNate ${action} this request. ${isApprove ? 'Proceed as requested.' : 'Skip this request and log that it was denied.'}`;
 
     // Process through gateway
     const streamer = new DiscordStreamingMessage(button.channel!);
@@ -1276,6 +1367,7 @@ async function handlePlanCommand(
   await streamer.update('Planning...');
 
   let progressTimer: ReturnType<typeof setInterval> | null = null;
+  let approvalMsg: Message | null = null;
   try {
     const result = await gateway.handlePlan(
       sessionKey,
@@ -1305,6 +1397,39 @@ async function handlePlanCommand(
             await streamer.update(lines.join('\n').slice(0, 1800));
           }, 5000);
         }
+      },
+      // Approval gate — show plan and wait for user confirmation
+      async (planSummary, steps) => {
+        // Replace the "Planning..." message with the plan preview
+        await streamer.finalize(
+          `**Plan:** ${taskDescription.slice(0, 100)}\n\n` +
+          steps.map((s, i) => `${i + 1}. **${s.id}** — ${s.description.slice(0, 60)}`).join('\n'),
+        );
+        // Send approval buttons as a new message
+        const requestId = `plan-${Date.now()}`;
+        approvalMsg = await sendApprovalButtons(
+          channel,
+          'Approve this plan?',
+          'plan',
+          requestId,
+        );
+        // Wait for the user to click approve/deny
+        const approved = await gateway.requestApproval('Pending approval', requestId);
+        if (approved) {
+          // Start a new streamer for execution progress
+          const newStreamer = new DiscordStreamingMessage(channel);
+          await newStreamer.start();
+          await newStreamer.update('Executing plan...');
+          // Swap the streamer reference for progress updates
+          Object.assign(streamer, {
+            message: (newStreamer as any).message,
+            lastEdit: (newStreamer as any).lastEdit,
+            pendingText: '',
+            lastFlushedText: '',
+            isFinal: false,
+          });
+        }
+        return approved;
       },
     );
 

@@ -132,11 +132,12 @@ export class PlanOrchestrator {
   }
 
   /**
-   * Main entry: plan → execute → synthesize → return final response.
+   * Main entry: plan → approve → execute → synthesize → return final response.
    */
   async run(
     taskDescription: string,
     onProgress?: (updates: PlanProgressUpdate[]) => Promise<void>,
+    onApproval?: (planSummary: string, steps: PlanStep[]) => Promise<boolean>,
   ): Promise<string> {
     // Reset instance state for reuse safety
     this.stepStatuses.clear();
@@ -189,6 +190,18 @@ export class PlanOrchestrator {
     } catch (err) {
       logger.error({ err }, 'Dependency graph error');
       return this.runSingleStep(taskDescription);
+    }
+
+    // 3b. Approval gate — show plan before executing
+    if (onApproval) {
+      const planSummary = waves
+        .map((wave, wi) => wave.map(s => `  [Wave ${wi + 1}] ${s.id}: ${s.description}`).join('\n'))
+        .join('\n');
+      const approved = await onApproval(planSummary, plan.steps);
+      if (!approved) {
+        logger.info({ goal: taskDescription }, 'Plan cancelled by user');
+        return 'Plan cancelled.';
+      }
     }
 
     // 4. Execute waves
