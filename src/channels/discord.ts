@@ -940,6 +940,24 @@ export async function startDiscord(
         logger.warn({ err }, 'Team auto-provisioning failed — run !team setup manually');
       }
     }
+
+    // Periodic check for new unprovisioned agents (handles MCP tools, dashboard, manual file creation)
+    if (DISCORD_TOKEN) {
+      setInterval(async () => {
+        const unprovisioned = teamRouter.getUnprovisionedSlugs();
+        if (unprovisioned.length === 0) return;
+
+        try {
+          const results = await teamRouter.provision(DISCORD_TOKEN);
+          for (const channelId of teamRouter.getProvisionedChannelIds()) {
+            watchedChannels.add(channelId);
+          }
+          logger.info({ results, newAgents: unprovisioned }, 'Auto-provisioned new team agents');
+        } catch (err) {
+          logger.warn({ err }, 'Periodic team provisioning failed');
+        }
+      }, 60_000);
+    }
   });
 
   client.on(Events.MessageCreate, async (message: Message) => {

@@ -358,6 +358,13 @@ export class TeamRouter {
     return Object.values(this.bindings.channels);
   }
 
+  /** Get agent slugs that have channelName set but no provisioned binding yet. */
+  getUnprovisionedSlugs(): string[] {
+    return this.profileManager.listAll()
+      .filter(p => p.team?.channelName && !this.bindings.channels[p.slug])
+      .map(p => p.slug);
+  }
+
   /** Get the communication graph (who can message whom). */
   getTopology(): { nodes: AgentProfile[]; edges: Array<{ from: string; to: string }> } {
     const agents = this.listTeamAgents();
