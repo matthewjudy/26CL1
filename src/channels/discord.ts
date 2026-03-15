@@ -926,6 +926,20 @@ export async function startDiscord(
         sendOrUpdateStatusEmbed().catch(() => {});
       }, 2000);
     });
+
+    // Auto-provision team agent channels + webhooks on startup
+    const teamAgents = teamRouter.listTeamAgents();
+    if (teamAgents.length > 0 && DISCORD_TOKEN) {
+      try {
+        const results = await teamRouter.provision(DISCORD_TOKEN);
+        for (const channelId of teamRouter.getProvisionedChannelIds()) {
+          watchedChannels.add(channelId);
+        }
+        logger.info({ results }, 'Auto-provisioned team channels on startup');
+      } catch (err) {
+        logger.warn({ err }, 'Team auto-provisioning failed — run !team setup manually');
+      }
+    }
   });
 
   client.on(Events.MessageCreate, async (message: Message) => {
