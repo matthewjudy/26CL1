@@ -9,7 +9,7 @@ import pino from 'pino';
 
 const logger = pino({ name: 'clementine.lanes' });
 
-export type Lane = 'chat' | 'cron' | 'heartbeat' | 'self-improve';
+export type Lane = 'chat' | 'cron' | 'heartbeat' | 'self-improve' | 'team';
 
 class LaneController {
   private limits: Record<Lane, number> = {
@@ -17,6 +17,7 @@ class LaneController {
     cron: 2,            // Up to 2 concurrent cron jobs
     heartbeat: 1,       // Only 1 heartbeat at a time
     'self-improve': 1,  // Only 1 self-improvement cycle at a time
+    team: 2,            // Up to 2 concurrent inter-agent messages
   };
 
   private active: Record<Lane, number> = {
@@ -24,6 +25,7 @@ class LaneController {
     cron: 0,
     heartbeat: 0,
     'self-improve': 0,
+    team: 0,
   };
 
   private waiters: Record<Lane, Array<() => void>> = {
@@ -31,6 +33,7 @@ class LaneController {
     cron: [],
     heartbeat: [],
     'self-improve': [],
+    team: [],
   };
 
   /** Acquire a slot in a lane. Resolves when a slot is available. */
@@ -62,6 +65,7 @@ class LaneController {
       cron: { active: this.active.cron, limit: this.limits.cron, queued: this.waiters.cron.length },
       heartbeat: { active: this.active.heartbeat, limit: this.limits.heartbeat, queued: this.waiters.heartbeat.length },
       'self-improve': { active: this.active['self-improve'], limit: this.limits['self-improve'], queued: this.waiters['self-improve'].length },
+      team: { active: this.active.team, limit: this.limits.team, queued: this.waiters.team.length },
     };
   }
 

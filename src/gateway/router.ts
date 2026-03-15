@@ -8,11 +8,14 @@
 import path from 'node:path';
 import pino from 'pino';
 import { PersonalAssistant, type ProjectMeta } from '../agent/assistant.js';
-import type { OnTextCallback, PlanProgressUpdate, PlanStep, SelfImproveConfig, SelfImproveExperiment, SelfImproveState, SessionProvenance, WorkflowDefinition } from '../types.js';
+import type { OnTextCallback, PlanProgressUpdate, PlanStep, SelfImproveConfig, SelfImproveExperiment, SelfImproveState, SessionProvenance, TeamMessage, WorkflowDefinition } from '../types.js';
 import { SelfImproveLoop } from '../agent/self-improve.js';
-import { MODELS } from '../config.js';
+import { MODELS, PROFILES_DIR, AGENTS_DIR, TEAM_COMMS_CHANNEL, TEAM_COMMS_LOG } from '../config.js';
 import { scanner } from '../security/scanner.js';
 import { lanes } from './lanes.js';
+import { AgentManager } from '../agent/agent-manager.js';
+import { TeamRouter } from '../agent/team-router.js';
+import { TeamBus } from '../agent/team-bus.js';
 
 const logger = pino({ name: 'clementine.gateway' });
 
@@ -27,8 +30,57 @@ export class Gateway {
   private sessionProvenance = new Map<string, SessionProvenance>();
   private auditLog: string[] = [];
 
+  // Team system (lazy-initialized)
+  private _agentManager?: AgentManager;
+  private _teamRouter?: TeamRouter;
+  private _teamBus?: TeamBus;
+
   constructor(assistant: PersonalAssistant) {
     this.assistant = assistant;
+  }
+
+  // ── Team system accessors ──────────────────────────────────────────
+
+  getAgentManager(): AgentManager {
+    if (!this._agentManager) {
+      this._agentManager = new AgentManager(AGENTS_DIR, PROFILES_DIR);
+    }
+    return this._agentManager;
+  }
+
+  getTeamRouter(): TeamRouter {
+    if (!this._teamRouter) {
+      this._teamRouter = new TeamRouter(this.getAgentManager());
+      this._teamRouter.refresh();
+    }
+    return this._teamRouter;
+  }
+
+  getTeamBus(): TeamBus {
+    if (!this._teamBus) {
+      const router = this.getTeamRouter();
+      this._teamBus = new TeamBus(this, router, {
+        commsChannelId: router.getCommsChannelId(),
+        logFile: TEAM_COMMS_LOG,
+      });
+      this._teamBus.loadFromLog();
+    }
+    return this._teamBus;
+  }
+
+  /** Route an inter-agent message through the team bus. */
+  async handleTeamMessage(
+    fromSlug: string,
+    toSlug: string,
+    content: string,
+    depth = 0,
+  ): Promise<TeamMessage> {
+    const releaseLane = await lanes.acquire('team');
+    try {
+      return await this.getTeamBus().send(fromSlug, toSlug, content, depth);
+    } finally {
+      releaseLane();
+    }
   }
 
   // ── Session provenance ────────────────────────────────────────────────

@@ -32,6 +32,7 @@ import {
   AGENTS_FILE,
   MEMORY_FILE,
   PROFILES_DIR,
+  AGENTS_DIR,
   ASSISTANT_NAME,
   OWNER_NAME,
   MODEL,
@@ -57,10 +58,11 @@ import {
   getHeartbeatDisallowedTools,
   logToolUse,
   setProfileTier,
+  setProfileAllowedTools,
   setInteractionSource,
 } from './hooks.js';
 import { scanner } from '../security/scanner.js';
-import { ProfileManager } from './profiles.js';
+import { AgentManager } from './agent-manager.js';
 import { toolLoopDetector, ToolLoopDetector } from './tool-loop-detector.js';
 import { formatResultsForPrompt } from '../memory/search.js';
 import { PromptCache } from './prompt-cache.js';
@@ -406,7 +408,7 @@ export class PersonalAssistant {
   private lastExchanges = new Map<string, Array<{ user: string; assistant: string }>>();
   private pendingContext = new Map<string, Array<{ user: string; assistant: string }>>();
   private restoredSessions = new Set<string>();
-  private profileManager: ProfileManager;
+  private profileManager: AgentManager;
   private promptCache: PromptCache;
   private _lastDailyNotePath: string | null = null;
   private memoryStore: any = null; // Typed as any — MemoryStore may not be available yet
@@ -414,7 +416,7 @@ export class PersonalAssistant {
   private onUnleashedComplete: ((jobName: string, result: string) => void) | null = null;
 
   constructor() {
-    this.profileManager = new ProfileManager(PROFILES_DIR);
+    this.profileManager = new AgentManager(AGENTS_DIR, PROFILES_DIR);
     this.promptCache = new PromptCache();
     this.initPromptWatchers();
     this.loadSessions();
@@ -718,7 +720,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       disableAllTools = false,
     } = opts;
 
-    const allowedTools = [
+    let allowedTools = [
       'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
       'WebSearch', 'WebFetch',
       mcpTool('memory_read'),
@@ -757,10 +759,26 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       mcpTool('memory_correct'),
       mcpTool('feedback_log'),
       mcpTool('feedback_report'),
+      mcpTool('team_list'),
+      mcpTool('team_message'),
+      mcpTool('create_agent'),
+      mcpTool('update_agent'),
+      mcpTool('delete_agent'),
     ];
 
     if (enableTeams) {
       allowedTools.push('Task', 'Agent');
+    }
+
+    // Agent tool whitelist: filter down to only allowed tools
+    if (profile?.team?.allowedTools?.length) {
+      const whitelist = new Set(profile.team.allowedTools.flatMap(t => [t, mcpTool(t)]));
+      // Always allow core SDK tools
+      ['Read', 'Glob', 'Grep'].forEach(t => whitelist.add(t));
+      // Always allow team tools for team agents
+      whitelist.add(mcpTool('team_message'));
+      whitelist.add(mcpTool('team_list'));
+      allowedTools = allowedTools.filter(t => whitelist.has(t));
     }
 
     // Heartbeats get full restrictions. Cron jobs tier 2+ get Bash/Write/Edit.
@@ -804,7 +822,10 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
           type: 'stdio',
           command: 'node',
           args: [MCP_SERVER_SCRIPT],
-          env: { CLEMENTINE_HOME: BASE_DIR },
+          env: {
+            CLEMENTINE_HOME: BASE_DIR,
+            ...(profile?.team ? { CLEMENTINE_TEAM_AGENT: profile.slug } : {}),
+          },
         },
       },
       maxTurns: effectiveMaxTurns,
@@ -1068,11 +1089,16 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
       this.retrieveContext(prompt, sessionKey),
       Promise.resolve(projectOverride || hasActiveSession ? null : matchProject(prompt)),
     ]);
-    const matchedProject = projectOverride ?? autoMatchedProject;
+    // Resolve project: explicit override > auto-match > profile binding
+    let matchedProject = projectOverride ?? autoMatchedProject;
+    if (!matchedProject && profile?.project) {
+      matchedProject = findProjectByName(profile.project) ?? null;
+    }
     let retrievalContext = securityAnnotation
       ? `${securityAnnotation}\n\n${rawContext}`
       : rawContext;
     setProfileTier(profile?.tier ?? null);
+    setProfileAllowedTools(profile?.team?.allowedTools ?? null);
     setInteractionSource(inferInteractionSource(sessionKey));
     if (matchedProject) {
       logger.info({ project: matchedProject.path }, 'Auto-matched project from message');
@@ -2040,7 +2066,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     this.saveSessions();
   }
 
-  getProfileManager(): ProfileManager {
+  getProfileManager(): AgentManager {
     return this.profileManager;
   }
 }

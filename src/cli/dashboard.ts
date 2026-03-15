@@ -1692,8 +1692,9 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
       }
 
       const gateway = await getGateway();
-      const { ProfileManager } = await import('../agent/profiles.js');
-      const pm = new ProfileManager(profilesDir);
+      const { AgentManager } = await import('../agent/agent-manager.js');
+      const { AGENTS_DIR } = await import('../config.js');
+      const pm = new AgentManager(AGENTS_DIR, profilesDir);
       const profiles = pm.listAll().map(p => ({
         slug: p.slug,
         name: p.name,
@@ -1817,6 +1818,142 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
       res.json({ ok: true, message: result });
     } catch (err) {
       res.json({ ok: false, message: String(err) });
+    }
+  });
+
+  // ── Team API endpoints ──────────────────────────────────────────────
+
+  app.get('/api/team/agents', async (_req, res) => {
+    try {
+      const gw = await getGateway();
+      const router = gw.getTeamRouter();
+      const agents = router.listTeamAgents();
+      const bindings = router.getBindings();
+      res.json(agents.map(a => ({
+        slug: a.slug,
+        name: a.name,
+        description: a.description,
+        channelName: a.team?.channelName ?? '',
+        channelId: bindings.channels[a.slug] ?? null,
+        provisioned: Boolean(bindings.channels[a.slug]),
+        canMessage: a.team?.canMessage ?? [],
+        allowedTools: a.team?.allowedTools ?? null,
+        model: a.model,
+        project: a.project ?? null,
+        agentDir: a.agentDir ?? null,
+      })));
+    } catch (err) {
+      res.json([]);
+    }
+  });
+
+  // ── Agent CRUD endpoints ────────────────────────────────────────────
+
+  app.get('/api/agents', async (_req, res) => {
+    try {
+      const gw = await getGateway();
+      const mgr = gw.getAgentManager();
+      const all = mgr.listAll();
+      const bindings = gw.getTeamRouter().getBindings();
+      res.json(all.map(a => ({
+        slug: a.slug,
+        name: a.name,
+        description: a.description,
+        tier: a.tier,
+        model: a.model ?? null,
+        channelName: a.team?.channelName ?? null,
+        channelId: bindings.channels[a.slug] ?? null,
+        provisioned: Boolean(bindings.channels[a.slug]),
+        canMessage: a.team?.canMessage ?? [],
+        allowedTools: a.team?.allowedTools ?? null,
+        project: a.project ?? null,
+        agentDir: a.agentDir ?? null,
+        hasOwnCron: mgr.hasOwnCron(a.slug),
+        hasOwnWorkflows: mgr.hasOwnWorkflows(a.slug),
+      })));
+    } catch (err) {
+      res.json([]);
+    }
+  });
+
+  app.post('/api/agents', async (req, res) => {
+    try {
+      const gw = await getGateway();
+      const mgr = gw.getAgentManager();
+      const { name, description, personality, tier, model, channelName, canMessage, allowedTools, project } = req.body;
+      if (!name || !description) {
+        res.status(400).json({ error: 'name and description are required' });
+        return;
+      }
+      const agent = mgr.createAgent({
+        name, description, personality,
+        tier: tier ?? 2,
+        model: model || undefined,
+        channelName: channelName || undefined,
+        canMessage: canMessage || undefined,
+        allowedTools: allowedTools || undefined,
+        project: project || undefined,
+      });
+      res.json({ ok: true, agent: { slug: agent.slug, name: agent.name } });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  app.put('/api/agents/:slug', async (req, res) => {
+    try {
+      const gw = await getGateway();
+      const mgr = gw.getAgentManager();
+      const { slug } = req.params;
+      const agent = mgr.updateAgent(slug, req.body);
+      res.json({ ok: true, agent: { slug: agent.slug, name: agent.name } });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  app.delete('/api/agents/:slug', async (req, res) => {
+    try {
+      const gw = await getGateway();
+      const mgr = gw.getAgentManager();
+      mgr.deleteAgent(req.params.slug);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  app.get('/api/team/messages', async (req, res) => {
+    try {
+      const gw = await getGateway();
+      const limit = parseInt(String(req.query.limit ?? '50'), 10);
+      const messages = gw.getTeamBus().getRecentMessages(Math.min(limit, 200));
+      res.json(messages);
+    } catch (err) {
+      res.json([]);
+    }
+  });
+
+  app.post('/api/team/provision', async (_req, res) => {
+    try {
+      const gw = await getGateway();
+      const results = await gw.getTeamRouter().provision();
+      res.json({ ok: true, results });
+    } catch (err) {
+      res.json({ ok: false, error: String(err) });
+    }
+  });
+
+  app.get('/api/team/topology', async (_req, res) => {
+    try {
+      const gw = await getGateway();
+      const { nodes, edges } = gw.getTeamRouter().getTopology();
+      res.json({
+        nodes: nodes.map(n => ({ slug: n.slug, name: n.name, description: n.description })),
+        edges,
+      });
+    } catch (err) {
+      res.json({ nodes: [], edges: [] });
     }
   });
 
@@ -3186,6 +3323,13 @@ function getDashboardHTML(): string {
       </div>
     </div>
     <div class="nav-section">
+      <div class="nav-section-title">Agents</div>
+      <div class="nav-item" data-page="team">
+        <span class="nav-icon">&#129302;</span> Team
+        <span class="nav-badge" id="nav-team-count">0</span>
+      </div>
+    </div>
+    <div class="nav-section">
       <div class="nav-section-title">System</div>
       <div class="nav-item" data-page="sessions">
         <span class="nav-icon">&#128488;</span> Sessions
@@ -3358,6 +3502,95 @@ function getDashboardHTML(): string {
     <div class="page" id="page-metrics">
       <div class="page-title">Metrics & Analytics</div>
       <div id="metrics-content"><div class="empty-state">Loading metrics...</div></div>
+    </div>
+
+    <!-- ═══ Team Page ═══ -->
+    <div class="page" id="page-team">
+      <div class="page-title">Agent Team</div>
+      <div class="summary-grid" id="team-summary-cards"></div>
+      <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
+        <button class="btn" onclick="showAgentCreateModal()" style="background:var(--green);color:#000;font-weight:600">+ Create Agent</button>
+        <button class="btn" onclick="provisionTeam()">Provision Channels</button>
+      </div>
+      <div class="grid-2" style="margin-top:16px">
+        <div class="card">
+          <div class="card-header">All Agents</div>
+          <div class="card-body" id="team-agent-grid"><div class="empty-state">No agents configured</div></div>
+        </div>
+        <div class="card">
+          <div class="card-header">Communication Topology</div>
+          <div class="card-body" id="team-topology"><div class="empty-state">No agents</div></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-header">Inter-Agent Messages</div>
+        <div class="card-body" id="team-messages-log"><div class="empty-state">No messages yet</div></div>
+      </div>
+    </div>
+
+    <!-- Agent Create/Edit Modal -->
+    <div id="agent-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:none;align-items:center;justify-content:center">
+      <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:24px;width:520px;max-height:80vh;overflow-y:auto">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h3 id="agent-modal-title" style="margin:0;color:var(--text)">Create Agent</h3>
+          <button onclick="hideAgentModal()" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">&times;</button>
+        </div>
+        <form id="agent-form" onsubmit="submitAgentForm(event)">
+          <input type="hidden" id="agent-edit-slug" value="">
+          <div style="margin-bottom:12px">
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Name *</label>
+            <input id="agent-name" required style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="Research Agent">
+          </div>
+          <div style="margin-bottom:12px">
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Description *</label>
+            <input id="agent-description" required style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="Deep-dive research and analysis">
+          </div>
+          <div style="margin-bottom:12px">
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Personality / System Prompt</label>
+            <textarea id="agent-personality" rows="4" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);resize:vertical" placeholder="You are a Research Agent specializing in..."></textarea>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Channel Name</label>
+              <input id="agent-channel" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="research">
+            </div>
+            <div>
+              <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Model</label>
+              <select id="agent-model" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                <option value="">Default (Sonnet)</option>
+                <option value="haiku">Haiku</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="opus">Opus</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Project Binding</label>
+              <input id="agent-project" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="data-pipeline">
+            </div>
+            <div>
+              <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Tier</label>
+              <select id="agent-tier" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                <option value="2">Tier 2 (Read/Write)</option>
+                <option value="1">Tier 1 (Read-only)</option>
+              </select>
+            </div>
+          </div>
+          <div style="margin-bottom:12px">
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Can Message (comma-separated slugs)</label>
+            <input id="agent-canmessage" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="analyst-agent, writer-agent">
+          </div>
+          <div style="margin-bottom:16px">
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Allowed Tools (comma-separated, blank = all)</label>
+            <input id="agent-tools" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="WebSearch, WebFetch, memory_search">
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button type="button" class="btn" onclick="hideAgentModal()">Cancel</button>
+            <button type="submit" class="btn" style="background:var(--green);color:#000;font-weight:600" id="agent-submit-btn">Create</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <!-- ═══ Settings Page ═══ -->
@@ -3690,6 +3923,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (page === 'chat') { loadProfiles(); document.getElementById('chat-input').focus(); }
     if (page === 'settings') refreshSettings();
     if (page === 'self-improve') refreshSelfImprove();
+    if (page === 'team') refreshTeam();
   });
 });
 
@@ -5304,7 +5538,226 @@ function refreshAll() {
   if (currentPage === 'logs') refreshLogs();
   if (currentPage === 'metrics') refreshMetrics();
   if (currentPage === 'self-improve') refreshSelfImprove();
+  if (currentPage === 'team') refreshTeam();
   checkVersion();
+}
+
+// ── Team ──────────────────────────────────
+async function refreshTeam() {
+  try {
+    const [agentsRes, messagesRes, topoRes] = await Promise.all([
+      fetch('/api/team/agents'),
+      fetch('/api/team/messages?limit=50'),
+      fetch('/api/team/topology'),
+    ]);
+    const agents = await agentsRes.json();
+    const messages = await messagesRes.json();
+    const topology = await topoRes.json();
+
+    // Update nav badge
+    var badge = document.getElementById('nav-team-count');
+    if (badge) badge.textContent = agents.length || '0';
+
+    // Summary cards
+    var provisionedCount = agents.filter(function(a) { return a.provisioned; }).length;
+    var cards = document.getElementById('team-summary-cards');
+    if (cards) {
+      cards.innerHTML =
+        '<div class="stat-card"><div class="stat-value">' + agents.length + '</div><div class="stat-label">Agents</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + provisionedCount + '/' + agents.length + '</div><div class="stat-label">Provisioned</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + (topology.edges || []).length + '</div><div class="stat-label">Connections</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + messages.length + '</div><div class="stat-label">Recent Messages</div></div>';
+    }
+
+    // Agent grid — use /api/agents for full detail
+    var grid = document.getElementById('team-agent-grid');
+    if (grid) {
+      var allRes = await fetch('/api/agents');
+      var allAgents = await allRes.json();
+      if (allAgents.length === 0) {
+        grid.innerHTML = '<div class="empty-state">No agents configured.<br>Click "Create Agent" above or add profiles to <code>vault/00-System/agents/</code></div>';
+      } else {
+        grid.innerHTML = allAgents.map(function(a) {
+          var statusDot = a.channelName
+            ? (a.provisioned
+              ? '<span style="color:#22c55e" title="Provisioned">&#9679;</span>'
+              : '<span style="color:#ef4444" title="Not provisioned">&#9679;</span>')
+            : '<span style="color:var(--text-muted)" title="No channel">&#9675;</span>';
+          var channelInfo = a.channelName
+            ? (a.provisioned ? '#' + a.channelName : '<em>not provisioned</em>')
+            : '<em>no channel</em>';
+          var badges = [];
+          if (a.model) badges.push('<span class="badge">' + a.model + '</span>');
+          if (a.project) badges.push('<span class="badge" style="background:var(--blue)">' + a.project + '</span>');
+          if (a.allowedTools) badges.push('<span class="badge" style="background:var(--yellow);color:#000">' + a.allowedTools.length + ' tools</span>');
+          if (a.hasOwnCron) badges.push('<span class="badge" style="background:var(--purple)">cron</span>');
+          if (a.hasOwnWorkflows) badges.push('<span class="badge" style="background:var(--purple)">workflows</span>');
+          var editBtn = a.agentDir
+            ? '<button class="btn btn-sm" onclick="editAgent(\'' + a.slug + '\')" style="font-size:11px;padding:2px 8px">Edit</button> ' +
+              '<button class="btn btn-sm" onclick="deleteAgent(\'' + a.slug + '\')" style="font-size:11px;padding:2px 8px;color:var(--red)">Delete</button>'
+            : '<span style="font-size:11px;color:var(--text-muted)">legacy profile</span>';
+          return '<div style="padding:12px;border-bottom:1px solid var(--border)">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center">' +
+            '<div>' + statusDot + ' <strong>' + a.name + '</strong> <span style="color:var(--text-muted);font-size:12px">(' + a.slug + ')</span></div>' +
+            '<div style="display:flex;gap:4px;align-items:center">' + badges.join('') + ' ' + editBtn + '</div>' +
+            '</div>' +
+            '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px">' + (a.description || 'No description') + '</div>' +
+            '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' +
+            'Channel: ' + channelInfo +
+            ' &middot; Tier: ' + (a.tier || 1) +
+            ' &middot; Can message: ' + ((a.canMessage || []).join(', ') || 'none') +
+            '</div></div>';
+        }).join('');
+      }
+    }
+
+    // Topology
+    var topoEl = document.getElementById('team-topology');
+    if (topoEl) {
+      var nodes = topology.nodes || [];
+      var edges = topology.edges || [];
+      if (nodes.length === 0) {
+        topoEl.innerHTML = '<div class="empty-state">No agents</div>';
+      } else {
+        var lines = nodes.map(function(n) {
+          var outgoing = edges.filter(function(e) { return e.from === n.slug; }).map(function(e) { return e.to; });
+          var incoming = edges.filter(function(e) { return e.to === n.slug; }).map(function(e) { return e.from; });
+          return '<div style="padding:8px 12px;border-bottom:1px solid var(--border)">' +
+            '<strong>' + n.name + '</strong>' +
+            '<div style="font-size:11px;color:var(--text-muted);margin-top:2px">' +
+            (outgoing.length > 0 ? '&rarr; ' + outgoing.join(', ') : '<span style="opacity:0.5">no outgoing</span>') +
+            ' &middot; ' +
+            (incoming.length > 0 ? '&larr; ' + incoming.join(', ') : '<span style="opacity:0.5">no incoming</span>') +
+            '</div></div>';
+        });
+        topoEl.innerHTML = lines.join('');
+      }
+    }
+
+    // Messages log
+    var msgLog = document.getElementById('team-messages-log');
+    if (msgLog) {
+      if (messages.length === 0) {
+        msgLog.innerHTML = '<div class="empty-state">No inter-agent messages yet</div>';
+      } else {
+        msgLog.innerHTML = messages.map(function(m) {
+          var time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+          return '<div style="padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px">' +
+            '<span style="color:var(--text-muted);font-size:11px">' + time + '</span> ' +
+            '<strong>' + m.fromAgent + '</strong> &rarr; <strong>' + m.toAgent + '</strong>' +
+            (m.depth > 0 ? ' <span style="font-size:10px;color:var(--text-muted)">(depth ' + m.depth + ')</span>' : '') +
+            '<div style="margin-top:2px;color:var(--text-secondary)">' + (m.content || '').substring(0, 200) + '</div>' +
+            '</div>';
+        }).join('');
+      }
+    }
+  } catch(e) {
+    console.error('Team refresh error:', e);
+  }
+}
+
+async function provisionTeam() {
+  try {
+    toast('Provisioning team channels...', 'info');
+    var r = await fetch('/api/team/provision', { method: 'POST' });
+    var d = await r.json();
+    if (d.ok) {
+      toast('Team channels provisioned', 'success');
+      refreshTeam();
+    } else {
+      toast(d.error || 'Provisioning failed', 'error');
+    }
+  } catch(e) { toast(String(e), 'error'); }
+}
+
+// ── Agent CRUD Modal ──────────────────────
+
+function showAgentCreateModal() {
+  document.getElementById('agent-modal').style.display = 'flex';
+  document.getElementById('agent-modal-title').textContent = 'Create Agent';
+  document.getElementById('agent-submit-btn').textContent = 'Create';
+  document.getElementById('agent-edit-slug').value = '';
+  document.getElementById('agent-form').reset();
+}
+
+async function editAgent(slug) {
+  try {
+    var r = await fetch('/api/agents');
+    var agents = await r.json();
+    var a = agents.find(function(x) { return x.slug === slug; });
+    if (!a) { toast('Agent not found', 'error'); return; }
+
+    document.getElementById('agent-modal').style.display = 'flex';
+    document.getElementById('agent-modal-title').textContent = 'Edit Agent: ' + a.name;
+    document.getElementById('agent-submit-btn').textContent = 'Save';
+    document.getElementById('agent-edit-slug').value = slug;
+    document.getElementById('agent-name').value = a.name || '';
+    document.getElementById('agent-description').value = a.description || '';
+    document.getElementById('agent-channel').value = a.channelName || '';
+    document.getElementById('agent-model').value = a.model || '';
+    document.getElementById('agent-project').value = a.project || '';
+    document.getElementById('agent-tier').value = String(a.tier || 2);
+    document.getElementById('agent-canmessage').value = (a.canMessage || []).join(', ');
+    document.getElementById('agent-tools').value = (a.allowedTools || []).join(', ');
+  } catch(e) { toast(String(e), 'error'); }
+}
+
+function hideAgentModal() {
+  document.getElementById('agent-modal').style.display = 'none';
+}
+
+async function submitAgentForm(e) {
+  e.preventDefault();
+  var editSlug = document.getElementById('agent-edit-slug').value;
+  var isEdit = Boolean(editSlug);
+
+  var payload = {
+    name: document.getElementById('agent-name').value.trim(),
+    description: document.getElementById('agent-description').value.trim(),
+    personality: document.getElementById('agent-personality').value.trim() || undefined,
+    channelName: document.getElementById('agent-channel').value.trim() || undefined,
+    model: document.getElementById('agent-model').value || undefined,
+    project: document.getElementById('agent-project').value.trim() || undefined,
+    tier: parseInt(document.getElementById('agent-tier').value) || 2,
+  };
+
+  var cm = document.getElementById('agent-canmessage').value.trim();
+  if (cm) payload.canMessage = cm.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+
+  var tools = document.getElementById('agent-tools').value.trim();
+  if (tools) payload.allowedTools = tools.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+
+  try {
+    var url = isEdit ? '/api/agents/' + editSlug : '/api/agents';
+    var method = isEdit ? 'PUT' : 'POST';
+    var r = await fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    var d = await r.json();
+    if (d.ok) {
+      toast((isEdit ? 'Updated' : 'Created') + ' agent: ' + (d.agent?.name || payload.name), 'success');
+      hideAgentModal();
+      refreshTeam();
+    } else {
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch(e) { toast(String(e), 'error'); }
+}
+
+async function deleteAgent(slug) {
+  if (!confirm('Delete agent "' + slug + '"? This removes the entire agent directory.')) return;
+  try {
+    var r = await fetch('/api/agents/' + slug, { method: 'DELETE' });
+    var d = await r.json();
+    if (d.ok) {
+      toast('Deleted agent: ' + slug, 'success');
+      refreshTeam();
+    } else {
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch(e) { toast(String(e), 'error'); }
 }
 
 // ── Self-Improvement ──────────────────────

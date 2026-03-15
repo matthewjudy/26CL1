@@ -29,6 +29,7 @@ import {
   HEARTBEAT_FILE,
   CRON_FILE,
   WORKFLOWS_DIR,
+  AGENTS_DIR,
   TASKS_FILE,
   INBOX_DIR,
   DAILY_NOTES_DIR,
@@ -474,6 +475,68 @@ export function parseCronJobs(): CronJobDefinition[] {
 }
 
 /**
+ * Parse cron jobs from agent-scoped CRON.md files.
+ * Scans each agent subdirectory for CRON.md, prefixes job names with agent slug.
+ */
+export function parseAgentCronJobs(agentsDir: string): CronJobDefinition[] {
+  if (!existsSync(agentsDir)) return [];
+
+  const allJobs: CronJobDefinition[] = [];
+
+  let dirs: string[];
+  try {
+    dirs = readdirSync(agentsDir, { withFileTypes: true } as any)
+      .filter((d: any) => d.isDirectory() && !d.name.startsWith('_'))
+      .map((d: any) => d.name);
+  } catch {
+    return [];
+  }
+
+  for (const slug of dirs) {
+    const cronFile = path.join(agentsDir, slug, 'CRON.md');
+    if (!existsSync(cronFile)) continue;
+
+    try {
+      const raw = readFileSync(cronFile, 'utf-8');
+      const parsed = matter(raw);
+      const jobDefs = (parsed.data.jobs ?? []) as Array<Record<string, unknown>>;
+
+      for (const job of jobDefs) {
+        const name = String(job.name ?? '');
+        const schedule = String(job.schedule ?? '');
+        const prompt = String(job.prompt ?? '');
+        const enabled = job.enabled !== false;
+        const tier = Number(job.tier ?? 1);
+        const maxTurns = job.max_turns != null ? Number(job.max_turns) : undefined;
+        const model = job.model != null ? String(job.model) : undefined;
+        const workDir = job.work_dir != null ? String(job.work_dir) : undefined;
+        const mode = job.mode === 'unleashed' ? 'unleashed' as const : 'standard' as const;
+        const maxHours = job.max_hours != null ? Number(job.max_hours) : undefined;
+        const maxRetries = job.max_retries != null ? Number(job.max_retries) : undefined;
+        const after = job.after != null ? String(job.after) : undefined;
+
+        if (!name || !schedule || !prompt) {
+          logger.warn({ job, agent: slug }, 'Skipping malformed agent cron job');
+          continue;
+        }
+
+        // Prefix name with agent slug and tag with agentSlug
+        allJobs.push({
+          name: `${slug}:${name}`,
+          schedule, prompt, enabled, tier, maxTurns, model, workDir,
+          mode, maxHours, maxRetries, after,
+          agentSlug: slug,
+        });
+      }
+    } catch (err) {
+      logger.error({ err, agent: slug }, `Agent ${slug} CRON.md parse error — skipping`);
+    }
+  }
+
+  return allJobs;
+}
+
+/**
  * Validate that a CRON.md string parses without YAML errors.
  * Call this before writing to prevent corrupted files from crashing the daemon.
  * Returns null on success, or the error message on failure.
@@ -645,6 +708,7 @@ export class CronScheduler {
     this.reloadJobs();
     this.reloadWorkflows();
     this.watchCronFile();
+    this.watchAgentsDir();
     this.watchWorkflowDir();
 
     // Wire up push notifications for unleashed task completions
@@ -669,6 +733,7 @@ export class CronScheduler {
     }
     this.workflowTasks.clear();
     this.unwatchCronFile();
+    this.unwatchAgentsDir();
     this.unwatchWorkflowDir();
     logger.info('Cron scheduler stopped');
   }
@@ -699,6 +764,34 @@ export class CronScheduler {
     this.watching = false;
   }
 
+  /** Watch agents directory for cron/workflow changes and auto-reload. */
+  private watchingAgents = false;
+
+  private watchAgentsDir(): void {
+    if (this.watchingAgents) return;
+    if (!existsSync(AGENTS_DIR)) return;
+
+    watchFile(AGENTS_DIR, { interval: 5000 }, () => {
+      logger.info('Agents directory changed — reloading jobs and workflows');
+      try {
+        this.reloadJobs();
+        this.reloadWorkflows();
+        scanner.refreshIntegrity();
+      } catch (err) {
+        logger.error({ err }, 'Failed to reload agent configs');
+      }
+    });
+    this.watchingAgents = true;
+  }
+
+  private unwatchAgentsDir(): void {
+    if (!this.watchingAgents) return;
+    try {
+      unwatchFile(AGENTS_DIR);
+    } catch { /* ignore */ }
+    this.watchingAgents = false;
+  }
+
   reloadJobs(): void {
     // Stop existing scheduled tasks (but NOT the file watcher)
     for (const [name, task] of this.scheduledTasks) {
@@ -708,6 +801,13 @@ export class CronScheduler {
     this.scheduledTasks.clear();
 
     this.jobs = parseCronJobs();
+
+    // Merge in agent-scoped cron jobs
+    const agentJobs = parseAgentCronJobs(AGENTS_DIR);
+    if (agentJobs.length > 0) {
+      this.jobs.push(...agentJobs);
+      logger.info(`Loaded ${agentJobs.length} agent-scoped cron job(s)`);
+    }
 
     if (this.jobs.length === 0) {
       logger.info('No CRON.md found or no jobs defined');
@@ -788,7 +888,13 @@ export class CronScheduler {
     this.emitStatusChange();
 
     try {
-      logger.info(`Running cron job: ${job.name}`);
+      logger.info(`Running cron job: ${job.name}${job.agentSlug ? ` (agent: ${job.agentSlug})` : ''}`);
+
+      // Set agent profile for scoped cron jobs
+      const cronSessionKey = `cron:${job.name}`;
+      if (job.agentSlug) {
+        this.gateway.setSessionProfile(cronSessionKey, job.agentSlug);
+      }
 
       // Unleashed tasks handle their own retries/phases internally — never retry the whole task
       const priorErrors = this.runLog.consecutiveErrors(job.name);
@@ -1036,6 +1142,30 @@ export class CronScheduler {
       this.workflowDefs = parseAllWorkflowsSync(WORKFLOWS_DIR);
     } catch {
       this.workflowDefs = [];
+    }
+
+    // Merge in agent-scoped workflows
+    if (existsSync(AGENTS_DIR)) {
+      try {
+        const dirs = readdirSync(AGENTS_DIR, { withFileTypes: true } as any)
+          .filter((d: any) => d.isDirectory() && !d.name.startsWith('_'))
+          .map((d: any) => d.name);
+
+        for (const slug of dirs) {
+          const wfDir = path.join(AGENTS_DIR, slug, 'workflows');
+          if (!existsSync(wfDir)) continue;
+          try {
+            const agentWfs = parseAllWorkflowsSync(wfDir);
+            for (const wf of agentWfs) {
+              wf.name = `${slug}:${wf.name}`;
+              wf.agentSlug = slug;
+              this.workflowDefs.push(wf);
+            }
+          } catch {
+            logger.warn(`Failed to parse workflows for agent ${slug}`);
+          }
+        }
+      } catch { /* agents dir not readable */ }
     }
 
     if (this.workflowDefs.length === 0) {

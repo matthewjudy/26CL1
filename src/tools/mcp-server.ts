@@ -7,8 +7,9 @@
  *   npx tsx src/tools/mcp-server.ts
  */
 
+import { randomBytes } from 'node:crypto';
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -3030,6 +3031,348 @@ server.tool(
       'or Discord (`!self-improve run` / `/self-improve run`). ' +
       'The MCP server cannot directly run the loop as it requires the full assistant context.',
     );
+  },
+);
+
+// ── Team Tools ──────────────────────────────────────────────────────────
+
+const PROFILES_DIR = path.join(SYSTEM_DIR, 'profiles');
+const AGENTS_DIR = path.join(SYSTEM_DIR, 'agents');
+const TEAM_COMMS_LOG = path.join(BASE_DIR, 'logs', 'team-comms.jsonl');
+const TEAM_BINDINGS_FILE = path.join(BASE_DIR, 'team-bindings.json');
+
+interface TeamAgentInfo {
+  slug: string;
+  name: string;
+  channelName: string;
+  canMessage: string[];
+  description: string;
+}
+
+/** Load team agent profiles from agents/ dir and legacy profiles/ dir. */
+async function loadTeamAgents(): Promise<TeamAgentInfo[]> {
+  const matterMod = await import('gray-matter');
+  const agents: TeamAgentInfo[] = [];
+  const seen = new Set<string>();
+
+  // 1. Scan agents/{slug}/agent.md (primary)
+  if (existsSync(AGENTS_DIR)) {
+    try {
+      const dirs = readdirSync(AGENTS_DIR, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith('_'))
+        .map(d => d.name);
+
+      for (const slug of dirs) {
+        const agentFile = path.join(AGENTS_DIR, slug, 'agent.md');
+        if (!existsSync(agentFile)) continue;
+        try {
+          const raw = readFileSync(agentFile, 'utf-8');
+          const { data } = matterMod.default(raw);
+          const channelName = data.channelName ? String(data.channelName) : '';
+          if (!channelName) continue;
+          seen.add(slug);
+          agents.push({
+            slug,
+            name: String(data.name ?? slug),
+            channelName,
+            canMessage: Array.isArray(data.canMessage) ? data.canMessage.map(String) : [],
+            description: String(data.description ?? ''),
+          });
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* agents dir not readable */ }
+  }
+
+  // 2. Scan legacy profiles/*.md (only for slugs not already loaded)
+  if (existsSync(PROFILES_DIR)) {
+    for (const file of readdirSync(PROFILES_DIR).filter(f => f.endsWith('.md') && !f.startsWith('_'))) {
+      try {
+        const slug = file.replace(/\.md$/, '');
+        if (seen.has(slug)) continue;
+        const raw = readFileSync(path.join(PROFILES_DIR, file), 'utf-8');
+        const { data } = matterMod.default(raw);
+        const channelName = data.channelName ? String(data.channelName) : '';
+        if (!channelName) continue;
+        agents.push({
+          slug,
+          name: String(data.name ?? slug),
+          channelName,
+          canMessage: Array.isArray(data.canMessage) ? data.canMessage.map(String) : [],
+          description: String(data.description ?? ''),
+        });
+      } catch { /* skip malformed */ }
+    }
+  }
+
+  return agents;
+}
+
+/** Load team bindings (slug → channelId mapping). */
+function loadTeamBindings(): Record<string, string> {
+  if (!existsSync(TEAM_BINDINGS_FILE)) return {};
+  try {
+    const data = JSON.parse(readFileSync(TEAM_BINDINGS_FILE, 'utf-8'));
+    return data.channels ?? {};
+  } catch {
+    return {};
+  }
+}
+
+server.tool(
+  'team_list',
+  'List all team agents — their names, channel bindings, and who they can message. Use this to discover teammates.',
+  {},
+  async () => {
+    const agents = await loadTeamAgents();
+    if (agents.length === 0) {
+      return textResult('No team agents configured. Add `channelName:` frontmatter to a profile in vault/00-System/profiles/.');
+    }
+    const bindings = loadTeamBindings();
+    const lines = agents.map(a => {
+      const channelId = bindings[a.slug];
+      const status = channelId ? `bound to #${a.channelName} (${channelId})` : 'not provisioned';
+      return `- ${a.name} (${a.slug}): ${status}, canMessage=[${a.canMessage.join(', ')}]`;
+    });
+    return textResult(`Team Agents:\n${lines.join('\n')}`);
+  },
+);
+
+server.tool(
+  'team_message',
+  'Send a message to another team agent. The message will be delivered to the target agent\'s session. ' +
+  'Validates canMessage permissions and enforces depth limits (max 3) to prevent infinite loops.',
+  {
+    to_agent: z.string().describe('Slug of the target agent (e.g., "analyst-agent")'),
+    message: z.string().describe('Message content to send'),
+    depth: z.number().optional().describe('Message depth counter (auto-incremented, starts at 0). Do not set manually.'),
+  },
+  async ({ to_agent, message, depth }) => {
+    // The MCP server runs standalone — it writes directly to the JSONL log
+    // and posts to Discord. The actual injection happens via the daemon's TeamBus.
+    // For the MCP tool, we write the message to the log and mirror to Discord.
+
+    const agents = await loadTeamAgents();
+
+    // Determine the calling agent from the current session context
+    // The MCP server doesn't have direct session context, so the agent must be inferred
+    // from which agent is calling this tool. We use a heuristic: check env for a hint.
+    const callerSlug = process.env.CLEMENTINE_TEAM_AGENT ?? '';
+    if (!callerSlug) {
+      return textResult(
+        'Error: Cannot determine which agent is calling team_message. ' +
+        'This tool should be called from within a team agent session.',
+      );
+    }
+
+    const caller = agents.find(a => a.slug === callerSlug);
+    if (!caller) {
+      return textResult(`Error: Agent '${callerSlug}' is not a team agent.`);
+    }
+
+    // Validate canMessage permission
+    if (!caller.canMessage.includes(to_agent)) {
+      return textResult(
+        `Error: Agent '${callerSlug}' is not authorized to message '${to_agent}'. ` +
+        `Allowed targets: ${caller.canMessage.join(', ') || 'none'}`,
+      );
+    }
+
+    // Validate target exists
+    const target = agents.find(a => a.slug === to_agent);
+    if (!target) {
+      return textResult(`Error: Target agent '${to_agent}' not found.`);
+    }
+
+    // Depth check
+    const msgDepth = depth ?? 0;
+    if (msgDepth >= 3) {
+      return textResult(
+        'Error: Message depth limit reached (3). Agents cannot chain more than 3 messages deep.',
+      );
+    }
+
+    // Create message record
+    const msgId = randomBytes(4).toString('hex');
+    const record = {
+      id: msgId,
+      fromAgent: callerSlug,
+      toAgent: to_agent,
+      content: message,
+      timestamp: new Date().toISOString(),
+      delivered: false, // Will be delivered by the daemon's TeamBus on next interaction
+      depth: msgDepth,
+    };
+
+    // Append to JSONL log
+    const logDir = path.dirname(TEAM_COMMS_LOG);
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+    appendFileSync(TEAM_COMMS_LOG, JSON.stringify(record) + '\n');
+
+    // Mirror to Discord team-comms channel if configured
+    const commsChannelId = env['TEAM_COMMS_CHANNEL'] ?? '';
+    const discordToken = env['DISCORD_TOKEN'] ?? '';
+    if (commsChannelId && discordToken) {
+      const truncated = message.length > 1024 ? message.slice(0, 1021) + '...' : message;
+      const embed = {
+        title: `${caller.name} \u2192 ${target.name}`,
+        description: truncated,
+        color: 0x5865F2,
+        footer: { text: `via team_message \u00B7 depth ${msgDepth}` },
+        timestamp: record.timestamp,
+      };
+      try {
+        await fetch(`https://discord.com/api/v10/channels/${commsChannelId}/messages`, {
+          method: 'POST',
+          headers: { Authorization: `Bot ${discordToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ embeds: [embed] }),
+        });
+      } catch { /* non-fatal */ }
+    }
+
+    return textResult(
+      `Message sent to ${target.name} (${to_agent}). ID: ${msgId}, depth: ${msgDepth}. ` +
+      `The message will be delivered to ${target.name}'s session on their next interaction.`,
+    );
+  },
+);
+
+// ── Agent CRUD Tools ─────────────────────────────────────────────────────
+
+server.tool(
+  'create_agent',
+  'Create a new scoped agent with its own personality, tools, crons, and project binding. ' +
+  'Creates a directory at vault/00-System/agents/{slug}/agent.md.',
+  {
+    name: z.string().describe('Display name for the agent (e.g., "Research Agent")'),
+    description: z.string().describe('Short description of what this agent does'),
+    personality: z.string().optional().describe('Full system prompt body (personality/instructions). If omitted, a default is generated.'),
+    channel_name: z.string().optional().describe('Discord channel name to provision (e.g., "research")'),
+    project: z.string().optional().describe('Project name to bind this agent to (from projects.json)'),
+    tools: z.array(z.string()).optional().describe('Tool whitelist — only these tools are allowed. Omit for all tools.'),
+    model: z.string().optional().describe('Model tier: "haiku", "sonnet", or "opus"'),
+    can_message: z.array(z.string()).optional().describe('Agent slugs this agent can message'),
+    tier: z.number().optional().describe('Security tier (1 = read-only, 2 = read-write). Default: 2.'),
+  },
+  async ({ name, description, personality, channel_name, project, tools, model, can_message, tier }) => {
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const agentDir = path.join(AGENTS_DIR, slug);
+
+    if (existsSync(path.join(agentDir, 'agent.md'))) {
+      return textResult(`Error: Agent '${slug}' already exists.`);
+    }
+
+    // Ensure directories exist
+    mkdirSync(agentDir, { recursive: true });
+
+    // Build frontmatter
+    const frontmatter: Record<string, unknown> = { name, description, tier: tier ?? 2 };
+    if (model) frontmatter.model = model;
+    if (channel_name) frontmatter.channelName = channel_name;
+    if (can_message?.length) frontmatter.canMessage = can_message;
+    if (tools?.length) frontmatter.allowedTools = tools;
+    if (project) frontmatter.project = project;
+
+    const body = personality || `You are ${name}. ${description}`;
+    const matterMod = await import('gray-matter');
+    const content = matterMod.default.stringify(body, frontmatter);
+    writeFileSync(path.join(agentDir, 'agent.md'), content);
+
+    return textResult(
+      `Created agent '${name}' (${slug}).\n` +
+      `Directory: vault/00-System/agents/${slug}/\n` +
+      (channel_name ? `Channel: #${channel_name} (run !team provision to create)\n` : '') +
+      (project ? `Project: ${project}\n` : '') +
+      (tools?.length ? `Tools: ${tools.join(', ')}\n` : 'Tools: all\n'),
+    );
+  },
+);
+
+server.tool(
+  'update_agent',
+  'Update an existing agent\'s configuration. Only specified fields are changed.',
+  {
+    slug: z.string().describe('Agent slug to update'),
+    name: z.string().optional().describe('New display name'),
+    description: z.string().optional().describe('New description'),
+    personality: z.string().optional().describe('New system prompt body'),
+    channel_name: z.string().optional().describe('New Discord channel name'),
+    project: z.string().optional().describe('New project binding'),
+    tools: z.array(z.string()).optional().describe('New tool whitelist'),
+    model: z.string().optional().describe('New model tier'),
+    can_message: z.array(z.string()).optional().describe('New canMessage list'),
+    tier: z.number().optional().describe('New security tier'),
+  },
+  async ({ slug, name, description, personality, channel_name, project, tools, model, can_message, tier }) => {
+    const agentFile = path.join(AGENTS_DIR, slug, 'agent.md');
+    if (!existsSync(agentFile)) {
+      return textResult(`Error: Agent '${slug}' not found in agents directory.`);
+    }
+
+    const matterMod = await import('gray-matter');
+    const raw = readFileSync(agentFile, 'utf-8');
+    const { data: meta, content: body } = matterMod.default(raw);
+
+    // Merge changes
+    if (name !== undefined) meta.name = name;
+    if (description !== undefined) meta.description = description;
+    if (tier !== undefined) meta.tier = tier;
+    if (model !== undefined) meta.model = model;
+    if (channel_name !== undefined) meta.channelName = channel_name;
+    if (can_message !== undefined) meta.canMessage = can_message;
+    if (tools !== undefined) meta.allowedTools = tools;
+    if (project !== undefined) meta.project = project;
+
+    const newBody = personality ?? body;
+    const updated = matterMod.default.stringify(newBody, meta);
+    writeFileSync(agentFile, updated);
+
+    return textResult(`Updated agent '${slug}'. Changes: ${[
+      name !== undefined && 'name',
+      description !== undefined && 'description',
+      personality !== undefined && 'personality',
+      channel_name !== undefined && 'channelName',
+      project !== undefined && 'project',
+      tools !== undefined && 'tools',
+      model !== undefined && 'model',
+      can_message !== undefined && 'canMessage',
+      tier !== undefined && 'tier',
+    ].filter(Boolean).join(', ')}`);
+  },
+);
+
+server.tool(
+  'delete_agent',
+  'Delete an agent and its entire directory (agent.md, CRON.md, workflows/).',
+  {
+    slug: z.string().describe('Agent slug to delete'),
+    confirm: z.boolean().describe('Must be true to confirm deletion'),
+  },
+  async ({ slug, confirm }) => {
+    if (!confirm) {
+      return textResult('Deletion cancelled — set confirm=true to proceed.');
+    }
+
+    const agentDir = path.join(AGENTS_DIR, slug);
+    if (!existsSync(agentDir)) {
+      return textResult(`Error: Agent '${slug}' not found.`);
+    }
+
+    const { rmSync } = await import('node:fs');
+    rmSync(agentDir, { recursive: true, force: true });
+
+    // Clean up team bindings if present
+    if (existsSync(TEAM_BINDINGS_FILE)) {
+      try {
+        const bindings = JSON.parse(readFileSync(TEAM_BINDINGS_FILE, 'utf-8'));
+        if (bindings.channels?.[slug]) {
+          delete bindings.channels[slug];
+          delete bindings.webhooks?.[slug];
+          writeFileSync(TEAM_BINDINGS_FILE, JSON.stringify(bindings, null, 2));
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    return textResult(`Deleted agent '${slug}' and cleaned up bindings.`);
   },
 );
 

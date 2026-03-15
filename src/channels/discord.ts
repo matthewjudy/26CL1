@@ -104,6 +104,15 @@ const slashCommands = [
     .addSubcommand(sub => sub.setName('status').setDescription('Show self-improvement status'))
     .addSubcommand(sub => sub.setName('history').setDescription('Show experiment history'))
     .addSubcommand(sub => sub.setName('pending').setDescription('List pending proposals')),
+  new SlashCommandBuilder().setName('team').setDescription('Manage agent team')
+    .addStringOption(o => o.setName('action').setDescription('Action').setRequired(true)
+      .addChoices(
+        { name: 'Setup channels', value: 'setup' },
+        { name: 'List agents', value: 'list' },
+        { name: 'Agent status', value: 'status' },
+        { name: 'Recent messages', value: 'messages' },
+        { name: 'Topology', value: 'topology' },
+      )),
   new SlashCommandBuilder().setName('dashboard').setDescription('Live system status embed (auto-refreshes)'),
   new SlashCommandBuilder().setName('clear').setDescription('Reset conversation session'),
   new SlashCommandBuilder().setName('help').setDescription('Show all available commands'),
@@ -330,6 +339,147 @@ class DiscordStreamingMessage {
   }
 }
 
+// ── Webhook-based streaming (team agents post as their own identity) ──
+
+/**
+ * Like DiscordStreamingMessage but posts via a Discord webhook so the message
+ * appears under the agent's own name and avatar instead of the bot user.
+ */
+class WebhookStreamingMessage {
+  private webhookUrl: string;
+  private agentName: string;
+  private avatarUrl?: string;
+  private messageId: string | null = null;
+  private lastEdit = 0;
+  private pendingText = '';
+  private lastFlushedText = '';
+  private isFinal = false;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** The message ID of the final bot response (available after finalize). */
+  get finalMessageId(): string | null {
+    return this.messageId;
+  }
+
+  constructor(webhookUrl: string, agentName: string, avatarUrl?: string) {
+    this.webhookUrl = webhookUrl;
+    this.agentName = agentName;
+    this.avatarUrl = avatarUrl;
+  }
+
+  async start(): Promise<void> {
+    const body: Record<string, unknown> = {
+      content: THINKING_INDICATOR,
+      username: this.agentName,
+      wait: true,
+    };
+    if (this.avatarUrl) body.avatar_url = this.avatarUrl;
+
+    try {
+      const res = await fetch(`${this.webhookUrl}?wait=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { id: string };
+        this.messageId = data.id;
+      }
+    } catch {
+      // Non-fatal — finalize will send a fresh message
+    }
+    this.lastEdit = Date.now();
+  }
+
+  async update(text: string): Promise<void> {
+    this.pendingText = text;
+    const elapsed = Date.now() - this.lastEdit;
+    if (elapsed >= STREAM_EDIT_INTERVAL) {
+      await this.flush();
+    } else if (!this.flushTimer) {
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = null;
+        this.flush().catch(() => {});
+      }, STREAM_EDIT_INTERVAL - elapsed);
+    }
+  }
+
+  async finalize(text: string): Promise<void> {
+    this.isFinal = true;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (!text) text = '*(no response)*';
+    text = sanitizeResponse(text);
+
+    if (this.messageId) {
+      if (text.length <= 1900) {
+        // Edit existing webhook message
+        await this.editWebhookMessage(text);
+      } else {
+        // Delete the placeholder, send chunked
+        await this.deleteWebhookMessage();
+        await this.sendChunkedViaWebhook(text);
+      }
+    } else {
+      await this.sendChunkedViaWebhook(text);
+    }
+  }
+
+  private async flush(): Promise<void> {
+    if (!this.messageId || !this.pendingText || this.isFinal) return;
+    if (this.pendingText === this.lastFlushedText) return;
+
+    let display = this.pendingText;
+    if (display.length > 1900) {
+      display = display.slice(0, 1900) + '\n\n*...streaming...*';
+    } else {
+      display = display + '\n\n\u270d\ufe0f *typing...*';
+    }
+    try {
+      await this.editWebhookMessage(display);
+      this.lastFlushedText = this.pendingText;
+      this.lastEdit = Date.now();
+    } catch {
+      // Rate limit or message deleted — ignore
+    }
+  }
+
+  private async editWebhookMessage(content: string): Promise<void> {
+    await fetch(`${this.webhookUrl}/messages/${this.messageId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  private async deleteWebhookMessage(): Promise<void> {
+    try {
+      await fetch(`${this.webhookUrl}/messages/${this.messageId}`, {
+        method: 'DELETE',
+      });
+    } catch { /* ignore */ }
+  }
+
+  private async sendChunkedViaWebhook(text: string): Promise<void> {
+    text = sanitizeResponse(text);
+    for (const chunk of chunkText(text, 1900)) {
+      const body: Record<string, unknown> = {
+        content: chunk,
+        username: this.agentName,
+      };
+      if (this.avatarUrl) body.avatar_url = this.avatarUrl;
+
+      await fetch(`${this.webhookUrl}?wait=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+  }
+}
+
 // ── Owner check ───────────────────────────────────────────────────────
 
 function isOwnerDm(message: Message): boolean {
@@ -463,6 +613,7 @@ function handleHelp(): string {
     '`!cron list|run|enable|disable` \u2014 Manage scheduled tasks',
     '`!workflow list|run <name>` \u2014 Manage multi-step workflows',
     '`!self-improve run|status|history|pending|apply|deny` \u2014 Self-improvement',
+    '`!team setup|list|status|messages|topology` \u2014 Manage agent team',
     '`!status [job]` \u2014 Check unleashed task progress',
     '`!dashboard` \u2014 Send a fresh system status embed',
     '`!heartbeat` \u2014 Run heartbeat \u00b7 `!tools` \u2014 List tools \u00b7 `!clear` \u2014 Reset',
@@ -570,6 +721,12 @@ export async function startDiscord(
 ): Promise<void> {
   const watchedChannels = new Set(DISCORD_WATCHED_CHANNELS);
 
+  // Add team agent channels to watched set (from bindings)
+  const teamRouter = gateway.getTeamRouter();
+  for (const channelId of teamRouter.getProvisionedChannelIds()) {
+    watchedChannels.add(channelId);
+  }
+
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -577,7 +734,8 @@ export async function startDiscord(
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.GuildMessageReactions,
       GatewayIntentBits.DirectMessageReactions,
-      ...(watchedChannels.size > 0 ? [GatewayIntentBits.GuildMessages] : []),
+      // Always include GuildMessages — team agents may be provisioned later
+      GatewayIntentBits.GuildMessages,
     ],
     partials: [Partials.Channel, Partials.Reaction, Partials.Message],
   });
@@ -803,6 +961,15 @@ export async function startDiscord(
     const sessionKey = isWatchedChannel
       ? `discord:channel:${message.channelId}:${message.author.id}`
       : `discord:user:${message.author.id}`;
+
+    // ── Team agent auto-routing for watched channels ────────────────
+    if (isWatchedChannel) {
+      const teamRouter = gateway.getTeamRouter();
+      const agentSlug = teamRouter.getAgentForChannel(`discord:${message.channelId}`);
+      if (agentSlug) {
+        gateway.setSessionProfile(sessionKey, agentSlug);
+      }
+    }
 
     // ── Commands (DM only) ──────────────────────────────────────────
 
@@ -1038,6 +1205,100 @@ export async function startDiscord(
       return;
     }
 
+    // ── Team commands (DM only) ─────────────────────────────────────
+
+    if (isDm && text.startsWith('!team')) {
+      const parts = text.split(/\s+/);
+      const subCmd = parts[1]?.toLowerCase();
+
+      if (subCmd === 'setup') {
+        await message.reply('Provisioning team channels...');
+        const router = gateway.getTeamRouter();
+        const results = await router.provision(DISCORD_TOKEN);
+        // Add newly provisioned channels to the watched set
+        for (const channelId of router.getProvisionedChannelIds()) {
+          watchedChannels.add(channelId);
+        }
+        await message.reply(`**Team Setup Results:**\n${results.map(r => `- ${r}`).join('\n')}`);
+        return;
+      }
+
+      if (subCmd === 'list' || !subCmd) {
+        const router = gateway.getTeamRouter();
+        const agents = router.listTeamAgents();
+        if (agents.length === 0) {
+          await message.reply('No team agents configured. Add `channelName:` to a profile in `vault/00-System/profiles/`.');
+        } else {
+          const bindings = router.getBindings();
+          const lines = ['**Team Agents:**\n'];
+          for (const a of agents) {
+            const channelId = bindings.channels[a.slug];
+            const channelStatus = channelId ? `<#${channelId}>` : '*not provisioned* — run `!team setup`';
+            const targets = a.team?.canMessage.join(', ') || 'none';
+            lines.push(`- **${a.name}** (\`${a.slug}\`)`);
+            lines.push(`  Channel: ${channelStatus}`);
+            lines.push(`  Can message: ${targets}`);
+          }
+          await message.reply(lines.join('\n'));
+        }
+        return;
+      }
+
+      if (subCmd === 'status') {
+        const router = gateway.getTeamRouter();
+        const agents = router.listTeamAgents();
+        const provisioned = router.listProvisionedAgents();
+        const msgs = gateway.getTeamBus().getRecentMessages(10);
+        const lines = [`**Team Status** — ${agents.length} agent(s), ${provisioned.length} provisioned\n`];
+        for (const a of agents) {
+          const agentMsgs = msgs.filter(m => m.fromAgent === a.slug || m.toAgent === a.slug);
+          const bound = router.getBindings().channels[a.slug] ? '\u2705' : '\u274c';
+          lines.push(`${bound} **${a.name}**: ${agentMsgs.length} recent message(s)`);
+        }
+        await message.reply(lines.join('\n') || 'No team agents configured.');
+        return;
+      }
+
+      if (subCmd === 'messages') {
+        const count = parseInt(parts[2] || '10', 10);
+        const msgs = gateway.getTeamBus().getRecentMessages(Math.min(count, 50));
+        if (msgs.length === 0) {
+          await message.reply('No inter-agent messages yet.');
+        } else {
+          const lines = msgs.map(m =>
+            `\`${m.timestamp.slice(11, 19)}\` **${m.fromAgent}** \u2192 **${m.toAgent}**: ${m.content.slice(0, 100)}`
+          );
+          await message.reply(`**Recent Team Messages:**\n\n${lines.join('\n')}`);
+        }
+        return;
+      }
+
+      if (subCmd === 'topology') {
+        const { nodes, edges } = gateway.getTeamRouter().getTopology();
+        if (nodes.length === 0) {
+          await message.reply('No team agents configured.');
+        } else {
+          const lines = ['**Team Topology:**\n'];
+          for (const node of nodes) {
+            const outgoing = edges.filter(e => e.from === node.slug).map(e => e.to);
+            lines.push(`- **${node.name}** \u2192 ${outgoing.length > 0 ? outgoing.join(', ') : '(no outgoing)'}`);
+          }
+          await message.reply(lines.join('\n'));
+        }
+        return;
+      }
+
+      await message.reply(
+        '**Team Commands:**\n' +
+        '`!team setup` — auto-create Discord channels for all team agents\n' +
+        '`!team list` — list all team agents and their channels\n' +
+        '`!team status` — show agent status\n' +
+        '`!team messages [n]` — recent inter-agent messages\n' +
+        '`!team topology` — communication graph',
+      );
+      return;
+    }
+
     // ── Plan orchestration (DM only) ─────────────────────────────────
 
     if (isDm && text.startsWith('!plan ')) {
@@ -1120,7 +1381,21 @@ export async function startDiscord(
 
     // ── Stream response ─────────────────────────────────────────────
 
-    const streamer = new DiscordStreamingMessage(message.channel);
+    // Use webhook-based streaming for team agent channels (distinct identity)
+    const teamRouter = gateway.getTeamRouter();
+    const boundAgent = isWatchedChannel
+      ? teamRouter.getAgentForChannel(`discord:${message.channelId}`)
+      : null;
+    const webhookUrl = boundAgent ? teamRouter.getWebhookUrl(boundAgent) : undefined;
+    const agentProfile = boundAgent
+      ? teamRouter.listTeamAgents().find(a => a.slug === boundAgent)
+      : undefined;
+
+    const useWebhook = !!(webhookUrl && agentProfile);
+
+    const streamer = useWebhook
+      ? new WebhookStreamingMessage(webhookUrl, agentProfile.name, agentProfile.avatar)
+      : new DiscordStreamingMessage(message.channel);
     await streamer.start();
 
     try {
@@ -1135,8 +1410,11 @@ export async function startDiscord(
       updatePresence(sessionKey);
 
       // Track bot message for feedback reactions
-      if (streamer.messageId) {
-        trackBotMessage(streamer.messageId, {
+      const msgId = useWebhook
+        ? (streamer as WebhookStreamingMessage).finalMessageId
+        : (streamer as DiscordStreamingMessage).messageId;
+      if (msgId) {
+        trackBotMessage(msgId, {
           sessionKey,
           userMessage: effectiveText.slice(0, 500),
           botResponse: response.slice(0, 500),
@@ -1234,6 +1512,77 @@ export async function startDiscord(
         const projName = cmd.options.getString('name') ?? undefined;
         await cmd.reply(handleProjectCommand(gateway, sessionKey, action, projName));
         updatePresence(sessionKey);
+        return;
+      }
+
+      // Team command
+      if (name === 'team') {
+        const action = cmd.options.getString('action', true);
+        if (action === 'setup') {
+          await cmd.deferReply();
+          const router = gateway.getTeamRouter();
+          const results = await router.provision(DISCORD_TOKEN);
+          for (const channelId of router.getProvisionedChannelIds()) {
+            watchedChannels.add(channelId);
+          }
+          await cmd.editReply(`**Team Setup:**\n${results.map(r => `- ${r}`).join('\n')}`);
+          return;
+        }
+        if (action === 'list') {
+          const router = gateway.getTeamRouter();
+          const agents = router.listTeamAgents();
+          if (agents.length === 0) {
+            await cmd.reply({ content: 'No team agents configured.', ephemeral: true });
+          } else {
+            const bindings = router.getBindings();
+            const lines = agents.map(a => {
+              const chId = bindings.channels[a.slug];
+              const ch = chId ? `<#${chId}>` : '*not provisioned*';
+              return `**${a.name}** (\`${a.slug}\`) \u2192 ${ch}`;
+            });
+            await cmd.reply({ content: `**Team Agents:**\n${lines.join('\n')}`, ephemeral: true });
+          }
+          return;
+        }
+        if (action === 'status') {
+          const router = gateway.getTeamRouter();
+          const agents = router.listTeamAgents();
+          const msgs = gateway.getTeamBus().getRecentMessages(10);
+          const lines = [`**Team Status** \u2014 ${agents.length} agent(s)\n`];
+          for (const a of agents) {
+            const agentMsgs = msgs.filter(m => m.fromAgent === a.slug || m.toAgent === a.slug);
+            const bound = router.getBindings().channels[a.slug] ? '\u2705' : '\u274c';
+            lines.push(`${bound} **${a.name}**: ${agentMsgs.length} recent message(s)`);
+          }
+          await cmd.reply({ content: lines.join('\n'), ephemeral: true });
+          return;
+        }
+        if (action === 'messages') {
+          const msgs = gateway.getTeamBus().getRecentMessages(10);
+          if (msgs.length === 0) {
+            await cmd.reply({ content: 'No inter-agent messages yet.', ephemeral: true });
+          } else {
+            const lines = msgs.map(m =>
+              `\`${m.timestamp.slice(11, 19)}\` **${m.fromAgent}** \u2192 **${m.toAgent}**: ${m.content.slice(0, 100)}`
+            );
+            await cmd.reply({ content: lines.join('\n'), ephemeral: true });
+          }
+          return;
+        }
+        if (action === 'topology') {
+          const { nodes, edges } = gateway.getTeamRouter().getTopology();
+          if (nodes.length === 0) {
+            await cmd.reply({ content: 'No team agents configured.', ephemeral: true });
+          } else {
+            const lines = nodes.map(node => {
+              const outgoing = edges.filter(e => e.from === node.slug).map(e => e.to);
+              return `**${node.name}** \u2192 ${outgoing.length > 0 ? outgoing.join(', ') : '(none)'}`;
+            });
+            await cmd.reply({ content: `**Topology:**\n${lines.join('\n')}`, ephemeral: true });
+          }
+          return;
+        }
+        await cmd.reply({ content: 'Unknown team action.', ephemeral: true });
         return;
       }
 

@@ -18,6 +18,7 @@ import { OWNER_NAME, BASE_DIR } from '../config.js';
 let heartbeatActive = false;
 let heartbeatTier2Allowed = false;
 let activeProfileTier: number | null = null;
+let activeProfileAllowedTools: string[] | null = null;
 let approvalCallback: ((desc: string) => Promise<boolean>) | null = null;
 const auditLog: string[] = [];
 
@@ -67,6 +68,10 @@ export function setApprovalCallback(cb: ((desc: string) => Promise<boolean>) | n
 
 export function setProfileTier(tier: number | null): void {
   activeProfileTier = tier;
+}
+
+export function setProfileAllowedTools(tools: string[] | null): void {
+  activeProfileAllowedTools = tools;
 }
 
 export function setInteractionSource(source: 'owner-dm' | 'owner-channel' | 'autonomous'): void {
@@ -211,6 +216,16 @@ export async function enforceToolPermissions(
       return {
         behavior: 'deny',
         message: `${toolName} exceeds this profile's security tier.`,
+      };
+    }
+  }
+
+  // ── Profile allowed tools whitelist ──────────────────────────
+  if (activeProfileAllowedTools && activeProfileAllowedTools.length > 0) {
+    if (!activeProfileAllowedTools.includes(toolName)) {
+      return {
+        behavior: 'deny',
+        message: `${toolName} is not in this agent's allowed tools.`,
       };
     }
   }

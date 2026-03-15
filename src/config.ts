@@ -68,6 +68,7 @@ export const TASKS_DIR = path.join(VAULT_DIR, '05-Tasks');
 export const TEMPLATES_DIR = path.join(VAULT_DIR, '06-Templates');
 export const INBOX_DIR = path.join(VAULT_DIR, '07-Inbox');
 export const PROFILES_DIR = path.join(SYSTEM_DIR, 'profiles');
+export const AGENTS_DIR = path.join(SYSTEM_DIR, 'agents');
 
 export const SOUL_FILE = path.join(SYSTEM_DIR, 'SOUL.md');
 export const AGENTS_FILE = path.join(SYSTEM_DIR, 'AGENTS.md');
@@ -257,6 +258,14 @@ export function validateSecrets(): string[] {
   }
   return warnings;
 }
+
+// ── Team ────────────────────────────────────────────────────────────
+
+export const DISCORD_GUILD_ID = getEnv('DISCORD_GUILD_ID');
+export const TEAM_CATEGORY_ID = getEnv('TEAM_CATEGORY_ID');
+export const TEAM_COMMS_CHANNEL = getEnv('TEAM_COMMS_CHANNEL');
+export const TEAM_COMMS_LOG = path.join(BASE_DIR, 'logs', 'team-comms.jsonl');
+export const TEAM_BINDINGS_FILE = path.join(BASE_DIR, 'team-bindings.json');
 
 // ── Memory / Search ──────────────────────────────────────────────────
 

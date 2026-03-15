@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
-import type { AgentProfile } from '../types.js';
+import type { AgentProfile, TeamAgentConfig } from '../types.js';
 
 const CACHE_TTL_MS = 60_000;
 
@@ -64,6 +64,21 @@ export class ProfileManager {
     // Cap tier at 2 — profiles can never grant Tier 3
     const tier = Math.min(Number(meta.tier ?? 1), 2);
 
+    // Parse team-specific frontmatter
+    let team: TeamAgentConfig | undefined;
+    const channelName = meta.channelName ? String(meta.channelName) : undefined;
+    const canMessage = Array.isArray(meta.canMessage)
+      ? meta.canMessage.map(String).filter(Boolean)
+      : [];
+    const allowedTools = Array.isArray(meta.allowedTools)
+      ? meta.allowedTools.map(String).filter(Boolean)
+      : undefined;
+
+    if (channelName) {
+      // channels[] is populated at runtime from team-bindings.json via TeamRouter
+      team = { channelName, channels: [], canMessage, allowedTools };
+    }
+
     return {
       slug,
       name: String(meta.name ?? slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())),
@@ -71,6 +86,8 @@ export class ProfileManager {
       description: String(meta.description ?? meta.role ?? ''),
       systemPromptBody: content.trim(),
       model: meta.model ? String(meta.model) : undefined,
+      avatar: meta.avatar ? String(meta.avatar) : undefined,
+      team,
     };
   }
 
