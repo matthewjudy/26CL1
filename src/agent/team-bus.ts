@@ -138,18 +138,31 @@ export class TeamBus {
       depth,
     };
 
-    // Resolve target agent's session key — try team-bindings first, then BotManager
-    const sessionKey = this.resolveSessionKey(toSlug);
-    if (sessionKey) {
-      this.gateway.setSessionProfile(sessionKey, toSlug);
-      this.gateway.injectContext(
-        sessionKey,
-        `[Team message from ${fromProfile?.name ?? fromSlug} (${fromSlug}), depth=${depth}]`,
-        content,
-      );
-      message.delivered = true;
-    } else {
-      logger.warn({ toSlug }, 'No channel found for target agent — message queued for later delivery');
+    // Deliver to target agent — prefer active bot delivery, fall back to session injection
+    const senderName = fromProfile?.name ?? fromSlug;
+
+    if (this.botManager?.hasBot(toSlug)) {
+      // Active delivery: post in bot's channel and trigger the agent to respond
+      const botDelivered = await this.botManager.deliverTeamMessage(toSlug, senderName, fromSlug, content);
+      if (botDelivered) {
+        message.delivered = true;
+      }
+    }
+
+    if (!message.delivered) {
+      // Fallback: passive context injection (agent sees it on next interaction)
+      const sessionKey = this.resolveSessionKey(toSlug);
+      if (sessionKey) {
+        this.gateway.setSessionProfile(sessionKey, toSlug);
+        this.gateway.injectContext(
+          sessionKey,
+          `[Team message from ${senderName} (${fromSlug}), depth=${depth}]`,
+          content,
+        );
+        message.delivered = true;
+      } else {
+        logger.warn({ toSlug }, 'No channel found for target agent — message queued for later delivery');
+      }
     }
 
     // Persist to JSONL log
@@ -232,7 +245,7 @@ export class TeamBus {
    * Called periodically by the daemon to pick up messages
    * written by the MCP tool (which runs out-of-process).
    */
-  deliverPending(): number {
+  async deliverPending(): Promise<number> {
     if (!existsSync(this.logFile)) return 0;
 
     let delivered = 0;
@@ -247,17 +260,29 @@ export class TeamBus {
         try {
           const msg = JSON.parse(line) as TeamMessage;
           if (!msg.delivered) {
-            // Try to deliver via team-bindings or BotManager
-            const sessionKey = this.resolveSessionKey(msg.toAgent);
-            if (sessionKey) {
-              this.gateway.setSessionProfile(sessionKey, msg.toAgent);
-              this.gateway.injectContext(
-                sessionKey,
-                `[Team message from ${msg.fromAgent}, depth=${msg.depth}]`,
-                msg.content,
+            // Try active bot delivery first, then passive injection
+            if (this.botManager?.hasBot(msg.toAgent)) {
+              const botDelivered = await this.botManager.deliverTeamMessage(
+                msg.toAgent, msg.fromAgent, msg.fromAgent, msg.content,
               );
-              msg.delivered = true;
-              delivered++;
+              if (botDelivered) {
+                msg.delivered = true;
+                delivered++;
+              }
+            }
+
+            if (!msg.delivered) {
+              const sessionKey = this.resolveSessionKey(msg.toAgent);
+              if (sessionKey) {
+                this.gateway.setSessionProfile(sessionKey, msg.toAgent);
+                this.gateway.injectContext(
+                  sessionKey,
+                  `[Team message from ${msg.fromAgent}, depth=${msg.depth}]`,
+                  msg.content,
+                );
+                msg.delivered = true;
+                delivered++;
+              }
             }
           }
           updatedLines.push(JSON.stringify(msg));

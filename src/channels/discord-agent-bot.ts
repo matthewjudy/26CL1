@@ -227,6 +227,56 @@ export class AgentBotClient {
     }
   }
 
+  /**
+   * Receive an inter-agent team message. Posts an embed showing the incoming
+   * message, then triggers the agent to process and respond in-channel.
+   */
+  async receiveTeamMessage(fromName: string, fromSlug: string, content: string): Promise<void> {
+    if (this.resolvedChannelIds.length === 0) {
+      logger.warn({ slug: this.config.slug }, 'No channels to deliver team message to');
+      return;
+    }
+
+    const channelId = this.resolvedChannelIds[0];
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      logger.warn({ slug: this.config.slug, channelId }, 'Channel not found for team message delivery');
+      return;
+    }
+
+    // Post the incoming message as an embed so it's visible in the channel
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2) // Discord blurple
+      .setAuthor({ name: `${fromName} via team message` })
+      .setDescription(content.length > 4096 ? content.slice(0, 4093) + '...' : content)
+      .setTimestamp();
+
+    await channel.send({ embeds: [embed] });
+
+    // Now trigger the agent to process the message and respond
+    const sessionKey = `discord:channel:${channelId}:${this.config.ownerId}`;
+    this.gateway.setSessionProfile(sessionKey, this.config.slug);
+
+    const streamer = new DiscordStreamingMessage(channel);
+    await streamer.start();
+
+    try {
+      const wrappedContent = `[Team message from ${fromName} (${fromSlug})]: ${content}`;
+      const response = await this.gateway.handleMessage(
+        sessionKey,
+        wrappedContent,
+        async (token: string) => {
+          await streamer.update(token);
+        },
+      );
+      await streamer.finalize(response);
+      logger.info({ slug: this.config.slug, from: fromSlug }, 'Processed team message');
+    } catch (err) {
+      logger.error({ err, slug: this.config.slug }, 'Failed to process team message');
+      await streamer.finalize(`Something went wrong processing a team message: ${sanitizeResponse(String(err))}`);
+    }
+  }
+
   private async handleMessage(message: Message): Promise<void> {
     // Ignore own messages
     if (message.author.id === this.client.user?.id) return;
