@@ -93,24 +93,31 @@ export async function safeSourceEdit(
   }
 
   // 3. Commit on self/edits
+  //    Use writeFileSync for the commit message to prevent shell injection
+  //    through the `reason` string (which may contain user input).
   try {
+    const commitMsgFile = path.join(pkgDir, '.git', 'SELF_EDIT_MSG');
+    const sanitizedReason = reason.replace(/[^\x20-\x7E]/g, '').slice(0, 200);
+    writeFileSync(commitMsgFile, `self-edit: ${sanitizedReason}`);
     execSync(`git add ${changedFiles.map(f => `"${f}"`).join(' ')}`, {
       cwd: pkgDir,
       stdio: 'pipe',
     });
-    execSync(`git commit -m "self-edit: ${reason}"`, {
+    execSync(`git commit -F .git/SELF_EDIT_MSG`, {
       cwd: pkgDir,
       stdio: 'pipe',
     });
-    logger.info({ changedFiles, reason }, 'Committed source edit on self/edits');
+    logger.info({ changedFiles, reason: sanitizedReason }, 'Committed source edit on self/edits');
   } catch (err) {
     logger.error({ err }, 'Git commit failed');
     return { success: false, error: `Git commit failed: ${String(err)}` };
   }
 
-  // 4. Build
+  // 4. Build — use `tsc` directly instead of `npm run build` because
+  //    the build script does `rm -rf dist` which would nuke the currently
+  //    running process's loaded modules. tsc alone overwrites only changed .js files.
   try {
-    execSync('npm run build', {
+    execSync('npx tsc', {
       cwd: pkgDir,
       stdio: 'pipe',
       timeout: 120_000,
@@ -121,7 +128,7 @@ export async function safeSourceEdit(
     logger.error({ err }, 'Build failed after source edit — reverting');
     try {
       execSync('git revert --no-edit HEAD', { cwd: pkgDir, stdio: 'pipe' });
-      execSync('npm run build', { cwd: pkgDir, stdio: 'pipe', timeout: 120_000 });
+      execSync('npx tsc', { cwd: pkgDir, stdio: 'pipe', timeout: 120_000 });
     } catch (revertErr) {
       logger.error({ revertErr }, 'Revert + rebuild also failed');
     }

@@ -643,22 +643,33 @@ async function asyncMain(): Promise<void> {
   });
 
   // ── Graceful cleanup ──────────────────────────────────────────
+
   logger.info(restartRequested ? 'Restart signal received — restarting' : 'Shutdown signal received — cleaning up');
+
+  // Stop accepting new work immediately
   clearInterval(timerInterval);
   clearInterval(teamDeliveryInterval);
   clearInterval(sourceEditInterval);
+
+  // Drain active sessions BEFORE tearing down infrastructure —
+  // active sessions may need heartbeat, cron, graph, etc.
+  if (restartRequested) {
+    await drainActiveSessions(gateway);
+  }
+
+  // Now safe to tear down infrastructure
   heartbeat.stop();
   cronScheduler.stop();
   if (graphStore) {
     try { await graphStore.close(); } catch { /* non-fatal */ }
   }
 
-  // ── Self-restart (enhanced with drain + health check + rollback) ──
+  // ── Self-restart (enhanced with health check + rollback) ────────
   if (restartRequested) {
-    // 1. Drain active sessions
-    await drainActiveSessions(gateway);
+    // Clear our PID file BEFORE spawning the child, so ensureSingleton()
+    // in the child doesn't see our PID and kill us during the handoff.
+    cleanupPid();
 
-    // 2. Spawn a new detached instance
     const { spawn } = await import('node:child_process');
     const entry = process.argv[1];
     const args = process.argv.slice(2);
@@ -671,7 +682,7 @@ async function asyncMain(): Promise<void> {
     });
     child.unref();
 
-    // 3. Health check — wait up to 10s for the child to write a new PID
+    // Health check — wait up to 10s for the child to write a new PID
     const childAlive = await new Promise<boolean>((resolve) => {
       child.once('exit', () => resolve(false));
       const checkInterval = setInterval(() => {
@@ -691,7 +702,7 @@ async function asyncMain(): Promise<void> {
       }, 10_000);
     });
 
-    // 4. Rollback on crash — if child died and sentinel exists with changedFiles
+    // Rollback on crash — if child died and sentinel exists with changedFiles
     if (!childAlive) {
       logger.error('Restart failed — new process exited immediately');
       const crashSentinel = readAndClearSentinel();
@@ -699,10 +710,11 @@ async function asyncMain(): Promise<void> {
         logger.info({ changedFiles: crashSentinel.changedFiles }, 'Rolling back source edit...');
         try {
           execSync('git revert --no-edit HEAD', { cwd: config.PKG_DIR, stdio: 'pipe' });
-          execSync('npm run build', { cwd: config.PKG_DIR, stdio: 'pipe', timeout: 120_000 });
+          // Use tsc directly — `npm run build` does `rm -rf dist` which would
+          // nuke the running process's code. tsc alone overwrites only changed .js files.
+          execSync('npx tsc', { cwd: config.PKG_DIR, stdio: 'pipe', timeout: 120_000 });
           logger.info('Rollback successful — spawning clean instance');
 
-          // Spawn again with the reverted code
           const retryChild = spawn(process.execPath, [entry, ...args], {
             detached: true,
             stdio: 'ignore',
@@ -720,7 +732,6 @@ async function asyncMain(): Promise<void> {
             logger.error('Rollback spawn also failed — exiting. launchd/systemd will respawn.');
           }
 
-          cleanupPid();
           process.exit(retryAlive ? 0 : 1);
         } catch (revertErr) {
           logger.error({ revertErr }, 'Rollback failed — exiting');
@@ -729,9 +740,8 @@ async function asyncMain(): Promise<void> {
       logger.error('Run `clementine doctor` to diagnose.');
     }
 
-    // Force exit — the Discord websocket and other event loop handles
+    // Force exit — Discord websocket and other event loop handles
     // will keep this process alive indefinitely if we just return.
-    cleanupPid();
     process.exit(childAlive ? 0 : 1);
   }
 }

@@ -149,7 +149,9 @@ export async function applyUpdate(pkgDir: string): Promise<UpdateApplyResult> {
 
     // 7. Build
     try {
-      execSync('npm run build', {
+      // Use tsc directly — `npm run build` does `rm -rf dist` which would
+      // nuke the running process's loaded modules during the handoff window.
+      execSync('npx tsc', {
         cwd: pkgDir,
         stdio: 'pipe',
         timeout: 120_000,
