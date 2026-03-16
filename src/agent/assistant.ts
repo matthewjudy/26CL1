@@ -835,7 +835,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
           args: [MCP_SERVER_SCRIPT],
           env: {
             CLEMENTINE_HOME: BASE_DIR,
-            ...(profile?.team ? { CLEMENTINE_TEAM_AGENT: profile.slug } : {}),
+            CLEMENTINE_TEAM_AGENT: profile?.slug ?? 'clementine',
           },
         },
       },
@@ -1523,7 +1523,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
               args: [MCP_SERVER_SCRIPT],
               env: {
                 CLEMENTINE_HOME: BASE_DIR,
-                ...(profile?.slug ? { CLEMENTINE_TEAM_AGENT: profile.slug } : {}),
+                CLEMENTINE_TEAM_AGENT: profile?.slug ?? 'clementine',
               },
             },
           },

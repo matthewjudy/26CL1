@@ -130,7 +130,9 @@ async function getStore(): Promise<MemoryStoreType> {
 }
 
 // ── Active Agent Slug (set when running as a team agent) ──────────────
-const ACTIVE_AGENT_SLUG: string | null = process.env.CLEMENTINE_TEAM_AGENT || null;
+// "clementine" is the primary agent — treat it as no agent for memory scoping
+const _rawAgentSlug = process.env.CLEMENTINE_TEAM_AGENT || null;
+const ACTIVE_AGENT_SLUG: string | null = _rawAgentSlug === 'clementine' ? null : _rawAgentSlug;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -3194,12 +3196,10 @@ server.tool(
     }
 
     const caller = agents.find(a => a.slug === callerSlug);
-    if (!caller) {
-      return textResult(`Error: Agent '${callerSlug}' is not a team agent.`);
-    }
+    const isPrimaryAgent = !caller; // Primary agent (e.g. "clementine") has no agent.md
 
-    // Validate canMessage permission
-    if (!caller.canMessage.includes(to_agent)) {
+    // Team agents must have canMessage permission; primary agent can message anyone
+    if (caller && !caller.canMessage.includes(to_agent)) {
       return textResult(
         `Error: Agent '${callerSlug}' is not authorized to message '${to_agent}'. ` +
         `Allowed targets: ${caller.canMessage.join(', ') || 'none'}`,
@@ -3243,7 +3243,7 @@ server.tool(
     if (commsChannelId && discordToken) {
       const truncated = message.length > 1024 ? message.slice(0, 1021) + '...' : message;
       const embed = {
-        title: `${caller.name} \u2192 ${target.name}`,
+        title: `${caller?.name ?? callerSlug} \u2192 ${target.name}`,
         description: truncated,
         color: 0x5865F2,
         footer: { text: `via team_message \u00B7 depth ${msgDepth}` },

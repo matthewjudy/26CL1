@@ -56,19 +56,19 @@ export class TeamBus {
     content: string,
     depth = 0,
   ): Promise<TeamMessage> {
-    // Validate sender exists and is a team agent
+    // Validate sender — team agents need canMessage permission, primary agent can message anyone
     const fromProfile = this.teamRouter.listTeamAgents().find((a) => a.slug === fromSlug);
-    if (!fromProfile) {
-      throw new Error(`Agent '${fromSlug}' is not a team agent`);
-    }
 
-    // Validate canMessage permission
-    if (!fromProfile.team?.canMessage.includes(toSlug)) {
-      throw new Error(
-        `Agent '${fromSlug}' is not authorized to message '${toSlug}'. ` +
-        `Allowed targets: ${fromProfile.team?.canMessage.join(', ') || 'none'}`,
-      );
+    if (fromProfile) {
+      // Team agent: enforce canMessage permission
+      if (!fromProfile.team?.canMessage.includes(toSlug)) {
+        throw new Error(
+          `Agent '${fromSlug}' is not authorized to message '${toSlug}'. ` +
+          `Allowed targets: ${fromProfile.team?.canMessage.join(', ') || 'none'}`,
+        );
+      }
     }
+    // If fromProfile is null, sender is the primary agent (no agent.md) — allowed to message anyone
 
     // Validate recipient exists
     const toProfile = this.teamRouter.listTeamAgents().find((a) => a.slug === toSlug);
@@ -122,7 +122,7 @@ export class TeamBus {
       // Inject the message as context
       this.gateway.injectContext(
         sessionKey,
-        `[Team message from ${fromProfile.name} (${fromSlug}), depth=${depth}]`,
+        `[Team message from ${fromProfile?.name ?? fromSlug} (${fromSlug}), depth=${depth}]`,
         content,
       );
       message.delivered = true;
@@ -142,8 +142,15 @@ export class TeamBus {
     }
 
     // Mirror to Discord comms channel if configured
-    if (this.commsChannelId) {
-      this.mirrorToDiscord(message, fromProfile, toProfile).catch((err) => {
+    if (this.commsChannelId && toProfile) {
+      const senderProfile: AgentProfile = fromProfile ?? {
+        slug: fromSlug,
+        name: fromSlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        tier: 3,
+        description: 'Primary agent',
+        systemPromptBody: '',
+      };
+      this.mirrorToDiscord(message, senderProfile, toProfile).catch((err) => {
         logger.warn({ err }, 'Failed to mirror team message to Discord');
       });
     }
