@@ -2082,6 +2082,67 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
     }
   });
 
+  // ── Discord channel discovery ───────────────────────────────────────
+
+  /** Fetch all text channels from all guilds the main bot is in, via Discord REST API. */
+  app.get('/api/discord/channels', async (_req, res) => {
+    try {
+      // Get the main Discord bot token
+      const env = parseEnvFile();
+      let token = env['DISCORD_TOKEN'] ?? '';
+      if (!token) {
+        // Try Keychain fallback
+        const name = getAssistantName().toLowerCase();
+        try {
+          token = execSync(
+            `security find-generic-password -s "${name}" -a "DISCORD_TOKEN" -w`,
+            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+          ).trim();
+        } catch { /* no token */ }
+      }
+      if (!token) {
+        res.json({ ok: false, error: 'No Discord token configured', channels: [] });
+        return;
+      }
+
+      // Fetch guilds
+      const guildsRes = await fetch('https://discord.com/api/v10/users/@me/guilds', {
+        headers: { Authorization: `Bot ${token}` },
+      });
+      if (!guildsRes.ok) {
+        res.json({ ok: false, error: `Discord API error: ${guildsRes.status}`, channels: [] });
+        return;
+      }
+      const guilds = await guildsRes.json() as Array<{ id: string; name: string }>;
+
+      // Fetch channels for each guild
+      const allChannels: Array<{ id: string; name: string; guildId: string; guildName: string; type: number }> = [];
+      for (const guild of guilds) {
+        try {
+          const chRes = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/channels`, {
+            headers: { Authorization: `Bot ${token}` },
+          });
+          if (!chRes.ok) continue;
+          const channels = await chRes.json() as Array<{ id: string; name: string; type: number; parent_id?: string }>;
+          // Type 0 = text, type 5 = announcement — both usable
+          for (const ch of channels.filter(c => c.type === 0 || c.type === 5)) {
+            allChannels.push({
+              id: ch.id,
+              name: ch.name,
+              guildId: guild.id,
+              guildName: guild.name,
+              type: ch.type,
+            });
+          }
+        } catch { /* skip guild */ }
+      }
+
+      res.json({ ok: true, channels: allChannels });
+    } catch (err) {
+      res.json({ ok: false, error: String(err), channels: [] });
+    }
+  });
+
   // ── Bot token helper endpoints ──────────────────────────────────────
 
   /** Derive invite URL from a raw token (no save needed). */
@@ -4090,7 +4151,9 @@ function getDashboardHTML(token: string): string {
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
             <div>
               <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Channel</label>
-              <input id="agent-channel" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="team">
+              <select id="agent-channel" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">
+                <option value="">None (DM only)</option>
+              </select>
               <label style="display:flex;align-items:center;gap:6px;margin-top:6px;color:var(--text-muted);font-size:12px;cursor:pointer">
                 <input type="checkbox" id="agent-team-chat" style="accent-color:var(--blue)">
                 Shared team chat <span style="opacity:0.6">(responds when @mentioned)</span>
@@ -6388,6 +6451,36 @@ function getSelectedTools() {
   return Array.from(document.querySelectorAll('.agent-tool-cb:checked')).map(function(cb) { return cb.value; });
 }
 
+var _discordChannelsCache = null;
+async function loadDiscordChannels(selectedValue) {
+  var sel = document.getElementById('agent-channel');
+  if (!_discordChannelsCache) {
+    try {
+      var r = await apiFetch('/api/discord/channels');
+      var d = await r.json();
+      if (d.ok) _discordChannelsCache = d.channels;
+      else _discordChannelsCache = [];
+    } catch { _discordChannelsCache = []; }
+  }
+  sel.innerHTML = '<option value="">None (DM only)</option>';
+  (_discordChannelsCache || []).forEach(function(ch) {
+    var opt = document.createElement('option');
+    opt.value = ch.name;
+    opt.textContent = '#' + ch.name + (ch.guildName ? ' (' + ch.guildName + ')' : '');
+    opt.dataset.channelId = ch.id;
+    if (ch.name === selectedValue) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  // If the saved value doesn't match any known channel, add it as a custom option
+  if (selectedValue && !sel.value) {
+    var opt = document.createElement('option');
+    opt.value = selectedValue;
+    opt.textContent = '#' + selectedValue + ' (custom)';
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
 function showAgentCreateModal() {
   document.getElementById('agent-modal').classList.add('show');
   document.getElementById('agent-modal-title').textContent = 'Hire a New Team Member';
@@ -6398,6 +6491,7 @@ function showAgentCreateModal() {
   document.getElementById('agent-token-setup').style.display = 'none';
   loadAgentProjectOptions();
   loadAgentToolOptions();
+  loadDiscordChannels('');
 }
 
 async function editAgent(slug) {
@@ -6414,7 +6508,7 @@ async function editAgent(slug) {
     document.getElementById('agent-name').value = a.name || '';
     document.getElementById('agent-description').value = a.description || '';
     document.getElementById('agent-avatar-url').value = a.avatar || '';
-    document.getElementById('agent-channel').value = a.channelName || '';
+    loadDiscordChannels(a.channelName || '');
     document.getElementById('agent-team-chat').checked = a.teamChat || false;
     document.getElementById('agent-model').value = a.model || '';
     document.getElementById('agent-tier').value = String(a.tier || 2);
