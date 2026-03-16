@@ -27,6 +27,7 @@
     "commander": "^13.1.0",
     "discord.js": "^14.18.0",
     "express": "^4.21.0",
+    "falkordblite": "^0.2.0",
     "grammy": "^1.35.0",
     "gray-matter": "^4.0.3",
     "node-cron": "^3.0.3",

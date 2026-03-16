@@ -434,6 +434,19 @@ function cmdDoctor(): void {
     issues++;
   }
 
+  // FalkorDB graph engine
+  try {
+    const result = execSync(
+      `node -e "const{BinaryManager}=require('falkordblite/dist/binary-manager.js');new BinaryManager().ensureBinaries().then(p=>{console.log(JSON.stringify(p));process.exit(0)}).catch(e=>{console.error(e.message);process.exit(1)})"`,
+      { cwd: PACKAGE_ROOT, stdio: 'pipe', timeout: 30000 },
+    );
+    console.log(`  ${GREEN}OK${RESET}  FalkorDB graph engine binaries installed`);
+  } catch {
+    console.log(`  ${RED}FAIL${RESET}  FalkorDB graph engine binaries not available`);
+    console.log(`       Fix: cd ${PACKAGE_ROOT} && node node_modules/falkordblite/scripts/postinstall.js`);
+    issues++;
+  }
+
   // Data home
   if (existsSync(BASE_DIR)) {
     console.log(`  ${GREEN}OK${RESET}  Data home exists (${BASE_DIR})`);
@@ -1020,6 +1033,19 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     console.log(`  ${GREEN}OK${RESET}  Native modules rebuilt`);
   } catch {
     console.error(`  ${YELLOW}WARN${RESET}  Native module rebuild failed — memory search may not work`);
+  }
+
+  // 6c. Verify FalkorDB graph engine binaries
+  console.log(`  ${S()} Verifying graph engine...`);
+  try {
+    execSync(
+      `node -e "const{BinaryManager}=require('falkordblite/dist/binary-manager.js');new BinaryManager().ensureBinaries().then(()=>process.exit(0)).catch(()=>process.exit(1))"`,
+      { cwd: PACKAGE_ROOT, stdio: ['pipe', 'pipe', 'pipe'], timeout: 60000 },
+    );
+    console.log(`  ${GREEN}OK${RESET}  FalkorDB graph engine ready`);
+  } catch {
+    console.error(`  ${YELLOW}WARN${RESET}  FalkorDB graph engine setup failed — knowledge graph features will be disabled`);
+    console.error(`       Run: cd ${PACKAGE_ROOT} && node node_modules/falkordblite/scripts/postinstall.js`);
   }
 
   // 7. Build (clean)

@@ -733,7 +733,26 @@ async function getMemory(): Promise<Record<string, unknown>> {
     } catch { /* ignore */ }
   }
 
-  return { content: content.slice(0, 5000), dbStats };
+  // Graph stats
+  let graphStats: Record<string, unknown> = { available: false };
+  try {
+    const { getSharedGraphStore } = await import('../memory/graph-store.js');
+    const graphDbDir = path.join(BASE_DIR, '.graph.db');
+    const gs = await getSharedGraphStore(graphDbDir);
+    if (gs) {
+      const nodeCount = await gs.query('MATCH (n) RETURN count(n) AS c');
+      const edgeCount = await gs.query('MATCH ()-[r]->() RETURN count(r) AS c');
+      const labelCounts = await gs.query('MATCH (n) RETURN labels(n)[0] AS label, count(n) AS c ORDER BY c DESC');
+      graphStats = {
+        available: true,
+        nodes: nodeCount[0]?.[0] ?? 0,
+        edges: edgeCount[0]?.[0] ?? 0,
+        labels: (labelCounts ?? []).map((r: any[]) => ({ label: r[0], count: r[1] })),
+      };
+    }
+  } catch { /* graph unavailable */ }
+
+  return { content: content.slice(0, 5000), dbStats, graphStats };
 }
 
 function getLogs(lines: number): string {
@@ -1279,6 +1298,33 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
     }
   });
 
+  // ── Graph API ────────────────────────────────────────────────
+
+  app.get('/api/graph/visualization', async (_req, res) => {
+    try {
+      const { getSharedGraphStore } = await import('../memory/graph-store.js');
+      const graphDbDir = path.join(BASE_DIR, '.graph.db');
+      const gs = await getSharedGraphStore(graphDbDir);
+      if (!gs) {
+        res.json({ nodes: [], edges: [], available: false });
+        return;
+      }
+      const nodes = await gs.query(
+        'MATCH (n) RETURN n.id AS id, labels(n)[0] AS label, properties(n) AS props LIMIT 200',
+      );
+      const edges = await gs.query(
+        'MATCH (a)-[r]->(b) RETURN a.id AS from, b.id AS to, type(r) AS rel LIMIT 500',
+      );
+      res.json({
+        nodes: nodes.map((r: any[]) => ({ id: r[0], label: r[1], props: r[2] ?? {} })),
+        edges: edges.map((r: any[]) => ({ from: r[0], to: r[1], rel: r[2] })),
+        available: true,
+      });
+    } catch (err) {
+      res.json({ nodes: [], edges: [], available: false, error: String(err) });
+    }
+  });
+
   // ── CRON CRUD routes (continued) ──────────────────────────────
 
   app.post('/api/cron', (req, res) => {
@@ -1807,7 +1853,42 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
     }
     try {
       const data = await searchMemory(q, 20);
-      res.json(data);
+
+      // Enrich with graph relationships for entities found in results
+      let graphContext: Array<{ from: string; rel: string; to: string }> = [];
+      try {
+        const { getSharedGraphStore } = await import('../memory/graph-store.js');
+        const graphDbDir = path.join(BASE_DIR, '.graph.db');
+        const gs = await getSharedGraphStore(graphDbDir);
+        if (gs) {
+          const entityIds = new Set<string>();
+          // Extract entity slugs from result source files
+          for (const r of (data.results ?? []) as Array<Record<string, unknown>>) {
+            const sf = String(r.source_file ?? '');
+            if (/0[2-4]-/.test(sf)) {
+              entityIds.add(path.basename(sf, '.md').toLowerCase().replace(/\s+/g, '-'));
+            }
+          }
+          // Also try query terms
+          for (const word of q.toLowerCase().split(/\s+/)) {
+            const clean = word.replace(/[^a-z0-9-]/g, '');
+            if (clean.length >= 3) entityIds.add(clean);
+          }
+          const seen = new Set<string>();
+          for (const id of [...entityIds].slice(0, 5)) {
+            const rels = await gs.getRelationships(id, 'both');
+            for (const r of rels.slice(0, 5)) {
+              const key = `${r.from}-${r.type}-${r.to}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                graphContext.push({ from: r.from, rel: r.type, to: r.to });
+              }
+            }
+          }
+        }
+      } catch { /* graph unavailable */ }
+
+      res.json({ ...data, graphContext });
     } catch (err) {
       res.status(500).json({ results: [], error: String(err) });
     }
@@ -3745,6 +3826,9 @@ function getDashboardHTML(token: string): string {
       <div class="nav-item" data-page="search">
         <span class="nav-icon">&#128269;</span> Search Memory
       </div>
+      <div class="nav-item" data-page="graph">
+        <span class="nav-icon">&#128348;</span> Knowledge Graph
+      </div>
     </div>
     <div class="nav-section">
       <div class="nav-section-title">Workspace</div>
@@ -4063,6 +4147,25 @@ function getDashboardHTML(token: string): string {
         </form>
         </div>
       </div>
+    </div>
+
+    <!-- ═══ Knowledge Graph Page ═══ -->
+    <div class="page" id="page-graph">
+      <div class="page-title">Knowledge Graph</div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <input id="graph-search" placeholder="Search entities..." style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-input);color:var(--text);font-size:14px">
+        <select id="graph-filter-label" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-input);color:var(--text);font-size:14px">
+          <option value="">All Types</option>
+          <option value="Person">People</option>
+          <option value="Project">Projects</option>
+          <option value="Topic">Topics</option>
+          <option value="Agent">Agents</option>
+          <option value="Task">Tasks</option>
+        </select>
+        <button class="btn" onclick="refreshGraph()" style="font-size:14px">Refresh</button>
+      </div>
+      <div id="graph-canvas" style="height:500px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);position:relative"></div>
+      <div id="graph-detail-panel" style="margin-top:12px"></div>
     </div>
 
     <!-- ═══ Settings Page ═══ -->
@@ -4405,6 +4508,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (page === 'settings') refreshSettings();
     if (page === 'self-improve') refreshSelfImprove();
     if (page === 'team') refreshTeam();
+    if (page === 'graph') refreshGraph();
   });
 });
 
@@ -5499,16 +5603,39 @@ async function refreshMemory() {
       statsHtml = '<div class="stat-grid" style="margin-bottom:16px">'
         + '<div class="stat-tile"><div class="stat-value">' + esc(d.dbStats.chunks) + '</div><div class="stat-label">DB Chunks</div></div>'
         + '<div class="stat-tile"><div class="stat-value">' + esc(d.dbStats.files) + '</div><div class="stat-label">Indexed Files</div></div>'
-        + '<div class="stat-tile"><div class="stat-value">' + esc(Math.round((d.dbStats.sizeBytes||0)/1024) + ' KB') + '</div><div class="stat-label">DB Size</div></div>'
-        + '</div>';
+        + '<div class="stat-tile"><div class="stat-value">' + esc(Math.round((d.dbStats.sizeBytes||0)/1024) + ' KB') + '</div><div class="stat-label">DB Size</div></div>';
+      if (d.graphStats && d.graphStats.available) {
+        statsHtml += '<div class="stat-tile"><div class="stat-value">' + esc(d.graphStats.nodes) + '</div><div class="stat-label">Graph Nodes</div></div>'
+          + '<div class="stat-tile"><div class="stat-value">' + esc(d.graphStats.edges) + '</div><div class="stat-label">Graph Edges</div></div>';
+      }
+      statsHtml += '</div>';
     }
     document.getElementById('memory-stats').innerHTML = statsHtml;
 
+    var memHtml = '';
     if (d.content) {
-      document.getElementById('panel-memory').innerHTML = '<div class="memory-preview">' + esc(d.content) + '</div>';
+      memHtml += '<div class="memory-preview">' + esc(d.content) + '</div>';
     } else {
-      document.getElementById('panel-memory').innerHTML = '<div class="empty-state">No MEMORY.md found</div>';
+      memHtml += '<div class="empty-state">No MEMORY.md found</div>';
     }
+    // Graph breakdown by entity type
+    if (d.graphStats && d.graphStats.available && d.graphStats.labels && d.graphStats.labels.length > 0) {
+      memHtml += '<div style="margin-top:16px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary)">';
+      memHtml += '<div style="font-weight:600;margin-bottom:8px;font-size:13px;color:var(--text-primary)">Knowledge Graph Breakdown</div>';
+      var colorMap = { Person: '#4a9eff', Project: '#34d399', Topic: '#a78bfa', Agent: '#fb923c', Task: '#fbbf24', Note: '#94a3b8' };
+      for (var lb of d.graphStats.labels) {
+        var barColor = colorMap[lb.label] || '#64748b';
+        var maxCount = d.graphStats.labels[0].count || 1;
+        var pct = Math.round((lb.count / maxCount) * 100);
+        memHtml += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
+          + '<span style="width:60px;font-size:12px;color:var(--text-muted)">' + esc(lb.label) + '</span>'
+          + '<div style="flex:1;height:16px;background:var(--bg-input);border-radius:4px;overflow:hidden">'
+          + '<div style="width:' + pct + '%;height:100%;background:' + barColor + ';border-radius:4px;transition:width 0.3s"></div></div>'
+          + '<span style="font-size:12px;color:var(--text-muted);width:30px;text-align:right">' + lb.count + '</span></div>';
+      }
+      memHtml += '</div>';
+    }
+    document.getElementById('panel-memory').innerHTML = memHtml;
   } catch(e) { }
 }
 
@@ -5890,6 +6017,20 @@ async function runMemorySearch() {
     }
 
     let html = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">' + d.results.length + ' result(s)</div>';
+
+    // Show graph relationships if any
+    if (d.graphContext && d.graphContext.length > 0) {
+      html += '<div style="margin-bottom:16px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary)">';
+      html += '<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin-bottom:6px">Related in Knowledge Graph</div>';
+      for (var gc of d.graphContext) {
+        html += '<div style="font-size:12px;color:var(--text-secondary);padding:2px 0">'
+          + '<span style="color:var(--blue)">' + esc(gc.from) + '</span>'
+          + ' <span style="color:var(--text-muted)">' + esc(gc.rel) + '</span> '
+          + '<span style="color:var(--blue)">' + esc(gc.to) + '</span></div>';
+      }
+      html += '</div>';
+    }
+
     for (const r of d.results) {
       const score = Math.abs(r.score || 0).toFixed(2);
       html += '<div class="search-result">'
@@ -6489,6 +6630,91 @@ async function siDeny(id) {
     refreshSelfImprove();
   } catch (err) { toast('Error: ' + err, 'error'); }
 }
+
+// ── Knowledge Graph ──────────────────────
+var graphNetwork = null;
+var graphData = null;
+
+async function refreshGraph() {
+  var canvas = document.getElementById('graph-canvas');
+  if (!canvas) return;
+  try {
+    var r = await apiFetch('/api/graph/visualization');
+    var d = await r.json();
+    graphData = d;
+    if (!d.available || d.nodes.length === 0) {
+      canvas.innerHTML = '<div class="empty-state" style="padding:40px;text-align:center;color:var(--text-muted)">' +
+        (d.available ? 'No entities in graph yet. Chat with ${name} to populate the knowledge graph.' : 'Graph features not available. FalkorDBLite may not be installed.') + '</div>';
+      document.getElementById('graph-detail-panel').innerHTML = '';
+      return;
+    }
+    // Load vis-network from CDN if not loaded
+    if (typeof vis === 'undefined') {
+      await new Promise(function(resolve, reject) {
+        var s = document.createElement('script');
+        s.src = 'https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js';
+        s.onload = resolve;
+        s.onerror = function() { reject(new Error('Failed to load vis-network')); };
+        document.head.appendChild(s);
+      });
+    }
+    var filterLabel = document.getElementById('graph-filter-label').value;
+    var searchTerm = document.getElementById('graph-search').value.toLowerCase();
+    var filteredNodes = d.nodes.filter(function(n) {
+      if (filterLabel && n.label !== filterLabel) return false;
+      if (searchTerm && !n.id.toLowerCase().includes(searchTerm)) return false;
+      return true;
+    });
+    var nodeIds = new Set(filteredNodes.map(function(n) { return n.id; }));
+    var filteredEdges = d.edges.filter(function(e) { return nodeIds.has(e.from) && nodeIds.has(e.to); });
+    var colorMap = { Person: '#4a9eff', Project: '#34d399', Topic: '#a78bfa', Agent: '#fb923c', Task: '#fbbf24', Note: '#94a3b8' };
+    var nodes = new vis.DataSet(filteredNodes.map(function(n) {
+      return { id: n.id, label: n.id.replace(/-/g, ' '), group: n.label, title: n.label + ': ' + n.id, color: colorMap[n.label] || '#94a3b8', font: { color: '#e2e8f0' } };
+    }));
+    var edges = new vis.DataSet(filteredEdges.map(function(e, i) {
+      return { id: i, from: e.from, to: e.to, label: e.rel, arrows: 'to', color: { color: '#64748b', highlight: '#94a3b8' }, font: { color: '#94a3b8', size: 10 } };
+    }));
+    canvas.innerHTML = '';
+    graphNetwork = new vis.Network(canvas, { nodes: nodes, edges: edges }, {
+      physics: { stabilization: { iterations: 100 }, barnesHut: { gravitationalConstant: -3000, springLength: 150 } },
+      interaction: { hover: true, tooltipDelay: 200 },
+      nodes: { shape: 'dot', size: 16, borderWidth: 2 },
+      edges: { smooth: { type: 'continuous' } }
+    });
+    graphNetwork.on('click', function(params) {
+      if (params.nodes.length > 0) {
+        var nodeId = params.nodes[0];
+        var node = d.nodes.find(function(n) { return n.id === nodeId; });
+        if (node) showGraphDetail(node, d);
+      }
+    });
+  } catch (err) {
+    canvas.innerHTML = '<div class="empty-state" style="padding:40px;text-align:center;color:var(--text-muted)">Error loading graph: ' + err + '</div>';
+  }
+}
+
+function showGraphDetail(node, data) {
+  var panel = document.getElementById('graph-detail-panel');
+  var rels = data.edges.filter(function(e) { return e.from === node.id || e.to === node.id; });
+  var html = '<div class="card"><div class="card-header">' + node.label + ': ' + node.id.replace(/-/g, ' ') + '</div>';
+  html += '<div style="padding:12px">';
+  if (node.props && Object.keys(node.props).length > 0) {
+    html += '<div style="margin-bottom:8px"><strong>Properties:</strong></div>';
+    Object.entries(node.props).forEach(function(kv) { if (kv[1]) html += '<div style="color:var(--text-muted);font-size:13px">' + kv[0] + ': ' + kv[1] + '</div>'; });
+  }
+  if (rels.length > 0) {
+    html += '<div style="margin-top:8px;margin-bottom:4px"><strong>Relationships (' + rels.length + '):</strong></div>';
+    rels.forEach(function(r) {
+      var dir = r.from === node.id ? r.from + ' → ' + r.rel + ' → ' + r.to : r.from + ' → ' + r.rel + ' → ' + r.to;
+      html += '<div style="color:var(--text-muted);font-size:13px">' + dir + '</div>';
+    });
+  }
+  html += '</div></div>';
+  panel.innerHTML = html;
+}
+
+document.getElementById('graph-filter-label').addEventListener('change', function() { refreshGraph(); });
+document.getElementById('graph-search').addEventListener('input', function() { clearTimeout(this._t); this._t = setTimeout(refreshGraph, 300); });
 
 refreshAll();
 setInterval(refreshAll, 5000);

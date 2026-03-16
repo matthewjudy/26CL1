@@ -339,6 +339,44 @@ export interface SelfImproveConfig {
   areas: ('soul' | 'cron' | 'workflow' | 'memory' | 'agent')[];
 }
 
+// ── Graph Memory ────────────────────────────────────────────────────
+
+export interface EntityNode {
+  label: string;
+  id: string;
+  properties: Record<string, any>;
+}
+
+export interface EntityRef {
+  label: string;
+  id: string;
+}
+
+export interface RelationshipTriplet {
+  from: EntityRef;
+  rel: string;
+  to: EntityRef;
+  context?: string;
+}
+
+export interface TraversalResult {
+  entity: EntityNode;
+  depth: number;
+  path: string[];
+}
+
+export interface PathResult {
+  nodes: EntityNode[];
+  relationships: string[];
+  length: number;
+}
+
+export interface GraphSyncStats {
+  nodesCreated: number;
+  relationshipsCreated: number;
+  duration: number;
+}
+
 // ── Utility types ────────────────────────────────────────────────────
 
 type float = number;

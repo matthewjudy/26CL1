@@ -3415,6 +3415,84 @@ server.tool(
   },
 );
 
+// ── Graph Memory Tools ─────────────────────────────────────────────────
+
+const GRAPH_DB_DIR = path.join(BASE_DIR, '.graph.db');
+
+let _graphStore: any = null;
+async function getGraphStore(): Promise<any> {
+  if (_graphStore?.isAvailable()) return _graphStore;
+  try {
+    const { getSharedGraphStore } = await import('../memory/graph-store.js');
+    _graphStore = await getSharedGraphStore(GRAPH_DB_DIR);
+    return _graphStore;
+  } catch {
+    return null;
+  }
+}
+
+server.tool(
+  'memory_graph_query',
+  'Run a Cypher query against the knowledge graph. Returns entities and relationships. Use for complex graph traversals.',
+  {
+    query: z.string().describe('Cypher query (e.g., MATCH (p:Person)-[:WORKS_ON]->(proj:Project) RETURN p.id, proj.id)'),
+  },
+  async ({ query }) => {
+    const gs = await getGraphStore();
+    if (!gs?.isAvailable()) {
+      return textResult('Graph features are not available. The knowledge graph has not been initialized.');
+    }
+    const results = await gs.query(query);
+    if (results.length === 0) return textResult('No results.');
+    const formatted = results.map((row: any[]) => row.join(' | ')).join('\n');
+    return textResult(formatted);
+  },
+);
+
+server.tool(
+  'memory_graph_connections',
+  'Find entities connected to a given entity in the knowledge graph. Supports multi-hop traversal with typed relationships.',
+  {
+    entity: z.string().describe('Entity ID (slug) to find connections for'),
+    max_hops: z.number().optional().describe('Maximum traversal depth (default: 2)'),
+    relationship_types: z.array(z.string()).optional().describe('Filter by relationship types (e.g., ["WORKS_ON", "KNOWS"])'),
+  },
+  async ({ entity, max_hops, relationship_types }) => {
+    const gs = await getGraphStore();
+    if (!gs?.isAvailable()) {
+      return textResult('Graph features are not available. The knowledge graph has not been initialized.');
+    }
+    const results = await gs.traverse(entity, max_hops ?? 2, relationship_types);
+    if (results.length === 0) return textResult(`No connections found for '${entity}'.`);
+    const lines = results.map((r: any) =>
+      `[depth ${r.depth}] ${r.entity.label}:${r.entity.id} (via ${r.path.join(' → ')})`
+    );
+    return textResult(`Connections for '${entity}':\n${lines.join('\n')}`);
+  },
+);
+
+server.tool(
+  'memory_graph_path',
+  'Find the shortest path between two entities in the knowledge graph. Shows how they are connected.',
+  {
+    from: z.string().describe('Source entity ID (slug)'),
+    to: z.string().describe('Target entity ID (slug)'),
+  },
+  async ({ from, to }) => {
+    const gs = await getGraphStore();
+    if (!gs?.isAvailable()) {
+      return textResult('Graph features are not available. The knowledge graph has not been initialized.');
+    }
+    const result = await gs.shortestPath(from, to);
+    if (!result) return textResult(`No path found between '${from}' and '${to}'.`);
+    const chain = result.nodes.map((n: any, i: number) => {
+      const rel = result.relationships[i];
+      return rel ? `${n.id} -[${rel}]->` : n.id;
+    }).join(' ');
+    return textResult(`Path (${result.length} hops): ${chain}`);
+  },
+);
+
 // ── Main ───────────────────────────────────────────────────────────────
 
 async function main() {

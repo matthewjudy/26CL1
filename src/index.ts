@@ -230,7 +230,7 @@ function verifySetup(): string[] {
 
 // ── Banner ───────────────────────────────────────────────────────────
 
-function printBanner(channels: string[], profiles: number, cronJobs: number): void {
+function printBanner(channels: string[], profiles: number, cronJobs: number, graphEnabled = false): void {
   const BOLD = '\x1b[1m';
   const DIM = '\x1b[0;90m';
   const GREEN = '\x1b[0;32m';
@@ -253,6 +253,7 @@ function printBanner(channels: string[], profiles: number, cronJobs: number): vo
   if (config.GROQ_API_KEY) tags.push('voice');
   if (config.GOOGLE_API_KEY) tags.push('video');
   if (config.CHANNEL_OUTLOOK) tags.push('outlook');
+  if (graphEnabled) tags.push('graph');
   if (profiles > 0) tags.push(`${profiles} profile${profiles !== 1 ? 's' : ''}`);
 
   // Block-letter banner
@@ -298,6 +299,7 @@ function printBanner(channels: string[], profiles: number, cronJobs: number): vo
   if (!config.ELEVENLABS_API_KEY) hints.push(['ELEVENLABS_API_KEY', 'voice replies']);
   if (!config.GOOGLE_API_KEY) hints.push(['GOOGLE_API_KEY', 'video analysis']);
   if (!config.CHANNEL_OUTLOOK) hints.push(['MS_TENANT_ID + MS_CLIENT_ID + MS_CLIENT_SECRET', 'Outlook email & calendar']);
+  if (!graphEnabled) hints.push(['clementine doctor', 'knowledge graph (run to diagnose)']);
   if (hints.length > 0) {
     console.log(`      ${DIM}Unlock more:${RESET}`);
     for (const [key, desc] of hints) {
@@ -474,6 +476,25 @@ async function asyncMain(): Promise<void> {
     return;
   }
 
+  // Initialize graph store (non-blocking, graceful fallback)
+  // The daemon owns the embedded FalkorDB server; other processes connect via socket.
+  let graphAvailable = false;
+  let graphStore: import('./memory/graph-store.js').GraphStore | null = null;
+  try {
+    const { GraphStore } = await import('./memory/graph-store.js');
+    graphStore = new GraphStore(config.GRAPH_DB_DIR);
+    await graphStore.initialize();
+    if (graphStore.isAvailable()) {
+      graphAvailable = true;
+      const stats = await graphStore.syncFromVault(config.VAULT_DIR, config.AGENTS_DIR);
+      if (stats.nodesCreated > 0) {
+        logger.info(stats, 'Graph sync populated from vault');
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Graph store init failed — continuing without graph features');
+  }
+
   // Start heartbeat + cron + timers
   heartbeat.start();
   cronScheduler.start();
@@ -488,7 +509,7 @@ async function asyncMain(): Promise<void> {
   const profileCount = 0; // ProfileManager can be loaded later if needed
   const cronCount = 0; // Jobs loaded internally by CronScheduler.start()
 
-  printBanner(activeChannels, profileCount, cronCount);
+  printBanner(activeChannels, profileCount, cronCount, graphAvailable);
 
   logger.info(`${config.ASSISTANT_NAME} is online`);
 
@@ -517,6 +538,9 @@ async function asyncMain(): Promise<void> {
   clearInterval(teamDeliveryInterval);
   heartbeat.stop();
   cronScheduler.stop();
+  if (graphStore) {
+    try { await graphStore.close(); } catch { /* non-fatal */ }
+  }
 
   // ── Self-restart ──────────────────────────────────────────────
   if (restartRequested) {

@@ -267,6 +267,7 @@ export const TEAM_COMMS_LOG = path.join(BASE_DIR, 'logs', 'team-comms.jsonl');
 // ── Memory / Search ──────────────────────────────────────────────────
 
 export const MEMORY_DB_PATH = path.join(VAULT_DIR, '.memory.db');
+export const GRAPH_DB_DIR = path.join(BASE_DIR, '.graph.db');
 export const SEARCH_CONTEXT_LIMIT = 3;
 export const SEARCH_RECENCY_LIMIT = 3;
 export const SYSTEM_PROMPT_MAX_CONTEXT_CHARS = 12000;
