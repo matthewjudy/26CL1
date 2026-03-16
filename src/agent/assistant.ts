@@ -49,7 +49,7 @@ import {
   UNLEASHED_MAX_PHASES,
   PROJECTS_META_FILE,
 } from '../config.js';
-import type { AgentProfile, OnTextCallback, SessionData } from '../types.js';
+import type { AgentProfile, OnTextCallback, OnToolActivityCallback, SessionData } from '../types.js';
 import {
   enforceToolPermissions,
   getSecurityPrompt,
@@ -909,6 +909,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     sessionKey?: string | null,
     options?: {
       onText?: OnTextCallback;
+      onToolActivity?: OnToolActivityCallback;
       model?: string;
       maxTurns?: number;
       profile?: AgentProfile;
@@ -917,6 +918,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     },
   ): Promise<[string, string]> {
     const onText = options?.onText;
+    const onToolActivity = options?.onToolActivity;
     const model = options?.model;
     const maxTurns = options?.maxTurns;
     const profile = options?.profile;
@@ -1018,7 +1020,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     }
 
     let [responseText, sessionId] = await this.runQuery(
-      effectivePrompt, key, onText, model, profile, securityAnnotation, maxTurns, projectOverride,
+      effectivePrompt, key, onText, model, profile, securityAnnotation, maxTurns, projectOverride, onToolActivity,
     );
 
     // If we got a context-length / prompt-too-long error, retry with a fresh session
@@ -1043,7 +1045,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
           `If this task involves pulling data for multiple entities, delegate each to a sub-agent using the Agent tool ` +
           `instead of calling data-heavy tools directly.\n\n${text}`;
       }
-      [responseText, sessionId] = await this.runQuery(retryPrompt, key, onText, model, profile, securityAnnotation, maxTurns);
+      [responseText, sessionId] = await this.runQuery(retryPrompt, key, onText, model, profile, securityAnnotation, maxTurns, undefined, onToolActivity);
     }
 
     // Track exchange count, timestamp, and last exchange
@@ -1097,6 +1099,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
     securityAnnotation?: string,
     maxTurnsOverride?: number,
     projectOverride?: ProjectMeta,
+    onToolActivity?: OnToolActivityCallback,
   ): Promise<[string, string]> {
     // Parallelize context retrieval and project matching — they're independent
     // If a project override is set, skip auto-matching entirely
@@ -1189,6 +1192,9 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
                   if (onText) await onText(responseText);
                 } else if (block.type === 'tool_use' && block.name) {
                   logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
+                  if (onToolActivity) {
+                    try { await onToolActivity(block.name, (block.input ?? {}) as Record<string, unknown>); } catch { /* non-fatal */ }
+                  }
                   const loopCheck = toolLoopDetector.recordCall(block.name, (block.input ?? {}) as Record<string, unknown>);
                   if (loopCheck.verdict === 'block') {
                     logger.warn({ tool: block.name, ...loopCheck }, 'Tool loop detected — blocking');

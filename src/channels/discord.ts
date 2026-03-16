@@ -34,6 +34,7 @@ import {
   chunkText,
   sendChunked,
   DiscordStreamingMessage,
+  friendlyToolName,
   STREAM_EDIT_INTERVAL,
   THINKING_INDICATOR,
   DISCORD_MSG_LIMIT,
@@ -181,26 +182,36 @@ async function sendApprovalButtons(
   content: string,
   prefix: string,
   requestId: string,
+  options?: { showRevise?: boolean },
 ): Promise<Message | null> {
   if (!('send' in channel)) return null;
 
-  const components = [{
-    type: 1 as const, // ActionRow
-    components: [
-      {
-        type: 2 as const, // Button
-        style: 3 as const, // Green
-        label: 'Approve',
-        custom_id: `${prefix}_${requestId}_approve`,
-      },
-      {
-        type: 2 as const, // Button
-        style: 4 as const, // Red
-        label: 'Cancel',
-        custom_id: `${prefix}_${requestId}_deny`,
-      },
-    ],
-  }];
+  const buttons: Array<{ type: 2; style: number; label: string; custom_id: string }> = [
+    {
+      type: 2 as const, // Button
+      style: 3 as const, // Green
+      label: 'Approve',
+      custom_id: `${prefix}_${requestId}_approve`,
+    },
+  ];
+
+  if (options?.showRevise) {
+    buttons.push({
+      type: 2 as const,
+      style: 1 as const, // Blurple/Primary
+      label: 'Revise',
+      custom_id: `${prefix}_${requestId}_revise`,
+    });
+  }
+
+  buttons.push({
+    type: 2 as const, // Button
+    style: 4 as const, // Red
+    label: 'Cancel',
+    custom_id: `${prefix}_${requestId}_deny`,
+  });
+
+  const components = [{ type: 1 as const, components: buttons }];
 
   return channel.send({ content: content.slice(0, 2000), components: components as any });
 }
@@ -1101,6 +1112,7 @@ export async function startDiscord(
         (t) => streamer.update(t),
         oneOffModel,
         oneOffMaxTurns,
+        (toolName, toolInput) => { streamer.setToolStatus(friendlyToolName(toolName, toolInput)); return Promise.resolve(); },
       );
       await streamer.finalize(response);
       updatePresence(sessionKey);
@@ -1512,6 +1524,44 @@ export async function startDiscord(
       return;
     }
 
+    // ── Modal submissions (revision feedback) ─────────────────────
+    if (interaction.isModalSubmit()) {
+      const modal = interaction;
+      const modalId = modal.customId; // e.g. "revise_modal_plan-1234567890"
+
+      if (modalId.startsWith('revise_modal_')) {
+        const requestId = modalId.replace('revise_modal_', '');
+        const feedback = modal.fields.getTextInputValue('revision_feedback');
+
+        await modal.deferUpdate();
+
+        // Disable buttons on the original approval message
+        try {
+          if (modal.message) {
+            const originalContent = modal.message.content ?? '';
+            const rawComponents = (modal.message.components as any[]).map((row: any) => ({
+              type: 1,
+              components: (row.components ?? []).map((comp: any) => ({
+                type: comp.type ?? 2,
+                style: comp.style,
+                label: comp.label,
+                custom_id: comp.customId ?? comp.custom_id,
+                disabled: true,
+              })),
+            }));
+            await modal.editReply({
+              content: originalContent + `\n\n\u270f\ufe0f **REVISING** by ${modal.user.username}: ${feedback.slice(0, 200)}`,
+              components: rawComponents as any,
+            });
+          }
+        } catch { /* non-fatal */ }
+
+        // Resolve the approval gate with the revision feedback string
+        gateway.resolveApproval(requestId, feedback);
+        return;
+      }
+    }
+
     // ── Button interactions ──────────────────────────────────────────
     if (!interaction.isButton()) return;
 
@@ -1523,11 +1573,37 @@ export async function startDiscord(
       return;
     }
 
-    const customId = button.customId; // e.g. "plan_plan-123_approve" or "deep_deep-456_deny"
+    const customId = button.customId; // e.g. "plan_plan-123_approve", "plan_plan-123_revise"
     const isApprove = customId.endsWith('_approve');
     const isDeny = customId.endsWith('_deny');
+    const isRevise = customId.endsWith('_revise');
 
-    if (!isApprove && !isDeny) return;
+    if (!isApprove && !isDeny && !isRevise) return;
+
+    // ── Revise button → show modal for feedback ────────────────────
+    if (isRevise) {
+      const parts = customId.split('_');
+      const requestId = parts.slice(1, -1).join('_');
+
+      // Show a text input modal to collect revision feedback
+      await button.showModal({
+        title: 'Revise Plan',
+        custom_id: `revise_modal_${requestId}`,
+        components: [{
+          type: 1 as any, // ActionRow
+          components: [{
+            type: 4 as any, // TextInput
+            custom_id: 'revision_feedback',
+            label: 'What would you like to change?',
+            style: 2 as any, // Paragraph
+            placeholder: 'e.g., "Split step 3 into two separate steps" or "Add error handling"',
+            required: true,
+            max_length: 1000,
+          }],
+        }],
+      } as any);
+      return;
+    }
 
     const action = isApprove ? 'approved' : 'denied';
     const emoji = isApprove ? '\u2705' : '\u274c';
@@ -1757,22 +1833,32 @@ async function handlePlanCommand(
       },
       // Approval gate — show plan and wait for user confirmation
       async (planSummary, steps) => {
-        // Replace the "Planning..." message with the plan preview
-        await streamer.finalize(
-          `**Plan:** ${taskDescription.slice(0, 100)}\n\n` +
-          steps.map((s, i) => `${i + 1}. **${s.id}** — ${s.description.slice(0, 60)}`).join('\n'),
-        );
-        // Send approval buttons as a new message
+        // Show plan preview as a new message (previous streamer may be finalized from a revision round)
+        const planPreview = `**Plan:** ${taskDescription.slice(0, 100)}\n\n` +
+          steps.map((s, i) => `${i + 1}. **${s.id}** — ${s.description.slice(0, 60)}`).join('\n');
+        if ('send' in channel) {
+          await channel.send(planPreview.slice(0, 2000));
+        }
+
+        // Send approval buttons
         const requestId = `plan-${Date.now()}`;
         approvalMsg = await sendApprovalButtons(
           channel,
           'Approve this plan?',
           'plan',
           requestId,
+          { showRevise: true },
         );
-        // Wait for the user to click approve/deny
-        const approved = await gateway.requestApproval('Pending approval', requestId);
-        if (approved) {
+        // Wait for the user to click approve/deny/revise
+        const approvalResult = await gateway.requestApproval('Pending approval', requestId);
+        if (typeof approvalResult === 'string') {
+          // Revision — post status and return feedback so orchestrator re-generates
+          if ('send' in channel) {
+            await channel.send(`\u2728 *Revising plan...*`);
+          }
+          return approvalResult;
+        }
+        if (approvalResult) {
           // Start a new streamer for execution progress
           const newStreamer = new DiscordStreamingMessage(channel);
           await newStreamer.start();
@@ -1786,7 +1872,7 @@ async function handlePlanCommand(
             isFinal: false,
           });
         }
-        return approved;
+        return approvalResult;
       },
     );
 

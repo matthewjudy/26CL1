@@ -26,7 +26,7 @@ import {
 import pino from 'pino';
 import type { AgentProfile } from '../types.js';
 import type { Gateway } from '../gateway/router.js';
-import { DiscordStreamingMessage, sanitizeResponse } from './discord-utils.js';
+import { DiscordStreamingMessage, friendlyToolName, sanitizeResponse } from './discord-utils.js';
 
 const logger = pino({ name: 'clementine.agent-bot' });
 
@@ -348,6 +348,11 @@ export class AgentBotClient {
         text,
         async (token: string) => {
           await streamer.update(token);
+        },
+        undefined, // model
+        undefined, // maxTurns
+        async (toolName: string, toolInput: Record<string, unknown>) => {
+          streamer.setToolStatus(friendlyToolName(toolName, toolInput));
         },
       );
       await streamer.finalize(response);

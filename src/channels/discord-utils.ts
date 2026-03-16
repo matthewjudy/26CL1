@@ -70,6 +70,43 @@ export async function sendChunked(
 
 // ── Streaming message (posts as the bot user) ─────────────────────────
 
+// ── Human-friendly tool names ──────────────────────────────────────────
+
+const TOOL_LABELS: Record<string, string> = {
+  Read: '\ud83d\udcd6 Reading',
+  Write: '\ud83d\udcdd Writing',
+  Edit: '\u270f\ufe0f Editing',
+  Bash: '\u2699\ufe0f Running command',
+  Grep: '\ud83d\udd0d Searching',
+  Glob: '\ud83d\udcc2 Finding files',
+  Agent: '\ud83e\udd16 Delegating',
+  WebSearch: '\ud83c\udf10 Web search',
+  WebFetch: '\ud83c\udf10 Fetching',
+};
+
+export function friendlyToolName(name: string, input?: Record<string, unknown>): string {
+  // Check direct match first
+  if (TOOL_LABELS[name]) {
+    // Add context from input where helpful
+    if (name === 'Read' && input?.file_path) {
+      const fp = String(input.file_path);
+      const short = fp.length > 40 ? '...' + fp.slice(-37) : fp;
+      return `${TOOL_LABELS[name]} ${short}`;
+    }
+    if (name === 'Bash' && input?.command) {
+      const cmd = String(input.command).slice(0, 40);
+      return `${TOOL_LABELS[name]}: ${cmd}`;
+    }
+    if (name === 'Grep' && input?.pattern) {
+      return `${TOOL_LABELS[name]} for "${String(input.pattern).slice(0, 30)}"`;
+    }
+    return TOOL_LABELS[name];
+  }
+  // MCP tools: strip prefix (e.g., "mcp__clementine__memory_search" → "memory_search")
+  const short = name.includes('__') ? name.split('__').pop()! : name;
+  return `\ud83d\udd27 ${short.replace(/_/g, ' ')}`;
+}
+
 export class DiscordStreamingMessage {
   private message: Message | null = null;
   private lastEdit = 0;
@@ -78,6 +115,7 @@ export class DiscordStreamingMessage {
   private isFinal = false;
   private channel: Message['channel'];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private toolStatus = '';
 
   /** The message ID of the final bot response (available after finalize). */
   messageId: string | null = null;
@@ -90,6 +128,11 @@ export class DiscordStreamingMessage {
     if (!('send' in this.channel)) return;
     this.message = await this.channel.send(THINKING_INDICATOR);
     this.lastEdit = Date.now();
+  }
+
+  /** Update the tool activity status line shown during streaming. */
+  setToolStatus(status: string): void {
+    this.toolStatus = status;
   }
 
   async update(text: string): Promise<void> {
@@ -128,13 +171,19 @@ export class DiscordStreamingMessage {
   }
 
   private async flush(): Promise<void> {
-    if (!this.message || !this.pendingText || this.isFinal) return;
-    if (this.pendingText === this.lastFlushedText) return;
+    if (!this.message || this.isFinal) return;
+    // Allow flush even with empty pendingText if we have a tool status to show
+    if (!this.pendingText && !this.toolStatus) return;
+    if (this.pendingText === this.lastFlushedText && !this.toolStatus) return;
     let display = this.pendingText;
+    const statusLine = this.toolStatus ? `\n\n*${this.toolStatus}*` : '\n\n\u270d\ufe0f *typing...*';
     if (display.length > 1900) {
       display = display.slice(0, 1900) + '\n\n*...streaming...*';
+    } else if (display) {
+      display = display + statusLine;
     } else {
-      display = display + '\n\n\u270d\ufe0f *typing...*';
+      // No text yet — show tool status as the main content
+      display = this.toolStatus ? `\u2728 *${this.toolStatus}*` : THINKING_INDICATOR;
     }
     try {
       await this.message.edit(display);

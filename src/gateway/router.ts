@@ -8,7 +8,7 @@
 import path from 'node:path';
 import pino from 'pino';
 import { PersonalAssistant, type ProjectMeta } from '../agent/assistant.js';
-import type { OnTextCallback, PlanProgressUpdate, PlanStep, SelfImproveConfig, SelfImproveExperiment, SelfImproveState, SessionProvenance, TeamMessage, WorkflowDefinition } from '../types.js';
+import type { OnTextCallback, OnToolActivityCallback, PlanProgressUpdate, PlanStep, SelfImproveConfig, SelfImproveExperiment, SelfImproveState, SessionProvenance, TeamMessage, WorkflowDefinition } from '../types.js';
 import { SelfImproveLoop } from '../agent/self-improve.js';
 import { MODELS, PROFILES_DIR, AGENTS_DIR, TEAM_COMMS_CHANNEL, TEAM_COMMS_LOG } from '../config.js';
 import { scanner } from '../security/scanner.js';
@@ -22,7 +22,8 @@ const logger = pino({ name: 'clementine.gateway' });
 export class Gateway {
   public readonly assistant: PersonalAssistant;
 
-  private approvalResolvers = new Map<string, (approved: boolean) => void>();
+  /** Resolvers for pending approvals. `true` = approved, `false` = denied, `string` = revision feedback. */
+  private approvalResolvers = new Map<string, (result: boolean | string) => void>();
   private approvalCounter = 0;
   private sessionModels = new Map<string, string>();
   private sessionProfiles = new Map<string, string>();
@@ -327,6 +328,7 @@ export class Gateway {
     onText?: OnTextCallback,
     model?: string,
     maxTurns?: number,
+    onToolActivity?: OnToolActivityCallback,
   ): Promise<string> {
     const releaseLane = await lanes.acquire('chat');
     try {
@@ -399,7 +401,7 @@ export class Gateway {
           const [response] = await this.assistant.chat(
             text,
             effectiveSessionKey,
-            { onText, model: effectiveModel, maxTurns, securityAnnotation, projectOverride, profile: resolvedProfile },
+            { onText, onToolActivity, model: effectiveModel, maxTurns, securityAnnotation, projectOverride, profile: resolvedProfile },
           );
 
           // Re-baseline integrity checksums after chat (auto-memory may write to vault)
@@ -487,7 +489,7 @@ export class Gateway {
     sessionKey: string,
     taskDescription: string,
     onProgress?: (updates: PlanProgressUpdate[]) => Promise<void>,
-    onApproval?: (planSummary: string, steps: PlanStep[]) => Promise<boolean>,
+    onApproval?: (planSummary: string, steps: PlanStep[]) => Promise<boolean | string>,
   ): Promise<string> {
     const releaseLane = await lanes.acquire('chat');
     try {
@@ -590,12 +592,12 @@ export class Gateway {
 
   // ── Approval system ─────────────────────────────────────────────────
 
-  async requestApproval(descriptionOrId: string, explicitId?: string): Promise<boolean> {
+  async requestApproval(descriptionOrId: string, explicitId?: string): Promise<boolean | string> {
     const requestId = explicitId ?? `approval-${++this.approvalCounter}`;
 
     logger.info(`Approval requested: ${descriptionOrId} (id=${requestId})`);
 
-    return new Promise<boolean>((resolve) => {
+    return new Promise<boolean | string>((resolve) => {
       this.approvalResolvers.set(requestId, resolve);
 
       // 5-minute timeout
@@ -609,18 +611,18 @@ export class Gateway {
 
       // Store the original resolver wrapped to clear the timeout
       const originalResolve = resolve;
-      this.approvalResolvers.set(requestId, (approved: boolean) => {
+      this.approvalResolvers.set(requestId, (result: boolean | string) => {
         clearTimeout(timer);
         this.approvalResolvers.delete(requestId);
-        originalResolve(approved);
+        originalResolve(result);
       });
     });
   }
 
-  resolveApproval(requestId: string, approved: boolean): void {
+  resolveApproval(requestId: string, result: boolean | string): void {
     const resolver = this.approvalResolvers.get(requestId);
     if (resolver) {
-      resolver(approved);
+      resolver(result);
     }
   }
 

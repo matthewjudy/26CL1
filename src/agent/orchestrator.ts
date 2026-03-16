@@ -137,7 +137,7 @@ export class PlanOrchestrator {
   async run(
     taskDescription: string,
     onProgress?: (updates: PlanProgressUpdate[]) => Promise<void>,
-    onApproval?: (planSummary: string, steps: PlanStep[]) => Promise<boolean>,
+    onApproval?: (planSummary: string, steps: PlanStep[]) => Promise<boolean | string>,
   ): Promise<string> {
     // Reset instance state for reuse safety
     this.stepStatuses.clear();
@@ -150,58 +150,79 @@ export class PlanOrchestrator {
       }
     };
 
-    // 1. Generate plan
+    // 1. Generate plan (with revision loop)
+    const MAX_REVISIONS = 3;
+    let revisionCount = 0;
+    let effectiveTask = taskDescription;
     let plan: ExecutionPlan;
-    try {
-      plan = await this.generatePlan(taskDescription);
-    } catch (err) {
-      logger.warn({ err }, 'Plan generation failed — running as single step');
-      return this.runSingleStep(taskDescription);
-    }
-
-    // Enforce max steps
-    if (plan.steps.length > MAX_STEPS) {
-      plan.steps = plan.steps.slice(0, MAX_STEPS);
-    }
-    if (plan.steps.length === 0) {
-      logger.warn('Plan has no valid steps — running as single step');
-      return this.runSingleStep(taskDescription);
-    }
-
-    logger.info(
-      { goal: taskDescription, stepCount: plan.steps.length, steps: plan.steps.map(s => s.id) },
-      'Plan generated',
-    );
-
-    // 2. Initialize statuses
-    for (const step of plan.steps) {
-      this.stepStatuses.set(step.id, {
-        stepId: step.id,
-        status: 'waiting',
-        description: step.description,
-      });
-    }
-    await safeProgress(this.getAllUpdates());
-
-    // 3. Compute waves
     let waves: PlanStep[][];
-    try {
-      waves = computeWaves(plan.steps);
-    } catch (err) {
-      logger.error({ err }, 'Dependency graph error');
-      return this.runSingleStep(taskDescription);
-    }
 
-    // 3b. Approval gate — show plan before executing
-    if (onApproval) {
-      const planSummary = waves
-        .map((wave, wi) => wave.map(s => `  [Wave ${wi + 1}] ${s.id}: ${s.description}`).join('\n'))
-        .join('\n');
-      const approved = await onApproval(planSummary, plan.steps);
-      if (!approved) {
-        logger.info({ goal: taskDescription }, 'Plan cancelled by user');
-        return 'Plan cancelled.';
+    // Plan → approval → (optional revision) loop
+    planLoop: while (true) {
+      try {
+        plan = await this.generatePlan(effectiveTask);
+      } catch (err) {
+        logger.warn({ err }, 'Plan generation failed — running as single step');
+        return this.runSingleStep(taskDescription);
       }
+
+      // Enforce max steps
+      if (plan.steps.length > MAX_STEPS) {
+        plan.steps = plan.steps.slice(0, MAX_STEPS);
+      }
+      if (plan.steps.length === 0) {
+        logger.warn('Plan has no valid steps — running as single step');
+        return this.runSingleStep(taskDescription);
+      }
+
+      logger.info(
+        { goal: effectiveTask, stepCount: plan.steps.length, steps: plan.steps.map(s => s.id), revision: revisionCount },
+        'Plan generated',
+      );
+
+      // 2. Initialize statuses
+      this.stepStatuses.clear();
+      for (const step of plan.steps) {
+        this.stepStatuses.set(step.id, {
+          stepId: step.id,
+          status: 'waiting',
+          description: step.description,
+        });
+      }
+      await safeProgress(this.getAllUpdates());
+
+      // 3. Compute waves
+      try {
+        waves = computeWaves(plan.steps);
+      } catch (err) {
+        logger.error({ err }, 'Dependency graph error');
+        return this.runSingleStep(taskDescription);
+      }
+
+      // 3b. Approval gate — show plan before executing
+      if (onApproval) {
+        const planSummary = waves
+          .map((wave, wi) => wave.map(s => `  [Wave ${wi + 1}] ${s.id}: ${s.description}`).join('\n'))
+          .join('\n');
+        const result = await onApproval(planSummary, plan.steps);
+        if (result === false) {
+          logger.info({ goal: taskDescription }, 'Plan cancelled by user');
+          return 'Plan cancelled.';
+        }
+        if (typeof result === 'string') {
+          // Revision feedback — regenerate the plan
+          revisionCount++;
+          if (revisionCount > MAX_REVISIONS) {
+            logger.warn({ goal: taskDescription, revisions: revisionCount }, 'Max plan revisions reached');
+            return 'Plan cancelled — too many revisions.';
+          }
+          logger.info({ goal: taskDescription, revision: revisionCount, feedback: result }, 'Plan revision requested');
+          effectiveTask = `${taskDescription}\n\n[Revision ${revisionCount}] The user reviewed the previous plan and asked for changes:\n${result}`;
+          continue planLoop;
+        }
+      }
+
+      break; // Approved — proceed to execution
     }
 
     // 4. Execute waves

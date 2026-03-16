@@ -86,6 +86,8 @@ export interface Attachment {
 
 export type OnTextCallback = (text: string) => Promise<void>;
 
+export type OnToolActivityCallback = (toolName: string, toolInput: Record<string, unknown>) => Promise<void>;
+
 export type NotificationSender = (text: string) => Promise<void>;
 
 // ── Agent Profiles ───────────────────────────────────────────────────

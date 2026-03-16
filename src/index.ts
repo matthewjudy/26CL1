@@ -400,7 +400,10 @@ async function asyncMain(): Promise<void> {
 
   // Wire approval callback
   const { setApprovalCallback } = await import('./agent/hooks.js');
-  setApprovalCallback(gateway.requestApproval.bind(gateway));
+  setApprovalCallback(async (desc: string) => {
+    const result = await gateway.requestApproval(desc);
+    return result === true;
+  });
 
   // Notification dispatcher
   const { NotificationDispatcher } = await import('./gateway/notifications.js');
