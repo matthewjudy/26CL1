@@ -231,17 +231,17 @@ export class AgentBotClient {
    * Receive an inter-agent team message. Posts an embed showing the incoming
    * message, then triggers the agent to process and respond in-channel.
    */
-  async receiveTeamMessage(fromName: string, fromSlug: string, content: string): Promise<void> {
+  async receiveTeamMessage(fromName: string, fromSlug: string, content: string): Promise<string> {
     if (this.resolvedChannelIds.length === 0) {
       logger.warn({ slug: this.config.slug }, 'No channels to deliver team message to');
-      return;
+      return '(no channels available)';
     }
 
     const channelId = this.resolvedChannelIds[0];
     const channel = this.client.channels.cache.get(channelId);
     if (!channel || channel.type !== ChannelType.GuildText) {
       logger.warn({ slug: this.config.slug, channelId }, 'Channel not found for team message delivery');
-      return;
+      return '(channel not found)';
     }
 
     // Post the incoming message as an embed so it's visible in the channel
@@ -271,9 +271,12 @@ export class AgentBotClient {
       );
       await streamer.finalize(response);
       logger.info({ slug: this.config.slug, from: fromSlug }, 'Processed team message');
+      return response;
     } catch (err) {
       logger.error({ err, slug: this.config.slug }, 'Failed to process team message');
-      await streamer.finalize(`Something went wrong processing a team message: ${sanitizeResponse(String(err))}`);
+      const errMsg = `Something went wrong processing a team message: ${sanitizeResponse(String(err))}`;
+      await streamer.finalize(errMsg);
+      return errMsg;
     }
   }
 

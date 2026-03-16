@@ -174,18 +174,17 @@ export class BotManager {
   /**
    * Deliver a team message to an agent's bot — posts the message visibly
    * in the bot's channel and triggers the agent to process and respond.
-   * Returns true if delivery was handled by the bot.
+   * Returns the agent's response text, or null if delivery failed.
    */
-  async deliverTeamMessage(toSlug: string, fromName: string, fromSlug: string, content: string): Promise<boolean> {
+  async deliverTeamMessage(toSlug: string, fromName: string, fromSlug: string, content: string): Promise<string | null> {
     const bot = this.bots.get(toSlug);
-    if (!bot) return false;
+    if (!bot) return null;
 
     try {
-      await bot.receiveTeamMessage(fromName, fromSlug, content);
-      return true;
+      return await bot.receiveTeamMessage(fromName, fromSlug, content);
     } catch (err) {
       logger.error({ err, toSlug, fromSlug }, 'Failed to deliver team message via bot');
-      return false;
+      return null;
     }
   }
 

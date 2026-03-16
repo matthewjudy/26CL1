@@ -105,6 +105,7 @@ export interface TeamMessage {
   timestamp: string;               // ISO
   delivered: boolean;              // Was it injected into target session?
   depth: number;                   // Depth counter for anti-loop (0 = original)
+  response?: string;               // Agent's response (populated by active bot delivery)
 }
 
 export interface AgentProfile {

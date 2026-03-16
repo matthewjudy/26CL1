@@ -143,9 +143,10 @@ export class TeamBus {
 
     if (this.botManager?.hasBot(toSlug)) {
       // Active delivery: post in bot's channel and trigger the agent to respond
-      const botDelivered = await this.botManager.deliverTeamMessage(toSlug, senderName, fromSlug, content);
-      if (botDelivered) {
+      const botResponse = await this.botManager.deliverTeamMessage(toSlug, senderName, fromSlug, content);
+      if (botResponse !== null) {
         message.delivered = true;
+        message.response = botResponse;
       }
     }
 

@@ -3186,15 +3186,8 @@ server.tool(
     depth: z.number().optional().describe('Message depth counter (auto-incremented, starts at 0). Do not set manually.'),
   },
   async ({ to_agent, message, depth }) => {
-    // The MCP server runs standalone — it writes directly to the JSONL log
-    // and posts to Discord. The actual injection happens via the daemon's TeamBus.
-    // For the MCP tool, we write the message to the log and mirror to Discord.
-
     const agents = await loadTeamAgents();
 
-    // Determine the calling agent from the current session context
-    // The MCP server doesn't have direct session context, so the agent must be inferred
-    // from which agent is calling this tool. We use a heuristic: check env for a hint.
     const callerSlug = process.env.CLEMENTINE_TEAM_AGENT ?? '';
     if (!callerSlug) {
       return textResult(
@@ -3204,7 +3197,6 @@ server.tool(
     }
 
     const caller = agents.find(a => a.slug === callerSlug);
-    const isPrimaryAgent = !caller; // Primary agent (e.g. "clementine") has no agent.md
 
     // Team agents must have canMessage permission; primary agent can message anyone
     if (caller && !caller.canMessage.includes(to_agent)) {
@@ -3214,13 +3206,11 @@ server.tool(
       );
     }
 
-    // Validate target exists
     const target = agents.find(a => a.slug === to_agent);
     if (!target) {
       return textResult(`Error: Target agent '${to_agent}' not found.`);
     }
 
-    // Depth check
     const msgDepth = depth ?? 0;
     if (msgDepth >= 3) {
       return textResult(
@@ -3228,7 +3218,40 @@ server.tool(
       );
     }
 
-    // Create message record
+    // Try synchronous delivery via daemon HTTP API (returns the agent's response)
+    const dashboardPort = env['DASHBOARD_PORT'] ?? '3030';
+    try {
+      const res = await fetch(`http://127.0.0.1:${dashboardPort}/api/team/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from_agent: callerSlug, to_agent, message, depth: msgDepth }),
+        signal: AbortSignal.timeout(120_000), // 2 min timeout for agent processing
+      });
+      const data = await res.json() as { ok: boolean; id?: string; delivered?: boolean; response?: string | null; error?: string };
+      if (data.ok && data.delivered) {
+        if (data.response) {
+          return textResult(
+            `${target.name} responded:\n\n${data.response}`,
+          );
+        }
+        return textResult(
+          `Message delivered to ${target.name} (${to_agent}). They processed it but no response was captured.`,
+        );
+      }
+      if (data.ok && !data.delivered) {
+        return textResult(
+          `Message queued for ${target.name} (${to_agent}) — they'll see it on their next interaction.`,
+        );
+      }
+      // API returned error — fall through to JSONL
+      if (data.error) {
+        return textResult(`Error: ${data.error}`);
+      }
+    } catch {
+      // Daemon unreachable — fall through to JSONL fallback
+    }
+
+    // Fallback: write to JSONL (delivered async by daemon's deliverPending)
     const msgId = randomBytes(4).toString('hex');
     const record = {
       id: msgId,
@@ -3236,39 +3259,16 @@ server.tool(
       toAgent: to_agent,
       content: message,
       timestamp: new Date().toISOString(),
-      delivered: false, // Will be delivered by the daemon's TeamBus on next interaction
+      delivered: false,
       depth: msgDepth,
     };
-
-    // Append to JSONL log
     const logDir = path.dirname(TEAM_COMMS_LOG);
     if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
     appendFileSync(TEAM_COMMS_LOG, JSON.stringify(record) + '\n');
 
-    // Mirror to Discord team-comms channel if configured
-    const commsChannelId = env['TEAM_COMMS_CHANNEL'] ?? '';
-    const discordToken = env['DISCORD_TOKEN'] ?? '';
-    if (commsChannelId && discordToken) {
-      const truncated = message.length > 1024 ? message.slice(0, 1021) + '...' : message;
-      const embed = {
-        title: `${caller?.name ?? callerSlug} \u2192 ${target.name}`,
-        description: truncated,
-        color: 0x5865F2,
-        footer: { text: `via team_message \u00B7 depth ${msgDepth}` },
-        timestamp: record.timestamp,
-      };
-      try {
-        await fetch(`https://discord.com/api/v10/channels/${commsChannelId}/messages`, {
-          method: 'POST',
-          headers: { Authorization: `Bot ${discordToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ embeds: [embed] }),
-        });
-      } catch { /* non-fatal */ }
-    }
-
     return textResult(
-      `Message sent to ${target.name} (${to_agent}). ID: ${msgId}, depth: ${msgDepth}. ` +
-      `The message will be delivered to ${target.name}'s session on their next interaction.`,
+      `Message queued for ${target.name} (${to_agent}). ID: ${msgId}. ` +
+      `The daemon will deliver it when available.`,
     );
   },
 );

@@ -2012,6 +2012,27 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
     }
   });
 
+  // ── Synchronous team message delivery (used by MCP tool) ──────────
+  app.post('/api/team/message', async (req, res) => {
+    try {
+      const { from_agent, to_agent, message, depth } = req.body;
+      if (!from_agent || !to_agent || !message) {
+        res.json({ ok: false, error: 'Missing from_agent, to_agent, or message' });
+        return;
+      }
+      const gw = await getGateway();
+      const result = await gw.handleTeamMessage(from_agent, to_agent, message, depth ?? 0);
+      res.json({
+        ok: true,
+        id: result.id,
+        delivered: result.delivered,
+        response: result.response ?? null,
+      });
+    } catch (err) {
+      res.json({ ok: false, error: String(err) });
+    }
+  });
+
   // ── Start server (auto-increment port if taken) ──────────────────
 
   const maxAttempts = 10;
