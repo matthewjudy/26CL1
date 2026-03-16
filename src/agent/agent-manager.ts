@@ -57,6 +57,7 @@ export interface AgentCreateConfig {
   model?: string;
   avatar?: string;
   channelName?: string;
+  teamChat?: boolean;              // If true, shared team channel — agents respond when @mentioned
   canMessage?: string[];
   allowedTools?: string[];
   project?: string;
@@ -136,7 +137,8 @@ export class AgentManager {
       : undefined;
 
     if (channelName) {
-      team = { channelName, channels: [], canMessage, allowedTools };
+      const teamChat = meta.teamChat === true || meta.teamChat === 'true';
+      team = { channelName, channels: [], canMessage, allowedTools, teamChat };
     }
 
     // Resolve Discord token — migrate plaintext to Keychain if needed
@@ -243,6 +245,7 @@ export class AgentManager {
     if (config.model) frontmatter.model = config.model;
     if (config.avatar) frontmatter.avatar = config.avatar;
     if (config.channelName) frontmatter.channelName = config.channelName;
+    if (config.teamChat) frontmatter.teamChat = config.teamChat;
     if (config.canMessage?.length) frontmatter.canMessage = config.canMessage;
     if (config.allowedTools?.length) frontmatter.allowedTools = config.allowedTools;
     if (config.project) frontmatter.project = config.project;
@@ -280,6 +283,7 @@ export class AgentManager {
     if (changes.model !== undefined) meta.model = changes.model;
     if (changes.avatar !== undefined) meta.avatar = changes.avatar;
     if (changes.channelName !== undefined) meta.channelName = changes.channelName;
+    if (changes.teamChat !== undefined) meta.teamChat = changes.teamChat;
     if (changes.canMessage !== undefined) meta.canMessage = changes.canMessage;
     if (changes.allowedTools !== undefined) meta.allowedTools = changes.allowedTools;
     if (changes.project !== undefined) meta.project = changes.project;

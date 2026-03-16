@@ -145,13 +145,28 @@ export class BotManager {
     return result;
   }
 
-  /** Get all channel IDs owned by agent bots (main bot should NOT watch these). */
+  /**
+   * Get all channel IDs managed by agent bots (main bot should NOT watch these).
+   * Includes both exclusive channels and team chat channels — the main bot
+   * should not respond in either type.
+   */
   getOwnedChannelIds(): string[] {
     const ids: string[] = [];
     for (const bot of this.bots.values()) {
       ids.push(...bot.getChannelIds());
     }
     return ids;
+  }
+
+  /** Get channel IDs that are shared team chat channels (multiple agents listen). */
+  getTeamChatChannelIds(): string[] {
+    const ids: string[] = [];
+    for (const bot of this.bots.values()) {
+      if (bot.isTeamChat()) {
+        ids.push(...bot.getChannelIds());
+      }
+    }
+    return [...new Set(ids)]; // deduplicate
   }
 
   /** Get the primary channel ID for a specific agent bot (for team message delivery). */

@@ -97,6 +97,7 @@ export interface TeamAgentConfig {
   channels: string[];              // Resolved runtime channel keys (populated by bot on connect)
   canMessage: string[];            // Agent slugs this agent can directly message
   allowedTools?: string[];         // Tool whitelist (omit = all tools)
+  teamChat?: boolean;              // If true, this is a shared team channel — multiple agents respond when @mentioned
 }
 
 export interface TeamMessage {

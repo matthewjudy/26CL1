@@ -76,7 +76,8 @@ export class ProfileManager {
 
     if (channelName) {
       // channels[] populated at runtime by the agent's own bot
-      team = { channelName, channels: [], canMessage, allowedTools };
+      const teamChat = meta.teamChat === true || meta.teamChat === 'true';
+      team = { channelName, channels: [], canMessage, allowedTools, teamChat };
     }
 
     return {

@@ -578,11 +578,63 @@ export class AgentBotClient {
     }
   }
 
+  /** Check if this bot participates in a shared team chat channel. */
+  isTeamChat(): boolean {
+    return this.config.profile.team?.teamChat === true;
+  }
+
+  /**
+   * Check if this agent is being addressed in a team chat message.
+   * Matches: @mention, agent name, agent slug (case-insensitive).
+   */
+  private isAddressedInTeamChat(message: Message): boolean {
+    // Direct @mention of this bot
+    if (this.client.user && message.mentions.users.has(this.client.user.id)) {
+      return true;
+    }
+
+    const content = message.content.toLowerCase();
+    const name = this.config.profile.name.toLowerCase();
+    const slug = this.config.slug.toLowerCase();
+
+    // Check for name or slug at word boundaries
+    // e.g., "sasha, what do you think?" or "@sasha-the-cmo analyze this"
+    const namePattern = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    const slugPattern = new RegExp(`\\b${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+
+    return namePattern.test(content) || slugPattern.test(content);
+  }
+
+  /**
+   * Collect recent messages from other bots in the same channel for context.
+   * Returns a formatted string of the last N messages from other agents.
+   */
+  private async gatherTeamChatContext(message: Message, limit = 10): Promise<string> {
+    try {
+      const channel = message.channel;
+      if (channel.isDMBased()) return '';
+
+      const recent = await channel.messages.fetch({ limit: limit + 1, before: message.id });
+      const contextLines: string[] = [];
+
+      for (const msg of recent.sort((a, b) => a.createdTimestamp - b.createdTimestamp).values()) {
+        const authorName = msg.author.bot ? msg.author.username : 'Owner';
+        const preview = msg.content.slice(0, 300);
+        if (preview) {
+          contextLines.push(`[${authorName}]: ${preview}`);
+        }
+      }
+
+      if (contextLines.length === 0) return '';
+      return `\n\n[Recent team chat context]\n${contextLines.join('\n')}\n[End context]`;
+    } catch {
+      return ''; // Non-fatal — proceed without context
+    }
+  }
+
   private async handleMessage(message: Message): Promise<void> {
     // Ignore own messages
     if (message.author.id === this.client.user?.id) return;
-    // Ignore bots
-    if (message.author.bot) return;
 
     const isDm = message.channel.isDMBased();
     const isWatchedChannel = !isDm && this.resolvedChannelIds.includes(message.channelId);
@@ -590,12 +642,23 @@ export class AgentBotClient {
     // Respond in DMs or watched channels
     if (!isDm && !isWatchedChannel) return;
 
+    const isTeamChatChannel = isWatchedChannel && this.isTeamChat();
+
+    // In team chat: ignore all bot messages (prevents loops).
+    // In solo channels: ignore all bot messages (original behavior).
+    if (message.author.bot) return;
+
     // Owner-only check
     if (this.config.ownerId && message.author.id !== this.config.ownerId) {
       logger.warn(
         { slug: this.config.slug, author: message.author.tag },
         'Ignored message from non-owner',
       );
+      return;
+    }
+
+    // In team chat: only respond when explicitly addressed
+    if (isTeamChatChannel && !this.isAddressedInTeamChat(message)) {
       return;
     }
 
@@ -623,9 +686,13 @@ export class AgentBotClient {
       return;
     }
 
+    // In team chat, use agent-scoped session key so each agent has its own
+    // conversation memory in the shared channel
     const sessionKey = isDm
       ? `discord:agent:${this.config.slug}:${message.author.id}`
-      : `discord:channel:${message.channelId}:${message.author.id}`;
+      : isTeamChatChannel
+        ? `discord:channel:${message.channelId}:${this.config.slug}:${message.author.id}`
+        : `discord:channel:${message.channelId}:${message.author.id}`;
 
     // Set the agent profile for this session
     this.gateway.setSessionProfile(sessionKey, this.config.slug);
@@ -633,6 +700,14 @@ export class AgentBotClient {
     // Show queued indicator if session is busy
     if (this.gateway.isSessionBusy(sessionKey)) {
       await message.react('\u23f3'); // hourglass
+    }
+
+    // In team chat, gather recent messages from other agents as context
+    if (isTeamChatChannel) {
+      const teamContext = await this.gatherTeamChatContext(message);
+      if (teamContext) {
+        text += teamContext;
+      }
     }
 
     // Stream response as the bot's own identity
