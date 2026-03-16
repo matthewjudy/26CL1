@@ -583,6 +583,7 @@ Clementine can autonomously improve herself using an iterative loop inspired by 
 | **Cron** | `CRON.md` | Prompt improvements for scheduled tasks, missing instructions |
 | **Workflows** | `workflows/*.md` | Step refinements, better prompts, missing error handling |
 | **Memory** | Configuration | Retrieval tuning, salience thresholds |
+| **Agents** | `agents/<slug>/agent.md` | Agent personality refinements, tool allowlist tuning, role clarification |
 
 ### How it works
 

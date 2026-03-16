@@ -305,7 +305,7 @@ export interface SelfImproveExperiment {
   startedAt: string;                   // ISO
   finishedAt: string;                  // ISO
   durationMs: number;
-  area: 'soul' | 'cron' | 'workflow' | 'memory';
+  area: 'soul' | 'cron' | 'workflow' | 'memory' | 'agent';
   target: string;                      // e.g., "SOUL.md personality section"
   hypothesis: string;                  // What the LLM decided to try
   proposedChange: string;              // The actual modification
@@ -336,7 +336,7 @@ export interface SelfImproveConfig {
   maxDurationMs: number;               // Default: 3_600_000 (1 hour)
   acceptThreshold: number;             // Default: 0.6 (score must beat this)
   plateauLimit: number;                // Default: 3 consecutive low-score stops loop
-  areas: ('soul' | 'cron' | 'workflow' | 'memory')[];
+  areas: ('soul' | 'cron' | 'workflow' | 'memory' | 'agent')[];
 }
 
 // ── Utility types ────────────────────────────────────────────────────

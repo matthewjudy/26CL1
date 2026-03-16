@@ -30,6 +30,7 @@ import {
   WORKFLOWS_DIR,
   VAULT_DIR,
   MEMORY_DB_PATH,
+  AGENTS_DIR,
 } from '../config.js';
 import type {
   CronRunEntry,
@@ -50,7 +51,7 @@ const DEFAULT_CONFIG: SelfImproveConfig = {
   maxDurationMs: 3_600_000,         // 1 hour
   acceptThreshold: 0.6,
   plateauLimit: 3,
-  areas: ['soul', 'cron', 'workflow', 'memory'],
+  areas: ['soul', 'cron', 'workflow', 'memory', 'agent'],
 };
 
 // ── Paths ────────────────────────────────────────────────────────────
@@ -306,6 +307,22 @@ export class SelfImproveLoop {
       }).join('\n') || '(none)';
     }
 
+    // Gather agent configs
+    let agentSummaries = '(none)';
+    if (existsSync(AGENTS_DIR)) {
+      try {
+        const slugs = readdirSync(AGENTS_DIR, { withFileTypes: true } as any)
+          .filter((d: any) => d.isDirectory?.() ?? true)
+          .map((d: any) => typeof d === 'string' ? d : d.name);
+        agentSummaries = slugs.map((slug: string) => {
+          const agentFile = path.join(AGENTS_DIR, slug, 'agent.md');
+          if (!existsSync(agentFile)) return null;
+          const content = readFileSync(agentFile, 'utf-8');
+          return `- ${slug}/agent.md: ${content.slice(0, 400)}`;
+        }).filter(Boolean).join('\n') || '(none)';
+      } catch { agentSummaries = '(none)'; }
+    }
+
     // Format experiment history for the prompt
     const historyText = history.slice(-20).map(e =>
       `#${e.iteration} | ${e.area} | "${e.hypothesis.slice(0, 60)}" | ${(e.score * 10).toFixed(1)}/10 ${e.accepted ? '✅' : '❌'}`
@@ -334,6 +351,7 @@ export class SelfImproveLoop {
       `### SOUL.md (personality/behavior):\n${soulContent}\n\n` +
       `### CRON.md (scheduled jobs):\n${cronContent}\n\n` +
       `### Workflows:\n${workflowSummaries}\n\n` +
+      `### Agent configs (team members with their own personality/tools):\n${agentSummaries}\n\n` +
       `## Experiment History (avoid repeating failed approaches):\n${historyText}\n\n` +
       `## Instructions\n` +
       `- Focus on areas: ${areas}\n` +
@@ -343,7 +361,7 @@ export class SelfImproveLoop {
       `- IMPORTANT: "proposedChange" must be the COMPLETE updated file content (not just the diff or changed section), because it will replace the entire file\n` +
       `- If there's no clear improvement needed, output: { "area": null }\n\n` +
       `Output ONLY a JSON object with this structure (no markdown, no explanation):\n` +
-      `{ "area": "soul"|"cron"|"workflow"|"memory", "target": "file name or section", "hypothesis": "what will improve and why", "proposedChange": "the complete updated file content with your minimal change applied" }`;
+      `{ "area": "soul"|"cron"|"workflow"|"memory"|"agent", "target": "file name or section (for agent, use the slug e.g. 'sasha-the-cmo')", "hypothesis": "what will improve and why", "proposedChange": "the complete updated file content with your minimal change applied" }`;
 
     const result = await this.assistant.runPlanStep('si-hypothesize', prompt, {
       tier: 2,
@@ -370,6 +388,10 @@ export class SelfImproveLoop {
       case 'workflow': {
         const wfFile = path.join(WORKFLOWS_DIR, target.endsWith('.md') ? target : `${target}.md`);
         return existsSync(wfFile) ? readFileSync(wfFile, 'utf-8') : '';
+      }
+      case 'agent': {
+        const agentFile = path.join(AGENTS_DIR, target, 'agent.md');
+        return existsSync(agentFile) ? readFileSync(agentFile, 'utf-8') : '';
       }
       case 'memory':
         return `(memory configuration — target: ${target})`;
@@ -591,6 +613,9 @@ export class SelfImproveLoop {
       case 'workflow': {
         const name = target.endsWith('.md') ? target : `${target}.md`;
         return path.join(WORKFLOWS_DIR, name);
+      }
+      case 'agent': {
+        return path.join(AGENTS_DIR, target, 'agent.md');
       }
       default:
         return null;
