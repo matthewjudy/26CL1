@@ -3678,7 +3678,7 @@ function getDashboardHTML(token: string): string {
     <div class="header-left">
       <div class="logo" id="header-logo">${name.charAt(0).toUpperCase()}</div>
       <div>
-        <h1><span>${name}</span> Command Center</h1>
+        <h1>Command Center</h1>
         <div class="header-subtitle">Personal AI Assistant</div>
       </div>
       <span class="header-activity" id="header-activity"></span>
@@ -3768,7 +3768,6 @@ function getDashboardHTML(token: string): string {
           <div class="agent-avatar" id="agent-avatar">${name.charAt(0).toUpperCase()}</div>
           <div class="agent-info">
             <div class="hero-wordmark" id="hero-wordmark"></div>
-            <div class="agent-name">${name}</div>
             <div class="agent-activity" id="agent-activity">
               <span class="agent-activity-dot"></span>
               <span>Loading...</span>
@@ -4421,14 +4420,13 @@ async function refreshStatus() {
     else logo.classList.remove('online');
 
     // Header activity text
-    var actName = d.name || 'Clementine';
     var actText = d.currentActivity || 'Idle';
     var headerAct = document.getElementById('header-activity');
     if (actText !== 'Idle') {
-      headerAct.textContent = actName + ' is ' + actText.toLowerCase() + '...';
+      headerAct.textContent = actText.toLowerCase() + '...';
       headerAct.className = 'header-activity active';
     } else {
-      headerAct.textContent = actName + ' is idle';
+      headerAct.textContent = 'idle';
       headerAct.className = 'header-activity';
     }
 
