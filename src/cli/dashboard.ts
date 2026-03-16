@@ -3940,38 +3940,39 @@ function getDashboardHTML(token: string): string {
     </div>
 
     <!-- Agent Create/Edit Modal -->
-    <div id="agent-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:none;align-items:center;justify-content:center">
-      <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:24px;width:520px;max-height:80vh;overflow-y:auto">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <h3 id="agent-modal-title" style="margin:0;color:var(--text)">Hire a New Team Member</h3>
-          <button onclick="hideAgentModal()" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">&times;</button>
+    <div id="agent-modal" class="modal-overlay">
+      <div class="modal" style="width:520px">
+        <div class="modal-header">
+          <h3 id="agent-modal-title">Hire a New Team Member</h3>
+          <button class="btn-ghost btn-sm" onclick="hideAgentModal()">&times;</button>
         </div>
+        <div class="modal-body">
         <form id="agent-form" onsubmit="submitAgentForm(event)">
           <input type="hidden" id="agent-edit-slug" value="">
           <div style="margin-bottom:12px">
             <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Name *</label>
-            <input id="agent-name" required style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="Research Agent">
+            <input id="agent-name" required style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="Research Agent">
           </div>
           <div style="margin-bottom:12px">
             <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Role Description *</label>
-            <input id="agent-description" required style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="Deep-dive research and analysis">
+            <input id="agent-description" required style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="Deep-dive research and analysis">
           </div>
           <div style="margin-bottom:12px">
             <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Profile Photo URL</label>
-            <input id="agent-avatar-url" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="https://example.com/avatar.png">
+            <input id="agent-avatar-url" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="https://example.com/avatar.png">
           </div>
           <div style="margin-bottom:12px">
             <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Onboarding Brief</label>
-            <textarea id="agent-personality" rows="4" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);resize:vertical" placeholder="You are a Research Agent specializing in..."></textarea>
+            <textarea id="agent-personality" rows="4" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);resize:vertical" placeholder="You are a Research Agent specializing in..."></textarea>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
             <div>
               <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Office / Desk Location</label>
-              <input id="agent-channel" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="research">
+              <input id="agent-channel" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="research">
             </div>
             <div>
               <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Model</label>
-              <select id="agent-model" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+              <select id="agent-model" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">
                 <option value="">Default (Sonnet)</option>
                 <option value="haiku">Haiku</option>
                 <option value="sonnet">Sonnet</option>
@@ -3982,11 +3983,11 @@ function getDashboardHTML(token: string): string {
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
             <div>
               <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Project Binding</label>
-              <input id="agent-project" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="data-pipeline">
+              <input id="agent-project" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="data-pipeline">
             </div>
             <div>
               <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Security Clearance</label>
-              <select id="agent-tier" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+              <select id="agent-tier" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">
                 <option value="2">Tier 2 (Read/Write)</option>
                 <option value="1">Tier 1 (Read-only)</option>
               </select>
@@ -3994,18 +3995,18 @@ function getDashboardHTML(token: string): string {
           </div>
           <div style="margin-bottom:12px">
             <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Team Connections (comma-separated slugs)</label>
-            <input id="agent-canmessage" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="analyst-agent, writer-agent">
+            <input id="agent-canmessage" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="analyst-agent, writer-agent">
           </div>
           <div style="margin-bottom:12px">
             <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Equipment & Access (comma-separated, blank = all)</label>
-            <input id="agent-tools" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="WebSearch, WebFetch, memory_search">
+            <input id="agent-tools" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="WebSearch, WebFetch, memory_search">
           </div>
           <div style="margin-bottom:16px">
             <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Discord Bot Token <span style="opacity:0.6">(gives agent its own bot presence)</span></label>
-            <input id="agent-discord-token" type="password" autocomplete="off" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="Paste Discord bot token" oninput="onTokenInput(this.value)">
+            <input id="agent-discord-token" type="password" autocomplete="off" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="Paste Discord bot token" oninput="onTokenInput(this.value)">
             <div style="margin-top:6px">
               <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Channel ID <span style="opacity:0.6">(right-click channel &gt; Copy Channel ID &mdash; auto-discovers from channel name if blank)</span></label>
-              <input id="agent-discord-channel-id" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="e.g. 1478311884212932740">
+              <input id="agent-discord-channel-id" style="width:100%;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" placeholder="e.g. 1478311884212932740">
             </div>
             <div id="agent-token-hint" style="display:none;font-size:11px;color:var(--green);margin-top:4px">(token configured &mdash; leave blank to keep, enter new to replace)</div>
             <div id="agent-token-setup" style="display:none;margin-top:8px;padding:10px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.25);border-radius:8px;font-size:12px">
@@ -4021,6 +4022,7 @@ function getDashboardHTML(token: string): string {
             <button type="submit" class="btn" style="background:var(--green);color:#000;font-weight:600" id="agent-submit-btn">Complete Hiring</button>
           </div>
         </form>
+        </div>
       </div>
     </div>
 
@@ -6128,7 +6130,7 @@ async function refreshTeam() {
 // ── Agent CRUD Modal ──────────────────────
 
 function showAgentCreateModal() {
-  document.getElementById('agent-modal').style.display = 'flex';
+  document.getElementById('agent-modal').classList.add('show');
   document.getElementById('agent-modal-title').textContent = 'Hire a New Team Member';
   document.getElementById('agent-submit-btn').textContent = 'Complete Hiring';
   document.getElementById('agent-edit-slug').value = '';
@@ -6144,7 +6146,7 @@ async function editAgent(slug) {
     var a = agents.find(function(x) { return x.slug === slug; });
     if (!a) { toast('Agent not found', 'error'); return; }
 
-    document.getElementById('agent-modal').style.display = 'flex';
+    document.getElementById('agent-modal').classList.add('show');
     document.getElementById('agent-modal-title').textContent = 'Update Team Member: ' + a.name;
     document.getElementById('agent-submit-btn').textContent = 'Save';
     document.getElementById('agent-edit-slug').value = slug;
@@ -6180,7 +6182,7 @@ async function editAgent(slug) {
 }
 
 function hideAgentModal() {
-  document.getElementById('agent-modal').style.display = 'none';
+  document.getElementById('agent-modal').classList.remove('show');
 }
 
 var tokenInputDebounce = null;
