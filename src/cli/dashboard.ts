@@ -1878,6 +1878,7 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
           slug: a.slug,
           name: a.name,
           description: a.description,
+          avatar: a.avatar ?? null,
           tier: a.tier,
           model: a.model ?? null,
           channelName: a.team?.channelName ?? null,
@@ -1905,7 +1906,7 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
     try {
       const gw = await getGateway();
       const mgr = gw.getAgentManager();
-      const { name, description, personality, tier, model, channelName, canMessage, allowedTools, project, discordToken, discordChannelId } = req.body;
+      const { name, description, personality, tier, model, channelName, canMessage, allowedTools, project, discordToken, discordChannelId, avatar } = req.body;
       if (!name || !description) {
         res.status(400).json({ error: 'name and description are required' });
         return;
@@ -1920,6 +1921,7 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
         project: project || undefined,
         discordToken: discordToken || undefined,
         discordChannelId: discordChannelId || undefined,
+        avatar: avatar || undefined,
       });
       res.json({ ok: true, agent: { slug: agent.slug, name: agent.name } });
     } catch (err) {
@@ -2101,23 +2103,23 @@ function getDashboardHTML(): string {
 <title>${name} Command Center</title>
 <style>
   :root {
-    --bg-primary: #0a0e14;
-    --bg-secondary: #11161d;
-    --bg-card: rgba(21,27,36,0.8);
-    --bg-hover: #1a2230;
-    --bg-input: #0d1219;
-    --border: #1e2a3a;
-    --border-light: #263245;
-    --text-primary: #e6edf3;
-    --text-secondary: #8b9eb0;
-    --text-muted: #5a6a7e;
+    --bg-primary: #f5f6f8;
+    --bg-secondary: #ffffff;
+    --bg-card: rgba(255,255,255,0.95);
+    --bg-hover: #eef1f5;
+    --bg-input: #f0f2f5;
+    --border: #d8dde5;
+    --border-light: #c5ccd6;
+    --text-primary: #1a1a2e;
+    --text-secondary: #5a6070;
+    --text-muted: #8a92a0;
     --accent: #4d9eff;
-    --accent-glow: rgba(77, 158, 255, 0.15);
+    --accent-glow: rgba(43, 125, 233, 0.10);
     --purple: #7c3aed;
     --orange: #f0883e;
     --clementine: #ff8c21;
     --clementine-dark: #e67a10;
-    --clementine-glow: rgba(255, 140, 33, 0.15);
+    --clementine-glow: rgba(255, 140, 33, 0.10);
     --clementine-bg: rgba(255, 140, 33, 0.08);
     --green: #2ea043;
     --green-bg: rgba(46, 160, 67, 0.12);
@@ -2333,7 +2335,7 @@ function getDashboardHTML(): string {
     border-radius: var(--radius);
     margin-bottom: 16px;
     overflow: hidden;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   }
   .card-header {
     padding: 14px 18px;
@@ -2965,6 +2967,336 @@ function getDashboardHTML(): string {
     0%, 100% { transform: scale(1); opacity: 0.4; }
     50% { transform: scale(1.05); opacity: 1; }
   }
+
+  /* ── The Office — Desk Grid ─────────────── */
+  .office-floor {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 20px;
+    margin-top: 16px;
+    padding: 28px;
+    background:
+      radial-gradient(circle, var(--border) 1px, transparent 1px);
+    background-size: 24px 24px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    min-height: 200px;
+  }
+
+  .desk-station {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0;
+    transition: transform 0.2s, box-shadow 0.2s;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .desk-station:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+  }
+
+  /* Desk surface — monitor, coffee, plant */
+  .desk-surface {
+    background: var(--bg-hover);
+    padding: 16px 16px 12px;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    position: relative;
+    border-bottom: 3px solid var(--border-light);
+    min-height: 90px;
+  }
+
+  /* Monitor */
+  .desk-monitor {
+    width: 80px;
+    height: 56px;
+    background: #1a1a2e;
+    border-radius: 4px;
+    border: 2px solid #555;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: #8fc;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .desk-monitor::after {
+    content: '';
+    position: absolute;
+    bottom: -8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 20px;
+    height: 6px;
+    background: #555;
+    border-radius: 0 0 3px 3px;
+  }
+  .desk-monitor .monitor-channel {
+    font-size: 9px;
+    color: #7eb8da;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+    max-width: 70px;
+  }
+  .desk-monitor .typing-dots {
+    display: none;
+    font-size: 14px;
+    letter-spacing: 2px;
+    color: #8fc;
+  }
+  .desk-station.status-online .typing-dots {
+    display: block;
+    animation: typingBlink 1.4s steps(4, end) infinite;
+  }
+  @keyframes typingBlink {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  /* Coffee cup (CSS art) */
+  .desk-coffee {
+    width: 18px;
+    height: 20px;
+    background: #8B6914;
+    border-radius: 0 0 4px 4px;
+    position: relative;
+    flex-shrink: 0;
+    margin-bottom: 4px;
+  }
+  .desk-coffee::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -1px;
+    right: -1px;
+    height: 4px;
+    background: #a07818;
+    border-radius: 2px 2px 0 0;
+  }
+  .desk-coffee::after {
+    content: '';
+    position: absolute;
+    right: -7px;
+    top: 4px;
+    width: 6px;
+    height: 10px;
+    border: 2px solid #8B6914;
+    border-left: none;
+    border-radius: 0 4px 4px 0;
+  }
+
+  /* Steam animation for online agents */
+  .desk-steam {
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: none;
+  }
+  .desk-station.status-online .desk-steam {
+    display: block;
+  }
+  .desk-steam span {
+    display: inline-block;
+    width: 2px;
+    height: 8px;
+    background: var(--text-muted);
+    opacity: 0.4;
+    border-radius: 1px;
+    margin: 0 1px;
+    animation: steam 2s ease-in-out infinite;
+  }
+  .desk-steam span:nth-child(2) { animation-delay: 0.3s; height: 10px; }
+  .desk-steam span:nth-child(3) { animation-delay: 0.6s; }
+  @keyframes steam {
+    0%, 100% { transform: translateY(0) scaleY(1); opacity: 0; }
+    50% { transform: translateY(-6px) scaleY(1.3); opacity: 0.5; }
+  }
+
+  /* Plant (CSS art) */
+  .desk-plant {
+    position: relative;
+    width: 18px;
+    height: 28px;
+    flex-shrink: 0;
+    margin-bottom: 4px;
+  }
+  .desk-plant::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 2px;
+    width: 14px;
+    height: 10px;
+    background: #a0522d;
+    border-radius: 0 0 3px 3px;
+  }
+  .desk-plant::after {
+    content: '';
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 10px solid transparent;
+    border-right: 10px solid transparent;
+    border-bottom: 18px solid #3a9a3a;
+    border-radius: 2px;
+  }
+
+  /* Agent section below desk */
+  .desk-agent {
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    flex: 1;
+  }
+
+  .desk-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--clementine), #ff6b00);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 800;
+    color: #fff;
+    position: relative;
+    margin-bottom: 8px;
+    overflow: hidden;
+    border: 3px solid transparent;
+    flex-shrink: 0;
+  }
+  .desk-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+  }
+  .desk-station.status-online .desk-avatar {
+    border-color: var(--green);
+    animation: avatarBob 4s ease-in-out infinite;
+  }
+  .desk-station.status-connecting .desk-avatar {
+    border-color: var(--yellow);
+  }
+  .desk-station.status-error .desk-avatar {
+    border-color: var(--red);
+  }
+  .desk-station.status-offline .desk-avatar {
+    opacity: 0.6;
+    filter: grayscale(30%);
+  }
+  @keyframes avatarBob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-3px); }
+  }
+
+  /* Status dot */
+  .desk-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .desk-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .desk-station.status-online .desk-status-dot {
+    background: var(--green);
+    animation: statusPulse 2s ease-in-out infinite;
+  }
+  .desk-station.status-connecting .desk-status-dot {
+    background: var(--yellow);
+    animation: statusPulse 1s ease-in-out infinite;
+  }
+  .desk-station.status-error .desk-status-dot {
+    background: var(--red);
+  }
+  @keyframes statusPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(46,160,67,0.4); }
+    50% { box-shadow: 0 0 0 5px rgba(46,160,67,0); }
+  }
+
+  .desk-name {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+  }
+  .desk-role {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .desk-badges {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 8px;
+  }
+  .desk-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+  }
+  .desk-actions button {
+    font-size: 11px;
+    padding: 3px 10px;
+  }
+
+  /* Empty hire desk */
+  .desk-station.desk-hire {
+    border: 2px dashed var(--border-light);
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 260px;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .desk-station.desk-hire:hover {
+    border-color: var(--green);
+    background: rgba(46,160,67,0.04);
+    transform: translateY(-3px);
+  }
+  .desk-hire-inner {
+    text-align: center;
+    color: var(--text-muted);
+  }
+  .desk-hire-inner .hire-icon {
+    font-size: 36px;
+    margin-bottom: 8px;
+    opacity: 0.5;
+  }
+  .desk-hire-inner .hire-label {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
   .agent-info { flex: 1; }
   .agent-name {
     font-size: 26px;
@@ -3042,7 +3374,7 @@ function getDashboardHTML(): string {
     display: flex;
     align-items: flex-start;
     gap: 14px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     position: relative;
     overflow: hidden;
   }
@@ -3142,7 +3474,7 @@ function getDashboardHTML(): string {
     border-radius: var(--radius);
     padding: 20px;
     border-left: 3px solid var(--green);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     transition: border-color 0.2s, opacity 0.2s;
   }
   .task-card.disabled {
@@ -3155,7 +3487,7 @@ function getDashboardHTML(): string {
     animation: taskPulse 2s ease-in-out infinite;
   }
   @keyframes taskPulse {
-    0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+    0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
     50% { box-shadow: 0 2px 16px rgba(77,158,255,0.2); }
   }
   .task-card-header {
@@ -3236,7 +3568,7 @@ function getDashboardHTML(): string {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 18px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   }
   .session-card-header {
     display: flex;
@@ -3401,7 +3733,7 @@ function getDashboardHTML(): string {
     <div class="nav-section">
       <div class="nav-section-title">Agents</div>
       <div class="nav-item" data-page="team">
-        <span class="nav-icon">&#129302;</span> Team
+        <span class="nav-icon">&#129302;</span> The Office
         <span class="nav-badge" id="nav-team-count">0</span>
       </div>
     </div>
@@ -3580,27 +3912,28 @@ function getDashboardHTML(): string {
       <div id="metrics-content"><div class="empty-state">Loading metrics...</div></div>
     </div>
 
-    <!-- ═══ Team Page ═══ -->
+    <!-- ═══ Team Page — The Office ═══ -->
     <div class="page" id="page-team">
-      <div class="page-title">Agent Team</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div class="page-title" style="margin-bottom:0">The Office</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn" onclick="showAgentCreateModal()" style="background:var(--green);color:#000;font-weight:600">Hire a New Employee</button>
+          <button class="btn" onclick="provisionTeam()">Provision</button>
+        </div>
+      </div>
       <div class="summary-grid" id="team-summary-cards"></div>
-      <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
-        <button class="btn" onclick="showAgentCreateModal()" style="background:var(--green);color:#000;font-weight:600">+ Create Agent</button>
-        <button class="btn" onclick="provisionTeam()">Provision Channels</button>
+      <div class="office-floor" id="team-agent-grid">
+        <div class="empty-state">No agents configured</div>
       </div>
       <div class="grid-2" style="margin-top:16px">
-        <div class="card">
-          <div class="card-header">All Agents</div>
-          <div class="card-body" id="team-agent-grid"><div class="empty-state">No agents configured</div></div>
-        </div>
         <div class="card">
           <div class="card-header">Communication Topology</div>
           <div class="card-body" id="team-topology"><div class="empty-state">No agents</div></div>
         </div>
-      </div>
-      <div class="card" style="margin-top:16px">
-        <div class="card-header">Inter-Agent Messages</div>
-        <div class="card-body" id="team-messages-log"><div class="empty-state">No messages yet</div></div>
+        <div class="card">
+          <div class="card-header">Inter-Agent Messages</div>
+          <div class="card-body" id="team-messages-log"><div class="empty-state">No messages yet</div></div>
+        </div>
       </div>
     </div>
 
@@ -3608,7 +3941,7 @@ function getDashboardHTML(): string {
     <div id="agent-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:none;align-items:center;justify-content:center">
       <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:24px;width:520px;max-height:80vh;overflow-y:auto">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <h3 id="agent-modal-title" style="margin:0;color:var(--text)">Create Agent</h3>
+          <h3 id="agent-modal-title" style="margin:0;color:var(--text)">Hire a New Team Member</h3>
           <button onclick="hideAgentModal()" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">&times;</button>
         </div>
         <form id="agent-form" onsubmit="submitAgentForm(event)">
@@ -3618,16 +3951,20 @@ function getDashboardHTML(): string {
             <input id="agent-name" required style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="Research Agent">
           </div>
           <div style="margin-bottom:12px">
-            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Description *</label>
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Role Description *</label>
             <input id="agent-description" required style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="Deep-dive research and analysis">
           </div>
           <div style="margin-bottom:12px">
-            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Personality / System Prompt</label>
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Profile Photo URL</label>
+            <input id="agent-avatar-url" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="https://example.com/avatar.png">
+          </div>
+          <div style="margin-bottom:12px">
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Onboarding Brief</label>
             <textarea id="agent-personality" rows="4" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);resize:vertical" placeholder="You are a Research Agent specializing in..."></textarea>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
             <div>
-              <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Channel Name</label>
+              <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Office / Desk Location</label>
               <input id="agent-channel" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="research">
             </div>
             <div>
@@ -3646,7 +3983,7 @@ function getDashboardHTML(): string {
               <input id="agent-project" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="data-pipeline">
             </div>
             <div>
-              <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Tier</label>
+              <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Security Clearance</label>
               <select id="agent-tier" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">
                 <option value="2">Tier 2 (Read/Write)</option>
                 <option value="1">Tier 1 (Read-only)</option>
@@ -3654,11 +3991,11 @@ function getDashboardHTML(): string {
             </div>
           </div>
           <div style="margin-bottom:12px">
-            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Can Message (comma-separated slugs)</label>
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Team Connections (comma-separated slugs)</label>
             <input id="agent-canmessage" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="analyst-agent, writer-agent">
           </div>
           <div style="margin-bottom:12px">
-            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Allowed Tools (comma-separated, blank = all)</label>
+            <label style="display:block;color:var(--text-muted);font-size:12px;margin-bottom:4px">Equipment & Access (comma-separated, blank = all)</label>
             <input id="agent-tools" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)" placeholder="WebSearch, WebFetch, memory_search">
           </div>
           <div style="margin-bottom:16px">
@@ -3679,7 +4016,7 @@ function getDashboardHTML(): string {
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button type="button" class="btn" onclick="hideAgentModal()">Cancel</button>
-            <button type="submit" class="btn" style="background:var(--green);color:#000;font-weight:600" id="agent-submit-btn">Create</button>
+            <button type="submit" class="btn" style="background:var(--green);color:#000;font-weight:600" id="agent-submit-btn">Complete Hiring</button>
           </div>
         </form>
       </div>
@@ -5661,78 +5998,72 @@ async function refreshTeam() {
         '<div class="stat-card"><div class="stat-value">' + messages.length + '</div><div class="stat-label">Recent Messages</div></div>';
     }
 
-    // Agent grid — use /api/agents for full detail
+    // Agent grid — desk station cards
     var grid = document.getElementById('team-agent-grid');
     if (grid) {
       var allRes = await fetch('/api/agents');
       var allAgents = await allRes.json();
       if (allAgents.length === 0) {
-        grid.innerHTML = '<div class="empty-state">No agents configured.<br>Click "Create Agent" above or add profiles to <code>vault/00-System/agents/</code></div>';
+        grid.innerHTML = '<div class="desk-station desk-hire" onclick="showAgentCreateModal()">' +
+          '<div class="desk-hire-inner"><div class="hire-icon">+</div><div class="hire-label">Hire a New Employee</div></div></div>';
       } else {
-        grid.innerHTML = allAgents.map(function(a) {
-          var statusDot = a.channelName
-            ? (a.provisioned
-              ? '<span style="color:#22c55e" title="Provisioned">&#9679;</span>'
-              : '<span style="color:#ef4444" title="Not provisioned">&#9679;</span>')
-            : '<span style="color:var(--text-muted)" title="No channel">&#9675;</span>';
-          var channelInfo = a.channelName
-            ? (a.provisioned ? '#' + a.channelName : '<em>not provisioned</em>')
-            : '<em>no channel</em>';
+        var cards = allAgents.map(function(a) {
+          // Determine status class
+          var statusClass = 'status-offline';
+          var statusLabel = 'Offline';
+          if (a.botStatus === 'online') { statusClass = 'status-online'; statusLabel = 'Online'; }
+          else if (a.botStatus === 'connecting') { statusClass = 'status-connecting'; statusLabel = 'Connecting'; }
+          else if (a.botStatus === 'error') { statusClass = 'status-error'; statusLabel = 'Error'; }
+
+          var channelDisplay = a.channelName ? '#' + a.channelName : 'no desk';
+
+          // Avatar: use image URL or fallback to initial
+          var avatarContent = a.avatar
+            ? '<img src="' + a.avatar + '" onerror="this.style.display=\\'none\\';this.parentElement.textContent=\\'' + a.name.charAt(0).toUpperCase() + '\\';">'
+            : a.name.charAt(0).toUpperCase();
+
+          // Badges
           var badges = [];
           if (a.model) badges.push('<span class="badge">' + a.model + '</span>');
-          if (a.project) badges.push('<span class="badge" style="background:var(--blue)">' + a.project + '</span>');
+          if (a.project) badges.push('<span class="badge" style="background:var(--purple);color:#fff">' + a.project + '</span>');
           if (a.allowedTools) badges.push('<span class="badge" style="background:var(--yellow);color:#000">' + a.allowedTools.length + ' tools</span>');
-          if (a.hasOwnCron) badges.push('<span class="badge" style="background:var(--purple)">cron</span>');
-          if (a.hasOwnWorkflows) badges.push('<span class="badge" style="background:var(--purple)">workflows</span>');
 
-          // Bot presence indicator
-          var botBadge = '';
-          if (a.botStatus === 'online') {
-            botBadge = '<span class="badge" style="background:#22c55e;color:#000">&#9679; bot online' + (a.botTag ? ' (' + a.botTag + ')' : '') + '</span>';
-          } else if (a.botStatus === 'connecting') {
-            botBadge = '<span class="badge" style="background:var(--yellow);color:#000">&#9679; connecting...</span>';
-          } else if (a.botStatus === 'error') {
-            botBadge = '<span class="badge" style="background:var(--red)">&#9679; bot error</span>';
-          } else if (a.hasDiscordToken) {
-            botBadge = '<span class="badge" style="background:var(--text-muted)">&#9675; bot offline</span>';
-          }
-          if (botBadge) badges.push(botBadge);
+          // Actions
+          var actions = a.agentDir
+            ? '<button class="btn btn-sm" onclick="event.stopPropagation();editAgent(\\'' + a.slug + '\\')">Edit</button>' +
+              '<button class="btn btn-sm" onclick="event.stopPropagation();deleteAgent(\\'' + a.slug + '\\')" style="color:var(--red)">Let Go</button>'
+            : '';
 
-          var editBtn = a.agentDir
-            ? '<button class="btn btn-sm" onclick="editAgent(\\'' + a.slug + '\\')" style="font-size:11px;padding:2px 8px">Edit</button> ' +
-              '<button class="btn btn-sm" onclick="deleteAgent(\\'' + a.slug + '\\')" style="font-size:11px;padding:2px 8px;color:var(--red)">Delete</button>'
-            : '<span style="font-size:11px;color:var(--text-muted)">legacy profile</span>';
-
-          // Bot setup guidance row
-          var botRow = '';
-          if (a.hasDiscordToken && a.botInviteUrl && !a.botStatus) {
-            botRow = '<div style="margin-top:6px;padding:6px 8px;background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.3);border-radius:6px;font-size:11px">' +
-              '<strong style="color:var(--yellow)">Bot not yet active</strong> &mdash; ' +
-              '<a href="' + a.botInviteUrl + '" target="_blank" style="color:var(--blue)">Invite to server</a>, then restart the daemon.' +
-              '</div>';
-          } else if (a.hasDiscordToken && a.botInviteUrl && a.botStatus === 'error') {
-            botRow = '<div style="margin-top:6px;padding:6px 8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:6px;font-size:11px">' +
-              '<strong style="color:var(--red)">Bot error</strong> &mdash; Check the token is valid and the bot has been ' +
-              '<a href="' + a.botInviteUrl + '" target="_blank" style="color:var(--blue)">invited to the server</a>.' +
-              '</div>';
-          } else if (!a.hasDiscordToken && a.channelName) {
-            botRow = '<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">' +
-              'Using webhook identity. <a href="#" onclick="editAgent(\\'' + a.slug + '\\');return false" style="color:var(--blue)">Add a bot token</a> for dedicated bot presence.' +
-              '</div>';
-          }
-
-          return '<div style="padding:12px;border-bottom:1px solid var(--border)">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center">' +
-            '<div>' + statusDot + ' <strong>' + a.name + '</strong> <span style="color:var(--text-muted);font-size:12px">(' + a.slug + ')</span></div>' +
-            '<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">' + badges.join('') + ' ' + editBtn + '</div>' +
+          return '<div class="desk-station ' + statusClass + '">' +
+            '<div class="desk-surface">' +
+              '<div class="desk-monitor">' +
+                '<div class="monitor-channel">' + channelDisplay + '</div>' +
+                '<div class="typing-dots">&middot;&middot;&middot;</div>' +
+              '</div>' +
+              '<div style="position:relative">' +
+                '<div class="desk-coffee"></div>' +
+                '<div class="desk-steam"><span></span><span></span><span></span></div>' +
+              '</div>' +
+              '<div class="desk-plant"></div>' +
             '</div>' +
-            '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px">' + (a.description || 'No description') + '</div>' +
-            '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' +
-            'Channel: ' + channelInfo +
-            ' &middot; Tier: ' + (a.tier || 1) +
-            ' &middot; Can message: ' + ((a.canMessage || []).join(', ') || 'none') +
-            '</div>' + botRow + '</div>';
-        }).join('');
+            '<div class="desk-agent">' +
+              '<div class="desk-avatar">' + avatarContent + '</div>' +
+              '<div class="desk-status"><span class="desk-status-dot"></span> ' + statusLabel + '</div>' +
+              '<div class="desk-name">' + a.name + '</div>' +
+              '<div class="desk-role">' + (a.description || 'No role assigned') + '</div>' +
+              (badges.length ? '<div class="desk-badges">' + badges.join('') + '</div>' : '') +
+              (actions ? '<div class="desk-actions">' + actions + '</div>' : '') +
+            '</div>' +
+          '</div>';
+        });
+
+        // Add the "Hire" empty desk at the end
+        cards.push(
+          '<div class="desk-station desk-hire" onclick="showAgentCreateModal()">' +
+          '<div class="desk-hire-inner"><div class="hire-icon">+</div><div class="hire-label">Hire a New Employee</div></div></div>'
+        );
+
+        grid.innerHTML = cards.join('');
       }
     }
 
@@ -5799,8 +6130,8 @@ async function provisionTeam() {
 
 function showAgentCreateModal() {
   document.getElementById('agent-modal').style.display = 'flex';
-  document.getElementById('agent-modal-title').textContent = 'Create Agent';
-  document.getElementById('agent-submit-btn').textContent = 'Create';
+  document.getElementById('agent-modal-title').textContent = 'Hire a New Team Member';
+  document.getElementById('agent-submit-btn').textContent = 'Complete Hiring';
   document.getElementById('agent-edit-slug').value = '';
   document.getElementById('agent-form').reset();
   document.getElementById('agent-token-hint').style.display = 'none';
@@ -5815,11 +6146,12 @@ async function editAgent(slug) {
     if (!a) { toast('Agent not found', 'error'); return; }
 
     document.getElementById('agent-modal').style.display = 'flex';
-    document.getElementById('agent-modal-title').textContent = 'Edit Agent: ' + a.name;
+    document.getElementById('agent-modal-title').textContent = 'Update Team Member: ' + a.name;
     document.getElementById('agent-submit-btn').textContent = 'Save';
     document.getElementById('agent-edit-slug').value = slug;
     document.getElementById('agent-name').value = a.name || '';
     document.getElementById('agent-description').value = a.description || '';
+    document.getElementById('agent-avatar-url').value = a.avatar || '';
     document.getElementById('agent-channel').value = a.channelName || '';
     document.getElementById('agent-model').value = a.model || '';
     document.getElementById('agent-project').value = a.project || '';
@@ -5895,6 +6227,7 @@ async function submitAgentForm(e) {
     model: document.getElementById('agent-model').value || undefined,
     project: document.getElementById('agent-project').value.trim() || undefined,
     tier: parseInt(document.getElementById('agent-tier').value) || 2,
+    avatar: document.getElementById('agent-avatar-url').value.trim() || undefined,
   };
 
   var cm = document.getElementById('agent-canmessage').value.trim();
@@ -5929,7 +6262,7 @@ async function submitAgentForm(e) {
 }
 
 async function deleteAgent(slug) {
-  if (!confirm('Delete agent "' + slug + '"? This removes the entire agent directory.')) return;
+  if (!confirm('Let go of "' + slug + '"? This removes the entire agent directory.')) return;
   try {
     var r = await fetch('/api/agents/' + slug, { method: 'DELETE' });
     var d = await r.json();
