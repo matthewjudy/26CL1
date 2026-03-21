@@ -801,7 +801,14 @@ function writeCronFile(parsed: matter.GrayMatterFile<string>, jobs: Array<Record
 
 export async function cmdDashboard(opts: { port?: string; host?: string }): Promise<void> {
   const port = parseInt(opts.port ?? '3030', 10);
-  const host = opts.host ?? process.env.DASHBOARD_HOST ?? '127.0.0.1';
+
+  // Read DASHBOARD_HOST from .env (config uses a local record, not process.env)
+  let envHost = '127.0.0.1';
+  if (existsSync(ENV_PATH)) {
+    const match = readFileSync(ENV_PATH, 'utf-8').match(/^DASHBOARD_HOST=(.+)$/m);
+    if (match) envHost = match[1].replace(/^["']|["']$/g, '');
+  }
+  const host = opts.host ?? envHost;
   const app = express();
   app.use(express.json());
 
