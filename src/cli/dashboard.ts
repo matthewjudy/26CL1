@@ -798,8 +798,9 @@ function writeCronFile(parsed: matter.GrayMatterFile<string>, jobs: Array<Record
 
 // ── Express app ──────────────────────────────────────────────────────
 
-export async function cmdDashboard(opts: { port?: string }): Promise<void> {
+export async function cmdDashboard(opts: { port?: string; host?: string }): Promise<void> {
   const port = parseInt(opts.port ?? '3030', 10);
+  const host = opts.host ?? process.env.DASHBOARD_HOST ?? '127.0.0.1';
   const app = express();
   app.use(express.json());
 
@@ -2291,12 +2292,13 @@ export async function cmdDashboard(opts: { port?: string }): Promise<void> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       await new Promise<void>((resolve, reject) => {
-        const server = app.listen(actualPort, '127.0.0.1');
+        const server = app.listen(actualPort, host);
         server.once('listening', () => {
           const name = getAssistantName();
+          const displayHost = host === '0.0.0.0' ? 'all interfaces' : host;
           console.log();
           console.log(`  ${name} Command Center`);
-          console.log(`  http://localhost:${actualPort}`);
+          console.log(`  http://${host === '0.0.0.0' ? 'localhost' : host}:${actualPort}`);
           if (actualPort !== port) {
             console.log(`  (port ${port} was in use)`);
           }

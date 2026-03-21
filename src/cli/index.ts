@@ -801,7 +801,8 @@ program
   .command('dashboard')
   .description('Launch local command center')
   .option('-p, --port <n>', 'Port (default 3030)', '3030')
-  .action((opts: { port?: string }) => {
+  .option('-H, --host <addr>', 'Bind address (default 127.0.0.1, use 0.0.0.0 for network access)')
+  .action((opts: { port?: string; host?: string }) => {
     cmdDashboard(opts).catch((err: unknown) => {
       console.error('Dashboard error:', err);
       process.exit(1);
