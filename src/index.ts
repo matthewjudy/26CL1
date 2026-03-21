@@ -318,19 +318,14 @@ function printBanner(channels: string[], profiles: number, cronJobs: number, gra
 // ── Ensure vault directories ─────────────────────────────────────────
 
 function ensureVaultDirs(): void {
-  const dirs = [
+  // Only create Clementine system dirs — don't create user vault dirs
+  // (they already exist in the external Obsidian vault)
+  const clementineDirs = [
     config.SYSTEM_DIR,
-    config.DAILY_NOTES_DIR,
-    config.PEOPLE_DIR,
-    config.PROJECTS_DIR,
-    config.TOPICS_DIR,
-    config.TASKS_DIR,
-    config.TEMPLATES_DIR,
-    config.INBOX_DIR,
     config.PROFILES_DIR,
   ];
 
-  for (const dir of dirs) {
+  for (const dir of clementineDirs) {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }

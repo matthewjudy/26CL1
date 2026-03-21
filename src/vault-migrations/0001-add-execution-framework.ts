@@ -36,7 +36,9 @@ export const migration: VaultMigration = {
   description: 'Add Execution Framework section to SOUL.md',
 
   apply(vaultDir: string) {
-    const soulPath = path.join(vaultDir, '00-System', 'SOUL.md');
+    // Use config to find SOUL.md in the correct system dir
+    const configMod = require('../config.js');
+    const soulPath = configMod.SOUL_FILE || path.join(vaultDir, 'Meta', 'Clementine', 'SOUL.md');
 
     if (!existsSync(soulPath)) {
       return { applied: false, skipped: true, details: 'SOUL.md not found' };

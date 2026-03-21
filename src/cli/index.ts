@@ -488,18 +488,26 @@ function cmdDoctor(): void {
     issues++;
   }
 
-  // Vault files
-  const vaultDir = path.join(BASE_DIR, 'vault');
+  // Vault files — resolve VAULT_PATH from .env if set
+  let vaultDir = path.join(BASE_DIR, 'vault');
+  let systemSubdir = 'Meta/Clementine';
+  if (existsSync(ENV_PATH)) {
+    const envContent = readFileSync(ENV_PATH, 'utf-8');
+    const vpMatch = envContent.match(/^VAULT_PATH=(.+)$/m);
+    if (vpMatch) vaultDir = vpMatch[1].replace(/^["']|["']$/g, '');
+    const sdMatch = envContent.match(/^VAULT_SYSTEM_DIR=(.+)$/m);
+    if (sdMatch) systemSubdir = sdMatch[1].replace(/^["']|["']$/g, '');
+  }
   const requiredVaultFiles = [
-    ['00-System/SOUL.md', 'SOUL.md'],
-    ['00-System/AGENTS.md', 'AGENTS.md'],
+    [`${systemSubdir}/SOUL.md`, 'SOUL.md'],
+    [`${systemSubdir}/AGENTS.md`, 'AGENTS.md'],
   ] as const;
 
   for (const [filePath, label] of requiredVaultFiles) {
     if (existsSync(path.join(vaultDir, filePath))) {
-      console.log(`  ${GREEN}OK${RESET}  vault/${filePath}`);
+      console.log(`  ${GREEN}OK${RESET}  ${filePath}`);
     } else {
-      console.log(`  ${RED}FAIL${RESET}  vault/${filePath} missing`);
+      console.log(`  ${RED}FAIL${RESET}  ${filePath} missing`);
       issues++;
     }
   }
@@ -1432,7 +1440,7 @@ const workflowCmd = program
 
 workflowCmd
   .command('list')
-  .description('List all workflows from vault/00-System/workflows/')
+  .description('List all workflows from Meta/Clementine/workflows/')
   .action(async () => {
     try {
       const { parseAllWorkflows } = await import('../agent/workflow-runner.js');
@@ -1440,7 +1448,7 @@ workflowCmd
       const workflows = parseAllWorkflows(config.WORKFLOWS_DIR);
 
       if (workflows.length === 0) {
-        console.log('No workflows found. Add .md files to vault/00-System/workflows/.');
+        console.log('No workflows found. Add .md files to Meta/Clementine/workflows/.');
         return;
       }
 

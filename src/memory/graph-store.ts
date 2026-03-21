@@ -366,7 +366,9 @@ export class GraphStore {
     } catch { /* empty graph — proceed */ }
 
     // 1. People notes
-    const peopleDir = path.join(vaultDir, '02-People');
+    // Import folder names from config to support custom vault layouts
+    const { PEOPLE_DIR: peopleDir, PROJECTS_DIR: projectsDir, TOPICS_DIR: topicsDir } = await import('../config.js');
+    // Use config-derived paths instead of hardcoded folder names
     if (existsSync(peopleDir)) {
       for (const file of readdirSync(peopleDir).filter(f => f.endsWith('.md'))) {
         try {
@@ -410,7 +412,7 @@ export class GraphStore {
     }
 
     // 2. Project notes
-    const projectsDir = path.join(vaultDir, '03-Projects');
+    // projectsDir already imported from config above
     if (existsSync(projectsDir)) {
       for (const file of readdirSync(projectsDir).filter(f => f.endsWith('.md'))) {
         try {
@@ -428,7 +430,7 @@ export class GraphStore {
     }
 
     // 3. Topic notes
-    const topicsDir = path.join(vaultDir, '04-Topics');
+    // topicsDir already imported from config above
     if (existsSync(topicsDir)) {
       for (const file of readdirSync(topicsDir).filter(f => f.endsWith('.md'))) {
         try {
@@ -489,7 +491,7 @@ export class GraphStore {
     }
 
     // 5. Tasks from TASKS.md
-    const tasksFile = path.join(vaultDir, '05-Tasks', 'TASKS.md');
+    const { TASKS_FILE: tasksFile } = await import('../config.js');
     if (existsSync(tasksFile)) {
       try {
         const content = readFileSync(tasksFile, 'utf-8');

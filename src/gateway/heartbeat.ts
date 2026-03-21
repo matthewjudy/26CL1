@@ -498,7 +498,7 @@ export class HeartbeatScheduler {
 // ── Shared CRON.md parser ────────────────────────────────────────────
 
 /**
- * Parse cron job definitions from vault/00-System/CRON.md frontmatter.
+ * Parse cron job definitions from Meta/Clementine/CRON.md frontmatter.
  * Used by both the in-process CronScheduler and the standalone CLI runner.
  */
 export function parseCronJobs(): CronJobDefinition[] {
@@ -1177,7 +1177,7 @@ export class CronScheduler {
     }
 
     if (this.jobs.length === 0) {
-      return 'No cron jobs configured. Edit `vault/00-System/CRON.md` to add jobs.';
+      return 'No cron jobs configured. Edit `Meta/Clementine/CRON.md` to add jobs.';
     }
 
     const lines = ['**Scheduled Cron Jobs:**\n'];
@@ -1488,7 +1488,7 @@ export class CronScheduler {
     }
 
     if (this.workflowDefs.length === 0) {
-      return 'No workflows configured. Add workflow files to `vault/00-System/workflows/`.';
+      return 'No workflows configured. Add workflow files to `Meta/Clementine/workflows/`.';
     }
 
     const lines = ['**Workflows:**\n'];

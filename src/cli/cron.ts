@@ -59,7 +59,7 @@ export async function cmdCronList(): Promise<void> {
   const jobs = parseCronJobs();
 
   if (jobs.length === 0) {
-    console.log('No cron jobs defined. Edit vault/00-System/CRON.md to add jobs.');
+    console.log('No cron jobs defined. Edit Meta/Clementine/CRON.md to add jobs.');
     return;
   }
 
@@ -272,7 +272,7 @@ export async function cmdCronAdd(
   }
 
   // Resolve CRON.md path
-  const cronFile = path.join(BASE_DIR, 'vault', '00-System', 'CRON.md');
+  const { CRON_FILE: cronFile } = await import('../config.js');
 
   // Read existing CRON.md or create empty structure
   let parsed: matter.GrayMatterFile<string>;
@@ -335,7 +335,7 @@ export async function cmdCronTest(jobNameOrIndex: string): Promise<void> {
 
   const jobs = parseCronJobs();
   if (jobs.length === 0) {
-    console.error('No cron jobs defined. Edit vault/00-System/CRON.md to add jobs.');
+    console.error('No cron jobs defined. Edit Meta/Clementine/CRON.md to add jobs.');
     process.exit(1);
   }
 

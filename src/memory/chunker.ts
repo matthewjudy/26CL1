@@ -12,7 +12,7 @@ import matter from 'gray-matter';
 import type { Chunk } from '../types.js';
 
 /** Directories to skip when scanning the vault. */
-const SKIP_DIRS = new Set(['06-Templates', '.obsidian']);
+const SKIP_DIRS = new Set(['Templates', '.obsidian']);
 
 /** Maximum chunk size before splitting at paragraph boundaries. */
 const MAX_CHUNK_CHARS = 3000;

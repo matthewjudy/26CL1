@@ -2,7 +2,7 @@
  * Clementine TypeScript — Agent profile management.
  *
  * Profiles are Markdown files with YAML frontmatter stored in
- * vault/00-System/profiles/. Each profile defines a persona with its own
+ * Meta/Clementine/profiles/. Each profile defines a persona with its own
  * tone, tool restrictions, security tier, and system prompt body.
  *
  * ProfileManager scans the directory, caches AgentProfile objects, and

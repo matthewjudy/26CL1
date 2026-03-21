@@ -47,15 +47,22 @@ function readEnvFile(): Record<string, string> {
 }
 const env = readEnvFile();
 
-const VAULT_DIR = path.join(BASE_DIR, 'vault');
-const SYSTEM_DIR = path.join(VAULT_DIR, '00-System');
-const DAILY_NOTES_DIR = path.join(VAULT_DIR, '01-Daily-Notes');
-const PEOPLE_DIR = path.join(VAULT_DIR, '02-People');
-const PROJECTS_DIR = path.join(VAULT_DIR, '03-Projects');
-const TOPICS_DIR = path.join(VAULT_DIR, '04-Topics');
-const TASKS_DIR = path.join(VAULT_DIR, '05-Tasks');
-const TEMPLATES_DIR = path.join(VAULT_DIR, '06-Templates');
-const INBOX_DIR = path.join(VAULT_DIR, '07-Inbox');
+function mcpEnv(key: string, fallback: string): string {
+  return env[key] ?? process.env[key] ?? fallback;
+}
+
+const VAULT_DIR = mcpEnv('VAULT_PATH', '') || path.join(BASE_DIR, 'vault');
+const SYSTEM_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_SYSTEM_DIR', 'Meta/Clementine'));
+const DAILY_NOTES_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_DAILY_DIR', 'Daily'));
+const PEOPLE_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_PEOPLE_DIR', 'People'));
+const PROJECTS_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_PROJECTS_DIR', 'Planning'));
+const TOPICS_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_TOPICS_DIR', 'Topics'));
+const TASKS_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_TASKS_DIR', 'Meta/Clementine'));
+const TEMPLATES_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_TEMPLATES_DIR', 'Templates'));
+const INBOX_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_INBOX_DIR', 'Inbox'));
+const ORGANIZATIONS_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_ORGS_DIR', 'Organizations'));
+const RESEARCH_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_RESEARCH_DIR', 'Research'));
+const RESOURCES_DIR = path.join(VAULT_DIR, mcpEnv('VAULT_RESOURCES_DIR', 'Resources'));
 
 const MEMORY_FILE = path.join(SYSTEM_DIR, 'MEMORY.md');
 const TASKS_FILE = path.join(TASKS_DIR, 'TASKS.md');
@@ -123,7 +130,7 @@ let _store: MemoryStoreType | null = null;
 async function getStore(): Promise<MemoryStoreType> {
   if (_store) return _store;
   const { MemoryStore } = await import('../memory/store.js');
-  const store = new MemoryStore(path.join(VAULT_DIR, '.memory.db'), VAULT_DIR);
+  const store = new MemoryStore(path.join(BASE_DIR, '.memory.db'), VAULT_DIR);
   store.initialize();
   _store = store as unknown as MemoryStoreType;
   return _store;
@@ -249,8 +256,12 @@ function folderForType(noteType: string): string {
     person: PEOPLE_DIR,
     people: PEOPLE_DIR,
     project: PROJECTS_DIR,
+    planning: PROJECTS_DIR,
     topic: TOPICS_DIR,
     task: TASKS_DIR,
+    organization: ORGANIZATIONS_DIR,
+    research: RESEARCH_DIR,
+    resource: RESOURCES_DIR,
     inbox: INBOX_DIR,
   };
   return map[noteType.toLowerCase()] ?? INBOX_DIR;
@@ -290,14 +301,20 @@ function externalResult(text: string) {
   return { content: [{ type: 'text' as const, text: `${EXTERNAL_CONTENT_TAG}\n\n${text}` }] };
 }
 
-// ── Task parsing ───────────────────────────────────────────────────────
+// ── Task parsing (Obsidian Tasks plugin format) ─────────────────────────
+//
+// Tasks are distributed across vault files using Obsidian Tasks emoji format:
+//   - [ ] description ⏫ 📅 2026-03-20
+//   - [x] done task ✅ 2026-03-20
+//   - [/] in progress task
+//   - [-] cancelled task
+//
+// Priority: ⏫ high, 🔼 medium, 🔽 low
+// Status checkboxes: [ ] todo, [/] in progress, [x] done, [-] cancelled
 
-const TASK_ID_RE = /\{T-(\d+(?:\.\d+)?)\}/;
-const TASK_ID_RE_G = /\{T-(\d+(?:\.\d+)?)\}/g;
-const TASK_LINE_RE = /^(\s*)- \[([ xX])\]\s+(.+)$/;
+const TASK_LINE_RE = /^(\s*)- \[([ xX/\-])\]\s+(.+)$/;
 
 interface ParsedTask {
-  id: string;
   text: string;
   status: string;
   priority: string;
@@ -308,87 +325,107 @@ interface ParsedTask {
   checked: boolean;
   indent: string;
   rawLine: string;
+  sourceFile: string;
+  lineNumber: number;
   isSubtask: boolean;
 }
 
-function parseTasks(body: string): ParsedTask[] {
-  const tasks: ParsedTask[] = [];
-  let currentStatus = 'unknown';
+function parseTaskLine(line: string, sourceFile = '', lineNumber = 0): ParsedTask | null {
+  const m = TASK_LINE_RE.exec(line);
+  if (!m) return null;
 
-  for (const line of body.split('\n')) {
-    const s = line.trim();
-    if (s.startsWith('## Pending')) { currentStatus = 'pending'; continue; }
-    if (s.startsWith('## In Progress')) { currentStatus = 'in-progress'; continue; }
-    if (s.startsWith('## Completed')) { currentStatus = 'completed'; continue; }
+  const indent = m[1];
+  const marker = m[2].toLowerCase();
+  const text = m[3];
 
-    const m = TASK_LINE_RE.exec(line);
-    if (!m) continue;
-
-    const indent = m[1];
-    const checked = m[2].toLowerCase() === 'x';
-    const text = m[3];
-    const status = checked ? 'completed' : currentStatus;
-
-    const idMatch = TASK_ID_RE.exec(text);
-    const taskId = idMatch ? idMatch[1] : '';
-
-    const priMatch = /!!(low|normal|high|urgent)/.exec(text);
-    const priority = priMatch ? priMatch[1] : 'normal';
-
-    const dueMatch = /📅\s*(\d{4}-\d{2}-\d{2})/.exec(text);
-    const due = dueMatch ? dueMatch[1] : '';
-
-    const projMatch = /#project:(\S+)/.exec(text);
-    const project = projMatch ? projMatch[1] : '';
-
-    const recMatch = /🔁\s*(\S+)/.exec(text);
-    const recurrence = recMatch ? recMatch[1] : '';
-
-    const tagMatches = text.match(/#(\S+)/g) ?? [];
-    const tags = tagMatches
-      .map(t => t.slice(1))
-      .filter(t => !t.startsWith('project:'));
-
-    tasks.push({
-      id: taskId,
-      text,
-      status,
-      priority,
-      due,
-      project,
-      recurrence,
-      tags,
-      checked,
-      indent,
-      rawLine: line,
-      isSubtask: indent.length >= 2,
-    });
+  let status: string;
+  let checked = false;
+  switch (marker) {
+    case 'x': status = 'completed'; checked = true; break;
+    case '/': status = 'in-progress'; break;
+    case '-': status = 'cancelled'; checked = true; break;
+    default: status = 'pending'; break;
   }
 
+  // Obsidian Tasks emoji priority
+  let priority = 'normal';
+  if (text.includes('⏫')) priority = 'high';
+  else if (text.includes('🔼')) priority = 'medium';
+  else if (text.includes('🔽')) priority = 'low';
+
+  const dueMatch = /📅\s*(\d{4}-\d{2}-\d{2})/.exec(text);
+  const due = dueMatch ? dueMatch[1] : '';
+
+  const recMatch = /🔁\s*(\S+)/.exec(text);
+  const recurrence = recMatch ? recMatch[1] : '';
+
+  const tagMatches = text.match(/#(\S+)/g) ?? [];
+  const tags = tagMatches.map(t => t.slice(1));
+
+  const projTag = tags.find(t => t.startsWith('project:'));
+  const project = projTag ? projTag.replace('project:', '') : '';
+
+  return {
+    text,
+    status,
+    priority,
+    due,
+    project,
+    recurrence,
+    tags: tags.filter(t => !t.startsWith('project:')),
+    checked,
+    indent,
+    rawLine: line,
+    sourceFile,
+    lineNumber,
+    isSubtask: indent.length >= 2,
+  };
+}
+
+/** Parse tasks from a single file's content. */
+function parseTasks(body: string, sourceFile = ''): ParsedTask[] {
+  const tasks: ParsedTask[] = [];
+  const lines = body.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const task = parseTaskLine(lines[i], sourceFile, i);
+    if (task) tasks.push(task);
+  }
   return tasks;
 }
 
-function nextTaskId(body: string): string {
-  let maxId = 0;
-  let m: RegExpExecArray | null;
-  const re = new RegExp(TASK_ID_RE_G.source, 'g');
-  while ((m = re.exec(body)) !== null) {
-    const idStr = m[1];
-    if (!idStr.includes('.')) {
-      maxId = Math.max(maxId, parseInt(idStr, 10));
-    }
-  }
-  return `T-${String(maxId + 1).padStart(3, '0')}`;
-}
+/** Scan recent daily notes and inbox for tasks (performance-bounded). */
+function scanVaultTasks(statusFilter: string): ParsedTask[] {
+  const allTasks: ParsedTask[] = [];
+  const scanDirs = [DAILY_NOTES_DIR, INBOX_DIR];
 
-function nextSubtaskId(body: string, parentId: string): string {
-  let maxSub = 0;
-  const re = new RegExp(`\\{T-${parentId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(\\d+)\\}`, 'g');
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(body)) !== null) {
-    maxSub = Math.max(maxSub, parseInt(m[1], 10));
+  for (const dir of scanDirs) {
+    if (!existsSync(dir)) continue;
+    try {
+      const files = readdirSync(dir)
+        .filter(f => f.endsWith('.md'))
+        .sort()
+        .reverse()
+        .slice(0, 60); // Last 60 files max per dir
+      for (const file of files) {
+        const fullPath = path.join(dir, file);
+        const body = readFileSync(fullPath, 'utf-8');
+        const relPath = path.relative(VAULT_DIR, fullPath);
+        allTasks.push(...parseTasks(body, relPath));
+      }
+    } catch { /* skip unreadable dirs */ }
   }
-  return `T-${parentId}.${maxSub + 1}`;
+
+  // Also check TASKS_FILE if it exists (legacy or Clementine-specific tasks)
+  if (existsSync(TASKS_FILE)) {
+    const body = readFileSync(TASKS_FILE, 'utf-8');
+    const relPath = path.relative(VAULT_DIR, TASKS_FILE);
+    allTasks.push(...parseTasks(body, relPath));
+  }
+
+  if (statusFilter !== 'all') {
+    return allTasks.filter(t => t.status === statusFilter);
+  }
+  return allTasks;
 }
 
 function nextDueDate(currentDue: string, recurrence: string): string {
@@ -706,7 +743,7 @@ server.tool(
   'note_create',
   'Create a new note in the right vault folder. Types: person, project, topic, task, inbox.',
   {
-    note_type: z.enum(['person', 'project', 'topic', 'task', 'inbox']).describe('Note type'),
+    note_type: z.enum(['person', 'project', 'planning', 'topic', 'task', 'organization', 'research', 'resource', 'inbox']).describe('Note type'),
     title: z.string().describe('Note title'),
     content: z.string().optional().describe('Initial body content'),
   },
@@ -760,26 +797,17 @@ ${body}
 
 server.tool(
   'task_list',
-  'List tasks from the master task list. Tasks have IDs like {T-001}.',
+  'List tasks from vault files (Obsidian Tasks format). Scans daily notes, inbox, and task files.',
   {
-    status: z.enum(['all', 'pending', 'completed']).optional().describe('Filter by status'),
+    status: z.enum(['all', 'pending', 'in-progress', 'completed']).optional().describe('Filter by status'),
     project: z.string().optional().describe('Filter by project tag'),
   },
   async ({ status, project }) => {
     const statusFilter = status ?? 'all';
     const projectFilter = project ?? '';
 
-    if (!existsSync(TASKS_FILE)) {
-      return textResult('No task list found.');
-    }
+    let filtered = scanVaultTasks(statusFilter);
 
-    const body = readFileSync(TASKS_FILE, 'utf-8');
-    const allTasks = parseTasks(body);
-    let filtered = allTasks;
-
-    if (statusFilter !== 'all') {
-      filtered = filtered.filter(t => t.status === statusFilter);
-    }
     if (projectFilter) {
       filtered = filtered.filter(t => t.project.toLowerCase() === projectFilter.toLowerCase());
     }
@@ -790,7 +818,7 @@ server.tool(
       return textResult(`No tasks matching: ${parts.join(', ')}`);
     }
 
-    const lines = filtered.map(t => t.rawLine);
+    const lines = filtered.map(t => `${t.rawLine.trim()}  *(${t.sourceFile})*`);
     let header = `**Tasks (${statusFilter})`;
     if (projectFilter) header += `, project:${projectFilter}`;
     header += ` — ${filtered.length} results:**`;
@@ -803,14 +831,14 @@ server.tool(
 
 server.tool(
   'task_add',
-  'Add a new task to the master task list. Auto-generates a {T-NNN} ID.',
+  "Add a task to today's daily note (Obsidian Tasks format). Uses emoji priority and due dates.",
   {
     description: z.string().describe('Task description'),
-    priority: z.enum(['high', 'medium', 'low']).optional().describe('Task priority'),
+    priority: z.enum(['high', 'medium', 'low']).optional().describe('Task priority (⏫/🔼/🔽)'),
     due_date: z.string().optional().describe('Due date (YYYY-MM-DD)'),
-    project: z.string().optional().describe('Project name'),
+    target_file: z.string().optional().describe('Relative vault path to add task to (default: today\'s daily note)'),
   },
-  async ({ description, priority, due_date, project }) => {
+  async ({ description, priority, due_date, target_file }) => {
     // Dedup check for task descriptions
     if (description.length >= 20) {
       try {
@@ -819,7 +847,7 @@ server.tool(
         if (dup.isDuplicate) {
           store.logExtraction({
             sessionKey: 'mcp', userMessage: description.slice(0, 200),
-            toolName: 'task_add', toolInput: JSON.stringify({ description, project }),
+            toolName: 'task_add', toolInput: JSON.stringify({ description }),
             extractedAt: new Date().toISOString(), status: 'dedup_skipped',
           });
           return textResult(`Skipped: ${dup.matchType} duplicate task already exists (chunk #${dup.matchId})`);
@@ -827,51 +855,45 @@ server.tool(
       } catch { /* dedup failure is non-fatal */ }
     }
 
-    if (!existsSync(TASKS_FILE)) {
-      mkdirSync(TASKS_DIR, { recursive: true });
-      writeFileSync(TASKS_FILE, `---
-type: tasks
----
+    // Build Obsidian Tasks format line
+    let taskLine = `- [ ] ${description}`;
+    if (priority === 'high') taskLine += ' ⏫';
+    else if (priority === 'medium') taskLine += ' 🔼';
+    else if (priority === 'low') taskLine += ' 🔽';
+    if (due_date) taskLine += ` 📅 ${due_date}`;
 
-# Tasks
-
-## Pending
-
-## In Progress
-
-## Completed
-`, 'utf-8');
-    }
-
-    let body = readFileSync(TASKS_FILE, 'utf-8');
-    const taskId = nextTaskId(body);
-
-    // Build metadata suffix
-    let meta = '';
-    if (priority && priority !== 'medium') {
-      meta += ` !!${priority}`;
-    }
-    if (due_date) {
-      meta += ` 📅 ${due_date}`;
-    }
-    if (project) {
-      meta += ` #project:${project}`;
-    }
-
-    const taskLine = `- [ ] {${taskId}} ${description}${meta}`;
-
-    const pendingMatch = /## Pending\n/.exec(body);
-    if (pendingMatch) {
-      const insertPos = pendingMatch.index + pendingMatch[0].length;
-      body = body.slice(0, insertPos) + `\n${taskLine}` + body.slice(insertPos);
+    // Determine target file
+    let targetPath: string;
+    if (target_file) {
+      targetPath = validateVaultPath(target_file);
     } else {
-      body += `\n## Pending\n\n${taskLine}\n`;
+      // Default to today's daily note
+      targetPath = ensureDailyNote(todayStr());
     }
 
-    writeFileSync(TASKS_FILE, body, 'utf-8');
-    const rel = path.relative(VAULT_DIR, TASKS_FILE);
+    if (!existsSync(targetPath)) {
+      return textResult(`Target file not found: ${target_file ?? todayStr()}.md`);
+    }
+
+    let body = readFileSync(targetPath, 'utf-8');
+
+    // Try to append under a ## Tasks section if it exists
+    const tasksSection = /^## (?:Tasks|Journal & Misc\. Tasks)/m.exec(body);
+    if (tasksSection) {
+      // Find the end of the Tasks section (next ## heading or EOF)
+      const sectionStart = tasksSection.index + tasksSection[0].length;
+      const nextHeading = body.indexOf('\n## ', sectionStart + 1);
+      const insertPos = nextHeading !== -1 ? nextHeading : body.length;
+      body = body.slice(0, insertPos).trimEnd() + '\n' + taskLine + '\n' + body.slice(insertPos);
+    } else {
+      // Append at the end
+      body = body.trimEnd() + '\n\n' + taskLine + '\n';
+    }
+
+    writeFileSync(targetPath, body, 'utf-8');
+    const rel = path.relative(VAULT_DIR, targetPath);
     await incrementalSync(rel);
-    return textResult(`Added task {${taskId}}: ${description}`);
+    return textResult(`Added task to ${rel}: ${description}`);
   },
 );
 
@@ -879,126 +901,111 @@ type: tasks
 
 server.tool(
   'task_update',
-  "Update a task's status or metadata by {T-NNN} ID.",
+  'Update a task by matching its description text. Searches vault files for the task line.',
   {
-    task_id: z.string().describe('Task ID like T-001'),
-    status: z.enum(['pending', 'completed']).optional().describe('New status'),
-    description: z.string().optional().describe('New description text'),
-    priority: z.string().optional().describe('New priority'),
+    search_text: z.string().describe('Unique text substring to find the task'),
+    source_file: z.string().optional().describe('Relative vault path containing the task (narrows search)'),
+    status: z.enum(['pending', 'in-progress', 'completed', 'cancelled']).optional().describe('New status'),
     due_date: z.string().optional().describe('New due date (YYYY-MM-DD)'),
   },
-  async ({ task_id, status, description: newDesc, priority: newPriority, due_date: newDue }) => {
-    if (!existsSync(TASKS_FILE)) {
-      return textResult('No task list found.');
-    }
+  async ({ search_text, source_file, status: newStatus, due_date: newDue }) => {
+    // Find the task across vault files
+    const searchIn: Array<{ filePath: string; relPath: string }> = [];
 
-    let body = readFileSync(TASKS_FILE, 'utf-8');
-    const lines = body.split('\n');
-
-    // Normalize task ID
-    let taskIdClean = task_id.replace(/[{}]/g, '');
-    if (!taskIdClean.startsWith('T-')) taskIdClean = `T-${taskIdClean}`;
-    const searchPattern = `{${taskIdClean}}`;
-
-    // Find the task line
-    let foundIdx: number | null = null;
-    let foundLine = '';
-
-    for (let i = 0; i < lines.length; i++) {
-      if (/^\s*- \[[ xX]\]/.test(lines[i]) && lines[i].includes(searchPattern)) {
-        foundIdx = i;
-        foundLine = lines[i].trim();
-        break;
+    if (source_file) {
+      const fullPath = validateVaultPath(source_file);
+      if (existsSync(fullPath)) {
+        searchIn.push({ filePath: fullPath, relPath: source_file });
       }
-    }
-
-    if (foundIdx === null) {
-      return textResult(`Task not found: ${task_id}`);
-    }
-
-    // Check for recurrence before modifying
-    const recMatch = /🔁\s*(\S+)/.exec(foundLine);
-    const dueMatch = /📅\s*(\d{4}-\d{2}-\d{2})/.exec(foundLine);
-
-    // Apply metadata changes
-    if (newPriority) {
-      if (/!!(low|normal|high|urgent)/.test(foundLine)) {
-        foundLine = foundLine.replace(/!!(low|normal|high|urgent)/, `!!${newPriority}`);
-      } else if (newPriority !== 'normal') {
-        const idM = TASK_ID_RE.exec(foundLine);
-        if (idM) {
-          const pos = (idM.index ?? 0) + idM[0].length;
-          foundLine = foundLine.slice(0, pos) + ` !!${newPriority}` + foundLine.slice(pos);
-        }
-      }
-    }
-
-    if (newDue) {
-      if (/📅\s*\d{4}-\d{2}-\d{2}/.test(foundLine)) {
-        foundLine = foundLine.replace(/📅\s*\d{4}-\d{2}-\d{2}/, `📅 ${newDue}`);
-      } else {
-        foundLine += ` 📅 ${newDue}`;
-      }
-    }
-
-    // Update checkbox
-    const newStatus = status ?? 'pending';
-    lines.splice(foundIdx, 1);
-
-    if (newStatus === 'completed') {
-      foundLine = foundLine.replace(/- \[ \]/, '- [x]');
     } else {
-      foundLine = foundLine.replace(/- \[[xX]\]/, '- [ ]');
-    }
-
-    // Move to the right section
-    const headers: Record<string, string> = {
-      pending: '## Pending',
-      'in-progress': '## In Progress',
-      completed: '## Completed',
-    };
-    const target = headers[newStatus] ?? '## Pending';
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() === target) {
-        let insertAt = i + 1;
-        if (insertAt < lines.length && lines[insertAt].trim() === '') insertAt++;
-        // Remove placeholder if present
-        if (insertAt < lines.length && lines[insertAt].trim().startsWith('*(')) {
-          lines.splice(insertAt, 1);
-        }
-        lines.splice(insertAt, 0, foundLine);
-        break;
+      // Scan daily notes and inbox
+      for (const dir of [DAILY_NOTES_DIR, INBOX_DIR]) {
+        if (!existsSync(dir)) continue;
+        try {
+          for (const f of readdirSync(dir).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 60)) {
+            const fullPath = path.join(dir, f);
+            searchIn.push({ filePath: fullPath, relPath: path.relative(VAULT_DIR, fullPath) });
+          }
+        } catch { /* skip */ }
+      }
+      // Also check TASKS_FILE
+      if (existsSync(TASKS_FILE)) {
+        searchIn.push({ filePath: TASKS_FILE, relPath: path.relative(VAULT_DIR, TASKS_FILE) });
       }
     }
 
-    body = lines.join('\n');
+    const searchLower = search_text.toLowerCase();
+    let matchFile = '';
+    let matchLineIdx = -1;
+    let matchLine = '';
+
+    for (const { filePath, relPath } of searchIn) {
+      const lines = readFileSync(filePath, 'utf-8').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (TASK_LINE_RE.test(lines[i]) && lines[i].toLowerCase().includes(searchLower)) {
+          matchFile = filePath;
+          matchLineIdx = i;
+          matchLine = lines[i];
+          break;
+        }
+      }
+      if (matchLineIdx >= 0) break;
+    }
+
+    if (matchLineIdx < 0) {
+      return textResult(`Task not found matching: "${search_text}"`);
+    }
+
+    let body = readFileSync(matchFile, 'utf-8');
+    const lines = body.split('\n');
+    let updatedLine = matchLine;
+
+    // Update status checkbox
+    if (newStatus) {
+      const checkboxMap: Record<string, string> = {
+        'pending': '- [ ]',
+        'in-progress': '- [/]',
+        'completed': '- [x]',
+        'cancelled': '- [-]',
+      };
+      updatedLine = updatedLine.replace(/- \[[ xX/\-]\]/, checkboxMap[newStatus]);
+
+      // Add done date for completed tasks
+      if (newStatus === 'completed' && !updatedLine.includes('✅')) {
+        updatedLine += ` ✅ ${todayStr()}`;
+      }
+    }
+
+    // Update due date
+    if (newDue) {
+      if (/📅\s*\d{4}-\d{2}-\d{2}/.test(updatedLine)) {
+        updatedLine = updatedLine.replace(/📅\s*\d{4}-\d{2}-\d{2}/, `📅 ${newDue}`);
+      } else {
+        updatedLine += ` 📅 ${newDue}`;
+      }
+    }
 
     // Handle recurring task: create new copy with next due date
     let recurringMsg = '';
+    const recMatch = /🔁\s*(\S+)/.exec(updatedLine);
+    const dueMatch = /📅\s*(\d{4}-\d{2}-\d{2})/.exec(matchLine);
     if (newStatus === 'completed' && recMatch && dueMatch) {
-      const recurrence = recMatch[1];
-      const currentDue = dueMatch[1];
-      const nextDue = nextDueDate(currentDue, recurrence);
-      const newId = nextTaskId(body);
-
-      let newLine = foundLine;
-      newLine = newLine.replace(/- \[[xX]\]/, '- [ ]');
-      newLine = newLine.replace(TASK_ID_RE, `{${newId}}`);
+      const nextDue = nextDueDate(dueMatch[1], recMatch[1]);
+      let newLine = matchLine.replace(/- \[[ xX/\-]\]/, '- [ ]');
       newLine = newLine.replace(/📅\s*\d{4}-\d{2}-\d{2}/, `📅 ${nextDue}`);
-
-      const pMatch = /## Pending\n/.exec(body);
-      if (pMatch) {
-        const insertPos = pMatch.index + pMatch[0].length;
-        body = body.slice(0, insertPos) + `\n${newLine}` + body.slice(insertPos);
-      }
-      recurringMsg = ` | Next occurrence {${newId}} due ${nextDue}`;
+      // Remove done date if present
+      newLine = newLine.replace(/✅\s*\d{4}-\d{2}-\d{2}/, '').trimEnd();
+      lines.splice(matchLineIdx + 1, 0, newLine);
+      recurringMsg = ` | Next occurrence due ${nextDue}`;
     }
 
-    writeFileSync(TASKS_FILE, body, 'utf-8');
-    const rel = path.relative(VAULT_DIR, TASKS_FILE);
+    lines[matchLineIdx] = updatedLine;
+    body = lines.join('\n');
+
+    writeFileSync(matchFile, body, 'utf-8');
+    const rel = path.relative(VAULT_DIR, matchFile);
     await incrementalSync(rel);
-    return textResult(`Moved to ${newStatus}: ${task_id}${recurringMsg}`);
+    return textResult(`Updated in ${rel}: ${updatedLine.trim()}${recurringMsg}`);
   },
 );
 
@@ -1014,7 +1021,8 @@ server.tool(
     // Note counts by folder
     const folders = [
       SYSTEM_DIR, DAILY_NOTES_DIR, PEOPLE_DIR, PROJECTS_DIR,
-      TOPICS_DIR, TASKS_DIR, TEMPLATES_DIR, INBOX_DIR,
+      TOPICS_DIR, ORGANIZATIONS_DIR, RESEARCH_DIR, RESOURCES_DIR,
+      TEMPLATES_DIR, INBOX_DIR,
     ];
 
     lines.push('**Notes by folder:**');
@@ -1029,25 +1037,26 @@ server.tool(
       }
     }
 
-    // Task counts
-    if (existsSync(TASKS_FILE)) {
-      const body = readFileSync(TASKS_FILE, 'utf-8');
-      const tasks = parseTasks(body);
-      const statusCounts: Record<string, number> = {};
-      let overdue = 0;
-      const today = todayStr();
+    // Task counts (scan vault)
+    try {
+      const tasks = scanVaultTasks('all');
+      if (tasks.length) {
+        const statusCounts: Record<string, number> = {};
+        let overdue = 0;
+        const today = todayStr();
 
-      for (const t of tasks) {
-        statusCounts[t.status] = (statusCounts[t.status] ?? 0) + 1;
-        if (t.due && t.due < today && !t.checked) overdue++;
-      }
+        for (const t of tasks) {
+          statusCounts[t.status] = (statusCounts[t.status] ?? 0) + 1;
+          if (t.due && t.due < today && !t.checked) overdue++;
+        }
 
-      lines.push('\n**Tasks:**');
-      for (const [st, count] of Object.entries(statusCounts).sort()) {
-        lines.push(`  - ${st}: ${count}`);
+        lines.push('\n**Tasks:**');
+        for (const [st, count] of Object.entries(statusCounts).sort()) {
+          lines.push(`  - ${st}: ${count}`);
+        }
+        if (overdue) lines.push(`  - **OVERDUE: ${overdue}**`);
       }
-      if (overdue) lines.push(`  - **OVERDUE: ${overdue}**`);
-    }
+    } catch { /* task scan failure is non-fatal */ }
 
     // MEMORY.md size
     if (existsSync(MEMORY_FILE)) {
@@ -1059,7 +1068,7 @@ server.tool(
 
     // 5 most recently modified notes
     const allNotes = globMd(VAULT_DIR)
-      .filter(f => !f.includes('06-Templates'))
+      .filter(f => !f.includes('Templates') && !f.includes('.obsidian'))
       .map(f => ({ path: f, mtime: statSync(f).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime)
       .slice(0, 5);
@@ -1298,7 +1307,7 @@ server.tool(
       // Read feeds from RSS-FEEDS.md
       const rssConfig = path.join(SYSTEM_DIR, 'RSS-FEEDS.md');
       if (!existsSync(rssConfig)) {
-        return textResult('Error: vault/00-System/RSS-FEEDS.md not found.');
+        return textResult('Error: Meta/Clementine/RSS-FEEDS.md not found.');
       }
       try {
         const matter = await import('gray-matter');
@@ -2752,14 +2761,14 @@ server.tool(
   {},
   async () => {
     if (!existsSync(WORKFLOWS_DIR)) {
-      return textResult('No workflows directory found. Create `vault/00-System/workflows/` and add workflow .md files.');
+      return textResult('No workflows directory found. Create `Meta/Clementine/workflows/` and add workflow .md files.');
     }
 
     const { parseAllWorkflows } = await import('../agent/workflow-runner.js');
     const workflows = parseAllWorkflows(WORKFLOWS_DIR);
 
     if (workflows.length === 0) {
-      return textResult('No workflow files found in `vault/00-System/workflows/`.');
+      return textResult('No workflow files found in `Meta/Clementine/workflows/`.');
     }
 
     const lines: string[] = [];
@@ -2783,7 +2792,7 @@ server.tool(
 
 server.tool(
   'workflow_create',
-  'Create a new multi-step workflow file. Validates dependencies and writes to vault/00-System/workflows/. The daemon auto-reloads on file change.',
+  'Create a new multi-step workflow file. Validates dependencies and writes to Meta/Clementine/workflows/. The daemon auto-reloads on file change.',
   {
     name: z.string().describe('Workflow name (used as filename and identifier)'),
     description: z.string().describe('What the workflow does'),
@@ -2879,7 +2888,7 @@ server.tool(
 
     return textResult(
       `Created workflow "${name}" with ${steps.length} steps.\n` +
-      `File: vault/00-System/workflows/${safeName}.md\n` +
+      `File: Meta/Clementine/workflows/${safeName}.md\n` +
       `Steps: ${steps.map(s => s.id).join(' → ')}\n` +
       (trigger_schedule ? `Schedule: ${trigger_schedule}\n` : 'Trigger: manual\n') +
       'The daemon will auto-detect it via file watcher.' +
@@ -3253,7 +3262,7 @@ server.tool(
   async () => {
     const agents = await loadTeamAgents();
     if (agents.length === 0) {
-      return textResult('No team agents configured. Add `channelName:` frontmatter to a profile in vault/00-System/profiles/.');
+      return textResult('No team agents configured. Add `channelName:` frontmatter to a profile in Meta/Clementine/profiles/.');
     }
     const callerSlug = process.env.CLEMENTINE_TEAM_AGENT ?? '';
     const isPrimary = !agents.find(a => a.slug === callerSlug);
@@ -3408,7 +3417,7 @@ function assertAgentCrudAllowed(action: string): void {
 server.tool(
   'create_agent',
   'Create a new scoped agent with its own personality, tools, crons, and project binding. ' +
-  'Creates a directory at vault/00-System/agents/{slug}/agent.md.',
+  'Creates a directory at Meta/Clementine/agents/{slug}/agent.md.',
   {
     name: z.string().describe('Display name for the agent (e.g., "Research Agent")'),
     description: z.string().describe('Short description of what this agent does'),
@@ -3448,7 +3457,7 @@ server.tool(
 
     return textResult(
       `Created agent '${name}' (${slug}).\n` +
-      `Directory: vault/00-System/agents/${slug}/\n` +
+      `Directory: Meta/Clementine/agents/${slug}/\n` +
       (channel_name ? `Channel: #${channel_name}\n` : '') +
       (project ? `Project: ${project}\n` : '') +
       (tools?.length ? `Tools: ${tools.join(', ')}\n` : 'Tools: all\n'),
@@ -3991,7 +4000,7 @@ server.tool(
 
 // ── Autonomous Delegation ───────────────────────────────────────────────
 
-const DELEGATIONS_BASE = path.join(VAULT_DIR, '00-System', 'agents');
+const DELEGATIONS_BASE = path.join(SYSTEM_DIR, 'agents');
 
 server.tool(
   'delegate_task',

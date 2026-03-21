@@ -273,7 +273,7 @@ export class MemoryStore {
       const rel = path.relative(this.vaultDir, filePath);
 
       // Skip .obsidian and templates
-      if (rel.includes('.obsidian') || rel.startsWith('06-Templates')) {
+      if (rel.includes('.obsidian') || rel.includes('Templates')) {
         return;
       }
 

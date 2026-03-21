@@ -32,9 +32,19 @@ const BASE_DIR = process.env.CLEMENTINE_HOME || path.join(os.homedir(), '.clemen
 const PACKAGE_ROOT = path.resolve(__dirname, '..', '..');
 const DIST_ENTRY = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
 const ENV_PATH = path.join(BASE_DIR, '.env');
-const VAULT_DIR = path.join(BASE_DIR, 'vault');
-const CRON_FILE = path.join(VAULT_DIR, '00-System', 'CRON.md');
-const MEMORY_DB_PATH = path.join(VAULT_DIR, '.memory.db');
+
+// Read VAULT_PATH and folder overrides from .env
+function dashEnv(key: string, fallback: string): string {
+  if (!existsSync(ENV_PATH)) return fallback;
+  const match = readFileSync(ENV_PATH, 'utf-8').match(new RegExp(`^${key}=(.+)$`, 'm'));
+  if (!match) return fallback;
+  return match[1].replace(/^["']|["']$/g, '');
+}
+
+const VAULT_DIR = dashEnv('VAULT_PATH', '') || path.join(BASE_DIR, 'vault');
+const SYSTEM_DIR = path.join(VAULT_DIR, dashEnv('VAULT_SYSTEM_DIR', 'Meta/Clementine'));
+const CRON_FILE = path.join(SYSTEM_DIR, 'CRON.md');
+const MEMORY_DB_PATH = path.join(BASE_DIR, '.memory.db');
 const PROJECTS_META_FILE = path.join(BASE_DIR, 'projects.json');
 
 // ── Lazy gateway for chat ────────────────────────────────────────────
@@ -714,13 +724,13 @@ function getHeartbeat(): Record<string, unknown> {
 }
 
 async function getMemory(): Promise<Record<string, unknown>> {
-  const memoryFile = path.join(VAULT_DIR, '00-System', 'MEMORY.md');
+  const memoryFile = path.join(SYSTEM_DIR, 'MEMORY.md');
   let content = '';
   if (existsSync(memoryFile)) {
     try { content = readFileSync(memoryFile, 'utf-8'); } catch { /* ignore */ }
   }
 
-  const dbPath = path.join(VAULT_DIR, '.memory.db');
+  const dbPath = path.join(BASE_DIR, '.memory.db');
   let dbStats: Record<string, unknown> = {};
   if (existsSync(dbPath)) {
     try {
@@ -1792,7 +1802,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
   app.get('/api/profiles', async (_req, res) => {
     try {
-      const profilesDir = path.join(VAULT_DIR, '00-System', 'profiles');
+      const profilesDir = path.join(SYSTEM_DIR, 'profiles');
       if (!existsSync(profilesDir)) {
         res.json({ profiles: [], active: null });
         return;

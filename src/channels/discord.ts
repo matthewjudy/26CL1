@@ -969,7 +969,7 @@ export async function startDiscord(
         const router = gateway.getTeamRouter();
         const agents = router.listTeamAgents();
         if (agents.length === 0) {
-          await message.reply('No team agents configured. Hire one from the dashboard or add a profile to `vault/00-System/agents/`.');
+          await message.reply('No team agents configured. Hire one from the dashboard or add a profile to `Meta/Clementine/agents/`.');
         } else {
           const statuses = botManager?.getStatuses() ?? new Map();
           const lines = ['**Team Agents:**\n'];

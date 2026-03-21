@@ -56,17 +56,22 @@ function getEnv(key: string, fallback = ''): string {
 }
 
 // ── Paths ────────────────────────────────────────────────────────────
+// VAULT_PATH in .env allows pointing at an external Obsidian vault.
+// Folder names are configurable via .env to match any vault structure.
 
-export const VAULT_DIR = path.join(BASE_DIR, 'vault');
+export const VAULT_DIR = getEnv('VAULT_PATH') || path.join(BASE_DIR, 'vault');
 
-export const SYSTEM_DIR = path.join(VAULT_DIR, '00-System');
-export const DAILY_NOTES_DIR = path.join(VAULT_DIR, '01-Daily-Notes');
-export const PEOPLE_DIR = path.join(VAULT_DIR, '02-People');
-export const PROJECTS_DIR = path.join(VAULT_DIR, '03-Projects');
-export const TOPICS_DIR = path.join(VAULT_DIR, '04-Topics');
-export const TASKS_DIR = path.join(VAULT_DIR, '05-Tasks');
-export const TEMPLATES_DIR = path.join(VAULT_DIR, '06-Templates');
-export const INBOX_DIR = path.join(VAULT_DIR, '07-Inbox');
+export const SYSTEM_DIR = path.join(VAULT_DIR, getEnv('VAULT_SYSTEM_DIR', 'Meta/Clementine'));
+export const DAILY_NOTES_DIR = path.join(VAULT_DIR, getEnv('VAULT_DAILY_DIR', 'Daily'));
+export const PEOPLE_DIR = path.join(VAULT_DIR, getEnv('VAULT_PEOPLE_DIR', 'People'));
+export const PROJECTS_DIR = path.join(VAULT_DIR, getEnv('VAULT_PROJECTS_DIR', 'Planning'));
+export const TOPICS_DIR = path.join(VAULT_DIR, getEnv('VAULT_TOPICS_DIR', 'Topics'));
+export const TASKS_DIR = path.join(VAULT_DIR, getEnv('VAULT_TASKS_DIR', 'Meta/Clementine'));
+export const TEMPLATES_DIR = path.join(VAULT_DIR, getEnv('VAULT_TEMPLATES_DIR', 'Templates'));
+export const INBOX_DIR = path.join(VAULT_DIR, getEnv('VAULT_INBOX_DIR', 'Inbox'));
+export const ORGANIZATIONS_DIR = path.join(VAULT_DIR, getEnv('VAULT_ORGS_DIR', 'Organizations'));
+export const RESEARCH_DIR = path.join(VAULT_DIR, getEnv('VAULT_RESEARCH_DIR', 'Research'));
+export const RESOURCES_DIR = path.join(VAULT_DIR, getEnv('VAULT_RESOURCES_DIR', 'Resources'));
 export const PROFILES_DIR = path.join(SYSTEM_DIR, 'profiles');
 export const AGENTS_DIR = path.join(SYSTEM_DIR, 'agents');
 
@@ -266,7 +271,7 @@ export const TEAM_COMMS_LOG = path.join(BASE_DIR, 'logs', 'team-comms.jsonl');
 
 // ── Memory / Search ──────────────────────────────────────────────────
 
-export const MEMORY_DB_PATH = path.join(VAULT_DIR, '.memory.db');
+export const MEMORY_DB_PATH = path.join(BASE_DIR, '.memory.db');
 export const GRAPH_DB_DIR = path.join(BASE_DIR, '.graph.db');
 export const SEARCH_CONTEXT_LIMIT = 3;
 export const SEARCH_RECENCY_LIMIT = 3;
@@ -293,7 +298,7 @@ export const SOURCE_MODS_DIR = path.join(SELF_IMPROVE_DIR, 'source-mods');
 export const GOALS_DIR = path.join(BASE_DIR, 'goals');
 export const CRON_PROGRESS_DIR = path.join(BASE_DIR, 'cron', 'progress');
 export const CRON_REFLECTIONS_DIR = path.join(BASE_DIR, 'cron', 'reflections');
-export const DELEGATIONS_DIR = path.join(VAULT_DIR, '00-System', 'agents');
+export const DELEGATIONS_DIR = path.join(SYSTEM_DIR, 'agents');
 export const HANDOFFS_DIR = path.join(BASE_DIR, 'handoffs');
 export const PLAN_STATE_DIR = path.join(BASE_DIR, 'plan-state');
 export const VAULT_MIGRATIONS_STATE = path.join(BASE_DIR, '.vault-migrations.json');

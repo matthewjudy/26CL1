@@ -107,8 +107,8 @@ export async function runVaultMigrations(
     try {
       // Back up target files before migration
       if (backupDir) {
-        // Best-effort backup of the vault's 00-System dir (most common target)
-        const systemDir = path.join(vaultDir, '00-System');
+        // Best-effort backup of the vault's system dir (most common target)
+        const { SYSTEM_DIR: systemDir } = await import('../config.js');
         if (existsSync(systemDir)) {
           const systemFiles = readdirSync(systemDir).filter(f => f.endsWith('.md'));
           for (const f of systemFiles) {

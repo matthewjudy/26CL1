@@ -27,6 +27,7 @@ import {
   BASE_DIR,
   PKG_DIR,
   VAULT_DIR,
+  SYSTEM_DIR,
   DAILY_NOTES_DIR,
   SOUL_FILE,
   AGENTS_FILE,
@@ -164,7 +165,7 @@ const AUTO_MEMORY_PROMPT = `You are a memory extraction agent. Your ONLY job is 
 
 ## What to extract:
 - **Facts about ${OWNER}** — preferences, opinions, decisions, personal details → update_memory in "About ${OWNER}" section
-- **People mentioned** — names, relationships, context → create or update person notes in 02-People/
+- **People mentioned** — names, relationships, context → create or update person notes in People/
 - **Projects/work** — project names, status updates, decisions → update relevant project notes
 - **Tasks** — anything ${OWNER} asked to be done later → task_add
 - **Preferences** — tools, workflows, foods, styles, etc. → update_memory in "Preferences" section
@@ -445,7 +446,7 @@ export class PersonalAssistant {
     this.promptCache.watch(SOUL_FILE);
     this.promptCache.watch(AGENTS_FILE);
     this.promptCache.watch(MEMORY_FILE);
-    const feedbackFile = path.join(VAULT_DIR, '00-System', 'FEEDBACK.md');
+    const feedbackFile = path.join(SYSTEM_DIR, 'FEEDBACK.md');
     this.promptCache.watch(feedbackFile);
     // Watch today's daily note
     const todayPath = path.join(DAILY_NOTES_DIR, `${todayISO()}.md`);
@@ -708,10 +709,10 @@ Obsidian vault with YAML frontmatter, [[wikilinks]], #tags.
 **MCP tools (preferred):** memory_read, memory_write, memory_search, memory_connections, memory_timeline, note_create, vault_stats, task_list, task_add, task_update, note_take.
 **File tools:** Read, Write, Edit, Glob, Grep for direct access.
 
-**Folders:** 00-System (SOUL/MEMORY/AGENTS.md), 01-Daily-Notes (YYYY-MM-DD.md), 02-People, 03-Projects, 04-Topics, 05-Tasks/TASKS.md, 06-Templates, 07-Inbox.
-**Key files:** MEMORY.md (long-term), ${todayISO()}.md (today), TASKS.md (tasks).
+**Folders:** Meta/Clementine (SOUL/MEMORY/AGENTS.md), Daily (YYYY-MM-DD.md), People, Planning, Topics, Organizations, Research, Resources, Templates, Inbox.
+**Key files:** MEMORY.md (long-term), ${todayISO()}.md (today's daily note).
 
-**Task IDs:** \`{T-001}\`, subtasks \`{T-001.1}\`. Recurring tasks auto-create next copy on completion.
+**Tasks:** Obsidian Tasks format — \`- [ ] description ⏫ 📅 YYYY-MM-DD\`. Priority: ⏫ high, 🔼 medium, 🔽 low. Status: [ ] todo, [/] in progress, [x] done, [-] cancelled.
 
 **Remembering:** Durable facts → memory_write(action="update_memory"). Daily context → note_take / memory_write(action="append_daily"). New person → note_create. New task → task_add.
 Save important facts immediately; a background agent also extracts after each exchange.
@@ -728,7 +729,7 @@ Delegate data-heavy work (SEO, analytics, bulk API calls for 3+ entities) to sub
 
     // Skip communication preferences and agentic instructions for autonomous runs
     if (!isAutonomous) {
-      const feedbackFile = path.join(VAULT_DIR, '00-System', 'FEEDBACK.md');
+      const feedbackFile = path.join(SYSTEM_DIR, 'FEEDBACK.md');
       const fbEntry = this.promptCache.get(feedbackFile);
       if (fbEntry?.data?.patterns_summary) {
         parts.push(`## Communication Preferences\n\n${fbEntry.data.patterns_summary}`);
@@ -2049,7 +2050,7 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
     try {
       const agentSlug = sdkOptions.env?.CLEMENTINE_TEAM_AGENT;
       const slug = agentSlug || 'clementine';
-      const tasksDir = path.join(VAULT_DIR, '00-System', 'agents', slug, 'tasks');
+      const tasksDir = path.join(SYSTEM_DIR, 'agents', slug, 'tasks');
       if (fs.existsSync(tasksDir)) {
         const taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.json'));
         const pendingTasks = taskFiles

@@ -2,8 +2,8 @@
  * Clementine TypeScript — Agent manager (scoped multi-agent system).
  *
  * Loads agent profiles from two sources:
- *   1. vault/00-System/agents/{slug}/agent.md  — new agent directory format
- *   2. vault/00-System/profiles/*.md           — legacy profile files
+ *   1. Meta/Clementine/agents/{slug}/agent.md  — new agent directory format
+ *   2. Meta/Clementine/profiles/*.md           — legacy profile files
  *
  * Same slug in agents/ wins over profiles/ (agents/ is the primary source).
  * Uses the same 60s TTL cache as ProfileManager.
