@@ -271,6 +271,7 @@ clementine update              Pull latest, rebuild, reinstall (preserves config
 clementine update --dry-run    Preview update without making changes
 clementine doctor              Verify configuration and vault health
 clementine dashboard           Open the local web command center (localhost:3030)
+clementine dashboard -H 0.0.0.0  Bind to all interfaces (for remote/Tailscale access)
 clementine config setup        Interactive configuration wizard
 clementine config set KEY VAL  Set a single config value
 clementine config get KEY      Read a config value
@@ -300,6 +301,7 @@ clementine --help              Show all commands
 
 Run `clementine dashboard` to open a local web command center at `http://localhost:3030`. The dashboard provides:
 
+- **Remote access** — Use `--host 0.0.0.0` or set `DASHBOARD_HOST=0.0.0.0` in `.env` to access the dashboard from other devices (e.g. over Tailscale). Defaults to `127.0.0.1` (localhost only) for security.
 - **Metrics** — Time saved estimates, session counts, cron job stats, memory size
 - **Chat** — Talk to your assistant directly from the browser
 - **Memory search** — Full-text search across all vault notes (FTS5)

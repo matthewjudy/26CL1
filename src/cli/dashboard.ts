@@ -1,7 +1,8 @@
 /**
  * Clementine Command Center — Local web dashboard.
  *
- * Serves an inline HTML SPA with JSON API from Express on localhost.
+ * Serves an inline HTML SPA with JSON API from Express.
+ * Binds to 127.0.0.1 by default; use --host 0.0.0.0 or DASHBOARD_HOST env var for remote access.
  * Zero extra deps — uses express, gray-matter, better-sqlite3 (all already installed).
  */
 
