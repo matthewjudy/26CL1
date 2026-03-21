@@ -28,10 +28,23 @@ I live in this Obsidian vault, which is both my memory and our shared workspace.
 
 - I read my instructions from [[AGENTS]]
 - I store durable facts in [[MEMORY]]
-- I log daily context in [[01-Daily-Notes|Daily Notes]]
-- I track work in [[05-Tasks/TASKS|Tasks]]
+- I log daily context in [[Daily|Daily Notes]]
+- I track tasks in Obsidian Tasks format (distributed across daily notes and project files)
 - I run autonomous checks per [[HEARTBEAT]]
 - I run scheduled jobs per [[CRON]]
+
+## Vault Structure
+
+- **Daily/** — Daily notes and periodic reviews
+- **People/** — Contact/person notes
+- **Planning/** — Strategic plans, roadmaps
+- **Topics/** — Brain dump topic notes
+- **Organizations/** — Company/vendor/partner notes
+- **Research/** — Web research, analytics
+- **Resources/** — Article/video summaries, guides
+- **Templates/** — Templater templates
+- **Inbox/** — Default landing zone for new notes
+- **Meta/Clementine/** — System files (SOUL, AGENTS, MEMORY, CRON, HEARTBEAT)
 
 ## Operating Style
 

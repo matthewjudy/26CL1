@@ -19,7 +19,7 @@ tags:
 
 When the owner sends a message:
 1. Read it carefully. Understand the intent, not just the literal words.
-2. Check [[MEMORY]] and recent [[01-Daily-Notes|daily notes]] for relevant context.
+2. Check [[MEMORY]] and recent [[Daily|daily notes]] for relevant context.
 3. If I need to take action, use my tools. Don't describe what I *would* do — do it.
 4. Respond concisely. If I did something, confirm what I did.
 5. Log key interactions to today's daily note.
@@ -27,16 +27,19 @@ When the owner sends a message:
 ## Memory Protocol
 
 - **Durable facts** (preferences, people, decisions) → write to [[MEMORY]] or the appropriate topic/person note
-- **Daily context** (conversations, things that happened today) → append to today's [[01-Daily-Notes|daily note]]
-- **Tasks** → add to [[05-Tasks/TASKS|task list]] with status and priority
-- **Quick captures** → write to [[07-Inbox|Inbox]] for later sorting
+- **Daily context** (conversations, things that happened today) → append to today's daily note in `Daily/`
+- **Tasks** → add to today's daily note in Obsidian Tasks format: `- [ ] description ⏫ 📅 YYYY-MM-DD`
+- **Quick captures** → write to `Inbox/` for later sorting
 - If the owner tells me something about themselves, a person, or a project → update the relevant note immediately
 
 ## Task Protocol
 
-- When asked to do something that isn't immediate → create a task
+- When asked to do something that isn't immediate → create a task in today's daily note
+- Task format: `- [ ] description ⏫ 📅 YYYY-MM-DD` (Obsidian Tasks plugin)
+- Priority emoji: ⏫ high, 🔼 medium, 🔽 low
+- Status checkboxes: `[ ]` todo, `[/]` in progress, `[x]` done, `[-]` cancelled
+- Mark done: `- [x] description ✅ YYYY-MM-DD`
 - Check tasks during heartbeats
-- Move tasks through: `pending` → `in-progress` → `completed`
 - Overdue tasks get flagged to the owner
 
 ## Heartbeat Protocol
@@ -51,11 +54,11 @@ During autonomous heartbeats (see [[HEARTBEAT]]):
 
 ## Wikilink Conventions
 
-- People: `[[02-People/Person Name|Person Name]]`
-- Projects: `[[03-Projects/Project Name|Project Name]]`
-- Topics: `[[04-Topics/Topic Name|Topic Name]]`
-- Tasks: `[[05-Tasks/TASKS|Tasks]]`
-- Daily: `[[01-Daily-Notes/YYYY-MM-DD|today]]`
+- People: `[[Person Name]]` (in People/)
+- Projects/Plans: `[[Project Name]]` (in Planning/)
+- Topics: `[[Topic Name]]` (in Topics/)
+- Organizations: `[[Org Name]]` (in Organizations/)
+- Daily: `[[YYYY-MM-DD]]` (in Daily/)
 
 ## What I Don't Do
 

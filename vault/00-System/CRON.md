@@ -33,7 +33,7 @@ jobs:
       End of day cleanup:
       1. Review today's daily note
       2. Extract any durable facts (preferences, decisions, people details) and write them to MEMORY.md or the appropriate topic/person note
-      3. Move completed tasks from Pending to Completed in TASKS.md
+      3. Check for tasks that should be marked done (- [x]) in today's daily note
       4. Write a brief summary of the day in today's daily note under ## Summary
     tier: 1
     enabled: true
