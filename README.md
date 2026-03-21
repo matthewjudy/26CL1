@@ -109,15 +109,17 @@ That's it. Clementine is now running, connected to your configured channels, and
 │   ├── state.json                 ← Loop status, baseline metrics
 │   └── pending-changes/           ← Proposed diffs awaiting approval
 │       └── {experiment-id}.json
-└── vault/                         ← Obsidian-compatible vault
-    ├── 00-System/                 ← SOUL.md, MEMORY.md, HEARTBEAT.md, CRON.md
-    ├── 01-Daily-Notes/            ← Auto-generated daily logs (YYYY-MM-DD.md)
-    ├── 02-People/                 ← Person notes (auto-created from conversations)
-    ├── 03-Projects/               ← Project notes
-    ├── 04-Topics/                 ← Knowledge topics
-    ├── 05-Tasks/                  ← TASKS.md master list ({T-NNN} IDs)
-    ├── 06-Templates/              ← Note templates
-    └── 07-Inbox/                  ← Quick captures
+└── vault/                         ← Obsidian vault (or set VAULT_PATH to use an existing one)
+    ├── Meta/Clementine/           ← System files (SOUL.md, MEMORY.md, HEARTBEAT.md, CRON.md)
+    ├── Daily/                     ← Daily notes (YYYY-MM-DD.md)
+    ├── People/                    ← Person notes (auto-created from conversations)
+    ├── Planning/                  ← Project and planning notes
+    ├── Topics/                    ← Knowledge topics
+    ├── Organizations/             ← Company/vendor notes
+    ├── Research/                  ← Research and intel notes
+    ├── Resources/                 ← Guides, frameworks, summaries
+    ├── Templates/                 ← Note templates
+    └── Inbox/                     ← Quick captures
 
 src/                               ← Package code (wherever npm installed it)
 ├── agent/
@@ -477,7 +479,7 @@ The dashboard's "The Office" page shows each agent as an animated desk station w
 
 ## Scheduled tasks & cron jobs
 
-Define scheduled tasks in `vault/00-System/CRON.md` using YAML frontmatter, or create them from the dashboard or any chat channel.
+Define scheduled tasks in `Meta/Clementine/CRON.md` using YAML frontmatter, or create them from the dashboard or any chat channel.
 
 ```yaml
 ---
@@ -652,7 +654,7 @@ Key system files:
 | `MEMORY.md` | Auto-extracted facts, preferences, people context |
 | `HEARTBEAT.md` | Autonomous check-in configuration |
 | `CRON.md` | Scheduled task definitions (cron syntax) |
-| `TASKS.md` | Master task list with `{T-NNN}` IDs |
+| `AGENTS.md` | Operating instructions and protocols |
 
 ---
 
