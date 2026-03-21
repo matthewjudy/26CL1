@@ -286,25 +286,44 @@ export class HeartbeatScheduler {
     const details: Record<string, number | string> = {};
     const todayStr = new Date().toISOString().slice(0, 10);
 
-    // Count tasks by status from TASKS.md
-    if (existsSync(TASKS_FILE)) {
-      const content = readFileSync(TASKS_FILE, 'utf-8');
+    // Count tasks from vault files (distributed Obsidian Tasks format)
+    {
       let overdue = 0;
       let dueToday = 0;
       let pending = 0;
 
-      for (const line of content.split('\n')) {
-        const s = line.trim();
-        if (/^- \[ \]/.test(s)) {
-          pending++;
-          const dueMatch = s.match(/📅\s*(\d{4}-\d{2}-\d{2})/);
-          if (dueMatch) {
-            const dueDate = dueMatch[1];
-            if (dueDate < todayStr) overdue++;
-            else if (dueDate === todayStr) dueToday++;
+      const scanDirs = [DAILY_NOTES_DIR, INBOX_DIR];
+      // Also scan TASKS_FILE if it exists (legacy/fallback)
+      const filesToScan: string[] = [];
+      if (existsSync(TASKS_FILE)) filesToScan.push(TASKS_FILE);
+
+      for (const dir of scanDirs) {
+        if (!existsSync(dir)) continue;
+        try {
+          for (const f of readdirSync(dir).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 60)) {
+            filesToScan.push(path.join(dir, f));
           }
-        }
+        } catch { /* skip */ }
       }
+
+      for (const filePath of filesToScan) {
+        try {
+          const content = readFileSync(filePath, 'utf-8');
+          for (const line of content.split('\n')) {
+            const s = line.trim();
+            if (/^- \[ \]/.test(s) || /^- \[\/\]/.test(s)) {
+              pending++;
+              const dueMatch = s.match(/📅\s*(\d{4}-\d{2}-\d{2})/);
+              if (dueMatch) {
+                const dueDate = dueMatch[1];
+                if (dueDate < todayStr) overdue++;
+                else if (dueDate === todayStr) dueToday++;
+              }
+            }
+          }
+        } catch { /* skip unreadable files */ }
+      }
+
       details.tasks_pending = pending;
       details.tasks_overdue = overdue;
       details.tasks_due_today = dueToday;

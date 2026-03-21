@@ -16,10 +16,10 @@ Every **{{interval}} minutes** during active hours ({{active_hours}}), I run an 
 
 ## Checklist
 
-1. **Overdue tasks** — Check [[05-Tasks/TASKS|task list]] for tasks with due dates that have passed. If ANY task is overdue, DM the owner immediately with the task details and how overdue it is.
+1. **Overdue tasks** — Scan recent daily notes and inbox for Obsidian Tasks (`- [ ]` with `📅` dates) that are past due. If ANY task is overdue, DM the owner immediately with the task details and how overdue it is.
 2. **Due today** — Flag any tasks due today that haven't been started yet.
-3. **Daily note** — Ensure today's daily note exists. If not, create it from the template.
-4. **Inbox** — Check [[07-Inbox|Inbox]] for unsorted items. If there are any, try to sort them to the right folder.
+3. **Daily note** — Ensure today's daily note exists in `Daily/`. If not, create it.
+4. **Inbox** — Check `Inbox/` for unsorted items. If there are any, try to sort them to the right folder.
 5. **Memory hygiene** — If there are facts in today's daily note that should be durable, promote them to [[MEMORY]] or the right topic/person note.
 
 ## When to Alert
