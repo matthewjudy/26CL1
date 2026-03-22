@@ -7,7 +7,7 @@
 
 import express from 'express';
 import pino from 'pino';
-import { WEBHOOK_PORT, WEBHOOK_SECRET } from '../config.js';
+import { WEBHOOK_PORT, WEBHOOK_SECRET , localISO } from '../config.js';
 import type { Gateway } from '../gateway/router.js';
 
 const logger = pino({ name: 'clementine.webhook' });
@@ -83,7 +83,7 @@ export async function startWebhook(gateway: Gateway): Promise<void> {
     res.json({
       status: 'ok',
       uptime: process.uptime(),
-      timestamp: new Date().toISOString(),
+      timestamp: localISO(),
     });
   });
 

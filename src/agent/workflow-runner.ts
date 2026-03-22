@@ -21,7 +21,7 @@ import type {
   WorkflowInput,
   WorkflowRunEntry,
 } from '../types.js';
-import { BASE_DIR } from '../config.js';
+import { BASE_DIR , localISO } from '../config.js';
 
 const logger = pino({ name: 'clementine.workflow' });
 
@@ -221,8 +221,8 @@ export class WorkflowRunner {
       const entry: WorkflowRunEntry = {
         workflowName: workflow.name,
         runId,
-        startedAt: new Date(startTime).toISOString(),
-        finishedAt: new Date().toISOString(),
+        startedAt: localISO(new Date(startTime)),
+        finishedAt: localISO(),
         status: 'error',
         durationMs: Date.now() - startTime,
         inputs,
@@ -349,8 +349,8 @@ export class WorkflowRunner {
     const entry: WorkflowRunEntry = {
       workflowName: workflow.name,
       runId,
-      startedAt: new Date(startTime).toISOString(),
-      finishedAt: new Date().toISOString(),
+      startedAt: localISO(new Date(startTime)),
+      finishedAt: localISO(),
       status: hasFailures ? 'partial' : 'ok',
       durationMs: Date.now() - startTime,
       inputs: resolvedInputs,

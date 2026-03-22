@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from '
 import pino from 'pino';
 import type { PersonalAssistant } from './assistant.js';
 import type { PlanStep, ExecutionPlan, PlanProgressUpdate } from '../types.js';
-import { PLAN_STATE_DIR } from '../config.js';
+import { PLAN_STATE_DIR , localISO } from '../config.js';
 
 const logger = pino({ name: 'clementine.orchestrator' });
 
@@ -163,7 +163,7 @@ export class PlanOrchestrator {
   private saveState(state: PlanState): void {
     try {
       if (!existsSync(PLAN_STATE_DIR)) mkdirSync(PLAN_STATE_DIR, { recursive: true });
-      state.updatedAt = new Date().toISOString();
+      state.updatedAt = localISO();
       writeFileSync(
         `${PLAN_STATE_DIR}/${state.id}.json`,
         JSON.stringify(state, null, 2),
@@ -293,8 +293,8 @@ export class PlanOrchestrator {
       id: this.stateId,
       goal: taskDescription,
       status: 'executing',
-      startedAt: new Date(this.startTime).toISOString(),
-      updatedAt: new Date().toISOString(),
+      startedAt: localISO(new Date(this.startTime)),
+      updatedAt: localISO(),
       plan: plan!,
       totalWaves: waves!.length,
       wavesCompleted: 0,

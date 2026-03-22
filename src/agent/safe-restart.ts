@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import pino from 'pino';
 
-import { BASE_DIR } from '../config.js';
+import { BASE_DIR , localISO } from '../config.js';
 import { preflightSourceChange } from './source-preflight.js';
 import { recordSourceMod } from './source-mods.js';
 import type { RestartSentinel } from '../types.js';
@@ -142,7 +142,7 @@ export async function safeSourceEdit(
   // 6. Write sentinel
   const sentinel: RestartSentinel = {
     previousPid: process.pid,
-    restartedAt: new Date().toISOString(),
+    restartedAt: localISO(),
     reason: 'source-edit',
     sourceChangeId: modId,
     sessionKey: opts?.sessionKey,

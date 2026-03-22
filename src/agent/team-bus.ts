@@ -12,6 +12,7 @@ import pino from 'pino';
 import type { AgentProfile, TeamMessage } from '../types.js';
 import type { Gateway } from '../gateway/router.js';
 import type { TeamRouter } from './team-router.js';
+import { localISO } from '../config.js';
 
 const logger = pino({ name: 'clementine.team-bus' });
 
@@ -198,7 +199,7 @@ export class TeamBus {
       fromAgent: fromSlug,
       toAgent: toSlug,
       content,
-      timestamp: new Date().toISOString(),
+      timestamp: localISO(),
       delivered: false,
       depth,
     };

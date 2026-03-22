@@ -11,7 +11,7 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
 
-import { BASE_DIR } from '../config.js';
+import { BASE_DIR , localISO } from '../config.js';
 import { reconcileSourceMods } from './source-mods.js';
 import type { RestartSentinel } from '../types.js';
 
@@ -174,7 +174,7 @@ export async function applyUpdate(pkgDir: string): Promise<UpdateApplyResult> {
 
     const sentinel: RestartSentinel = {
       previousPid: process.pid,
-      restartedAt: new Date().toISOString(),
+      restartedAt: localISO(),
       reason: 'update',
       updateDetails: {
         commitHash,

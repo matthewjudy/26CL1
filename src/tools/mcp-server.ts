@@ -18,6 +18,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import pino from 'pino';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+import { localISO } from '../config.js';
 
 // ── Resolve paths ──────────────────────────────────────────────────────
 
@@ -530,7 +531,13 @@ server.tool(
   },
   async ({ action, content, section, file_path }) => {
     if (action === 'append_daily') {
-      const sec = section ?? 'Interactions';
+      // Only allow appending to recognized daily note sections.
+      // "Log" = human-facing entries (heartbeats, session logs, personal entries)
+      // "Interactions" = cron/agent output (task processors, briefings)
+      // Anything else gets routed to "Log" to prevent random section creation.
+      const ALLOWED_SECTIONS = new Set(['Log', 'Interactions', 'Journal', 'Tasks']);
+      const requestedSec = section ?? 'Interactions';
+      const sec = ALLOWED_SECTIONS.has(requestedSec) ? requestedSec : 'Log';
       const dailyPath = ensureDailyNote();
       let body = readFileSync(dailyPath, 'utf-8');
 
@@ -574,7 +581,7 @@ server.tool(
           store.logExtraction({
             sessionKey: 'mcp', userMessage: content.slice(0, 200),
             toolName: 'memory_write', toolInput: JSON.stringify({ action, section: sec }),
-            extractedAt: new Date().toISOString(), status: 'dedup_skipped',
+            extractedAt: localISO(), status: 'dedup_skipped',
             agentSlug: ACTIVE_AGENT_SLUG ?? undefined,
           });
           return textResult(`Skipped: ${dup.matchType} duplicate already in memory (chunk #${dup.matchId})`);
@@ -587,30 +594,17 @@ server.tool(
       const match = pattern.exec(body);
 
       if (match) {
+        // Replace section content entirely — the caller provides the current state of truth.
+        // The old append-with-dedup approach caused duplicate sections to accumulate
+        // whenever facts were reworded or updated with new details.
+        const newContent = content.trim();
         const existingContent = match[2].trim();
-        const existingLines = existingContent.split('\n').map(l => l.trim()).filter(Boolean);
-        const newLines = content.split('\n').map(l => l.trim()).filter(Boolean);
 
-        // Dedup: skip lines that are exact or near-exact duplicates
-        const filtered: string[] = [];
-        for (const newLine of newLines) {
-          const isDup = existingLines.some(ex => {
-            const a = newLine.toLowerCase().trim();
-            const b = ex.toLowerCase().trim();
-            // Only skip exact matches (case-insensitive)
-            return a === b;
-          });
-          if (!isDup) {
-            filtered.push(newLine);
-          }
+        if (newContent === existingContent) {
+          return textResult(`No new information for MEMORY.md > ${sec} (identical content)`);
         }
 
-        if (!filtered.length) {
-          return textResult(`No new information for MEMORY.md > ${sec} (all duplicates)`);
-        }
-
-        const updatedText = existingContent + '\n' + filtered.join('\n');
-        body = body.slice(0, match.index + match[1].length) + updatedText + '\n' + body.slice(match.index + match[1].length + match[2].length);
+        body = body.slice(0, match.index + match[1].length) + newContent + '\n' + body.slice(match.index + match[1].length + match[2].length);
       } else {
         body += `\n\n## ${sec}\n\n${content}\n`;
       }
@@ -770,7 +764,7 @@ server.tool(
           store.logExtraction({
             sessionKey: 'mcp', userMessage: `note_create: ${title}`,
             toolName: 'note_create', toolInput: JSON.stringify({ note_type, title }),
-            extractedAt: new Date().toISOString(), status: 'dedup_skipped',
+            extractedAt: localISO(), status: 'dedup_skipped',
           });
           return textResult(`Skipped: ${dup.matchType} duplicate content already exists (chunk #${dup.matchId})`);
         }
@@ -848,7 +842,7 @@ server.tool(
           store.logExtraction({
             sessionKey: 'mcp', userMessage: description.slice(0, 200),
             toolName: 'task_add', toolInput: JSON.stringify({ description }),
-            extractedAt: new Date().toISOString(), status: 'dedup_skipped',
+            extractedAt: localISO(), status: 'dedup_skipped',
           });
           return textResult(`Skipped: ${dup.matchType} duplicate task already exists (chunk #${dup.matchId})`);
         }
@@ -1077,7 +1071,7 @@ server.tool(
       lines.push('\n**Recently modified:**');
       for (const note of allNotes) {
         const rel = path.relative(VAULT_DIR, note.path);
-        const mtime = new Date(note.mtime).toISOString().slice(0, 16).replace('T', ' ');
+        const mtime = localISO(new Date(note.mtime)).slice(0, 16).replace('T', ' ');
         lines.push(`  - ${rel} (${mtime})`);
       }
     }
@@ -1683,7 +1677,7 @@ server.tool(
     const userEmail = env['MS_USER_EMAIL'] ?? '';
     const limit = Math.min(count, 25);
     const data = await graphGet(
-      `/users/${userEmail}/messages?$search="${encodeURIComponent(query)}"&$top=${limit}&$select=from,subject,receivedDateTime,bodyPreview,hasAttachments&$orderby=receivedDateTime desc`
+      `/users/${userEmail}/messages?$search="${encodeURIComponent(query)}"&$top=${limit}&$select=from,subject,receivedDateTime,bodyPreview,hasAttachments`
     );
     const emails = (data.value ?? []).map((m: any) => ({
       id: m.id,
@@ -1708,8 +1702,8 @@ server.tool(
   },
   async ({ days }) => {
     const userEmail = env['MS_USER_EMAIL'] ?? '';
-    const start = new Date().toISOString();
-    const end = new Date(Date.now() + Math.min(days, 30) * 86400000).toISOString();
+    const start = localISO();
+    const end = localISO(new Date(Date.now() + Math.min(days, 30) * 86400000));
     const data = await graphGet(
       `/users/${userEmail}/calendarView?startDateTime=${start}&endDateTime=${end}&$select=subject,start,end,location,attendees,isAllDay&$orderby=start/dateTime&$top=50`
     );
@@ -1808,6 +1802,7 @@ server.tool(
 
     // Format attachment info
     const attachments = (data.attachments ?? []).map((att: any) => ({
+      id: att.id,
       name: att.name,
       contentType: att.contentType,
       size: att.size,
@@ -1824,12 +1819,38 @@ server.tool(
       body: bodyText.slice(0, 3000),
       attachments: attachments.length > 0
         ? attachments.map((a: any) =>
-            `- ${a.name} (${a.contentType}, ${Math.round(a.size / 1024)}KB)${a.isImage ? ' [image — use analyze_image to view]' : ''}`
+            `- ${a.name} (${a.contentType}, ${Math.round(a.size / 1024)}KB, id: ${a.id})${a.isImage ? ' [image — use analyze_image to view]' : ''}`
           ).join('\n')
         : '(none)',
     };
 
     return externalResult(JSON.stringify(result, null, 2));
+  },
+);
+
+// ── 22b. outlook_download_attachment ─────────────────────────────────────
+
+server.tool(
+  'outlook_download_attachment',
+  'Download an email attachment to a local file path. Use outlook_read_email first to get the attachment ID.',
+  {
+    messageId: z.string().describe('The email message ID'),
+    attachmentId: z.string().describe('The attachment ID (from outlook_read_email)'),
+    savePath: z.string().describe('Absolute file path to save the attachment to'),
+  },
+  async ({ messageId, attachmentId, savePath }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const data = await graphGet(
+      `/users/${userEmail}/messages/${messageId}/attachments/${attachmentId}`
+    );
+    if (!data.contentBytes) {
+      return textResult('Error: attachment has no contentBytes (may be a reference attachment or too large)');
+    }
+    const buffer = Buffer.from(data.contentBytes, 'base64');
+    const dir = path.dirname(savePath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(savePath, buffer);
+    return textResult(`Saved attachment "${data.name}" (${buffer.length} bytes) to ${savePath}`);
   },
 );
 
@@ -3381,7 +3402,7 @@ server.tool(
       fromAgent: callerSlug,
       toAgent: to_agent,
       content: message,
-      timestamp: new Date().toISOString(),
+      timestamp: localISO(),
       delivered: false,
       depth: msgDepth,
     };
@@ -3657,7 +3678,7 @@ server.tool(
       file: `src/${file}`,
       content,
       reason,
-      createdAt: new Date().toISOString(),
+      createdAt: localISO(),
     };
     writeFileSync(
       path.join(PENDING_SOURCE_DIR, `${id}.json`),
@@ -3711,7 +3732,7 @@ server.tool(
 
     // action === 'apply' — write a signal file for the daemon
     const signalFile = path.join(BASE_DIR, '.pending-update');
-    writeFileSync(signalFile, JSON.stringify({ requestedAt: new Date().toISOString() }));
+    writeFileSync(signalFile, JSON.stringify({ requestedAt: localISO() }));
 
     return textResult(
       'Update requested. The daemon will:\n' +
@@ -3747,7 +3768,7 @@ server.tool(
   async ({ title, description, owner, priority, targetDate, nextActions, reviewFrequency, linkedCronJobs }) => {
     ensureGoalsDir();
     const id = randomBytes(4).toString('hex');
-    const now = new Date().toISOString();
+    const now = localISO();
     const goal = {
       id,
       title,
@@ -3789,12 +3810,12 @@ server.tool(
     }
     const goal = JSON.parse(readFileSync(filePath, 'utf-8'));
     if (status) goal.status = status;
-    if (progressNote) goal.progressNotes.push(`[${new Date().toISOString().slice(0, 16)}] ${progressNote}`);
+    if (progressNote) goal.progressNotes.push(`[${localISO().slice(0, 16)}] ${progressNote}`);
     if (nextActions) goal.nextActions = nextActions;
     if (blockers) goal.blockers = blockers;
     if (linkedCronJobs) goal.linkedCronJobs = linkedCronJobs;
     if (priority) goal.priority = priority;
-    goal.updatedAt = new Date().toISOString();
+    goal.updatedAt = localISO();
     writeFileSync(filePath, JSON.stringify(goal, null, 2));
     logger.info({ goalId: id, status: goal.status }, 'Goal updated');
     return textResult(`Goal "${goal.title}" updated (status: ${goal.status})`);
@@ -3897,7 +3918,7 @@ server.tool(
       goalId: goal_id,
       focus: focus || goal.nextActions?.[0] || goal.description,
       maxTurns: max_turns,
-      triggeredAt: new Date().toISOString(),
+      triggeredAt: localISO(),
     };
     const triggerFile = path.join(GOAL_TRIGGER_DIR, `${Date.now()}-${goal_id}.trigger.json`);
     writeFileSync(triggerFile, JSON.stringify(trigger, null, 2));
@@ -3982,7 +4003,7 @@ server.tool(
 
     const updated = {
       jobName: job_name,
-      lastRunAt: new Date().toISOString(),
+      lastRunAt: localISO(),
       runCount: (existing.runCount || 0) + 1,
       state: state ?? existing.state ?? {},
       completedItems: completedItems
@@ -4023,8 +4044,8 @@ server.tool(
       task,
       expectedOutput: expected_output,
       status: 'pending' as const,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: localISO(),
+      updatedAt: localISO(),
     };
 
     writeFileSync(path.join(tasksDir, `${id}.json`), JSON.stringify(delegation, null, 2));
@@ -4116,7 +4137,7 @@ server.tool(
     ensureHandoffsDir();
     const handoff = {
       sessionKey: session_key,
-      pausedAt: new Date().toISOString(),
+      pausedAt: localISO(),
       completed,
       remaining,
       decisions: decisions || [],

@@ -35,6 +35,7 @@ import {
   PKG_DIR,
   CRON_REFLECTIONS_DIR,
   GOALS_DIR,
+  localISO,
 } from '../config.js';
 import type {
   CronRunEntry,
@@ -122,7 +123,7 @@ export class SelfImproveLoop {
   ): Promise<SelfImproveState> {
     const state = this.loadState();
     state.status = 'running';
-    state.lastRunAt = new Date().toISOString();
+    state.lastRunAt = localISO();
     state.currentIteration = 0;
     this.saveState(state);
 
@@ -189,8 +190,8 @@ export class SelfImproveLoop {
           const experiment: SelfImproveExperiment = {
             id,
             iteration: i,
-            startedAt: new Date(iterStart).toISOString(),
-            finishedAt: new Date().toISOString(),
+            startedAt: localISO(new Date(iterStart)),
+            finishedAt: localISO(),
             durationMs: Date.now() - iterStart,
             area: proposal.area,
             target: proposal.target,
@@ -233,8 +234,8 @@ export class SelfImproveLoop {
           const experiment: SelfImproveExperiment = {
             id,
             iteration: i,
-            startedAt: new Date(iterStart).toISOString(),
-            finishedAt: new Date().toISOString(),
+            startedAt: localISO(new Date(iterStart)),
+            finishedAt: localISO(),
             durationMs: Date.now() - iterStart,
             area: this.config.areas[0],
             target: 'unknown',

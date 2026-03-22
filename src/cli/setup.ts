@@ -8,7 +8,7 @@
 import { input, select, checkbox, password, confirm } from '@inquirer/prompts';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { BASE_DIR, SYSTEM_DIR, PROJECTS_DIR, SOUL_FILE, MEMORY_FILE } from '../config.js';
+import { BASE_DIR, SYSTEM_DIR, PROJECTS_DIR, SOUL_FILE, MEMORY_FILE , localISO } from '../config.js';
 
 // ── ANSI helpers ─────────────────────────────────────────────────────
 
@@ -424,7 +424,7 @@ async function aboutYouInterview(ownerName: string): Promise<void> {
       .filter(Boolean);
 
     let created = 0;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localISO().slice(0, 10);
 
     for (const name of projectNames) {
       const slug = slugify(name);

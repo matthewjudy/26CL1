@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync } from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
-import { VAULT_MIGRATIONS_STATE } from '../config.js';
+import { VAULT_MIGRATIONS_STATE , localISO } from '../config.js';
 import type { MigrationState, VaultMigration, VaultMigrationSummary } from './types.js';
 
 const logger = pino({ name: 'clementine.vault-migrations' });
@@ -123,7 +123,7 @@ export async function runVaultMigrations(
         summary.applied.push(migration.id);
         state.applied.push({
           id: migration.id,
-          appliedAt: new Date().toISOString(),
+          appliedAt: localISO(),
           result: 'applied',
         });
         logger.info({ id: migration.id, details: result.details }, 'Vault migration applied');
@@ -132,7 +132,7 @@ export async function runVaultMigrations(
         // Record as applied so we don't re-check every update
         state.applied.push({
           id: migration.id,
-          appliedAt: new Date().toISOString(),
+          appliedAt: localISO(),
           result: 'skipped',
         });
         logger.info({ id: migration.id, details: result.details }, 'Vault migration skipped (already present)');

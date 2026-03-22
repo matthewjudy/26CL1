@@ -10,7 +10,7 @@ import pino from 'pino';
 import { PersonalAssistant, type ProjectMeta } from '../agent/assistant.js';
 import type { OnTextCallback, OnToolActivityCallback, PlanProgressUpdate, PlanStep, SelfImproveConfig, SelfImproveExperiment, SelfImproveState, SessionProvenance, TeamMessage, VerboseLevel, WorkflowDefinition } from '../types.js';
 import { SelfImproveLoop } from '../agent/self-improve.js';
-import { MODELS, PROFILES_DIR, AGENTS_DIR, TEAM_COMMS_CHANNEL, TEAM_COMMS_LOG } from '../config.js';
+import { MODELS, PROFILES_DIR, AGENTS_DIR, TEAM_COMMS_CHANNEL, TEAM_COMMS_LOG , localISO } from '../config.js';
 import { scanner } from '../security/scanner.js';
 import { lanes } from './lanes.js';
 import { AgentManager } from '../agent/agent-manager.js';
@@ -177,7 +177,7 @@ export class Gateway {
 
   /** Derive provenance from session key naming conventions. */
   static inferProvenance(sessionKey: string): SessionProvenance {
-    const now = new Date().toISOString();
+    const now = localISO();
 
     if (sessionKey.startsWith('discord:user:')) {
       return {
@@ -260,7 +260,7 @@ export class Gateway {
       role,
       // Workers can't spawn or control anything; orchestrators can control children
       controlScope: role === 'worker' ? 'none' : 'children',
-      createdAt: new Date().toISOString(),
+      createdAt: localISO(),
     };
 
     this.sessionProvenance.set(childKey, child);

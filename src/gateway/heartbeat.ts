@@ -40,6 +40,7 @@ import {
   BASE_DIR,
   DISCORD_OWNER_ID,
   GOALS_DIR,
+  localISO,
 } from '../config.js';
 import type { CronJobDefinition, CronRunEntry, HeartbeatState, SelfImproveConfig, SelfImproveExperiment, SelfImproveState, WorkflowDefinition } from '../types.js';
 import type { NotificationDispatcher } from './notifications.js';
@@ -224,7 +225,7 @@ export class HeartbeatScheduler {
     this.lastState = {
       fingerprint: currentFingerprint,
       details: currentDetails,
-      timestamp: now.toISOString(),
+      timestamp: localISO(now),
     };
     this.saveState();
 
@@ -284,7 +285,7 @@ export class HeartbeatScheduler {
 
   private computeStateFingerprint(): [string, Record<string, number | string>] {
     const details: Record<string, number | string> = {};
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = localISO().slice(0, 10);
 
     // Count tasks from vault files (distributed Obsidian Tasks format)
     {
@@ -411,7 +412,7 @@ export class HeartbeatScheduler {
    * agent knows what happened since the last beat.
    */
   private getRecentActivitySummary(): string {
-    const sinceIso = this.lastState.timestamp || new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    const sinceIso = this.lastState.timestamp || localISO(new Date(Date.now() - 4 * 60 * 60 * 1000));
     const entries = this.gateway.getRecentActivity(sinceIso);
     if (entries.length === 0) return '';
 
@@ -1045,8 +1046,8 @@ export class CronScheduler {
           const finishedAt = new Date();
           const entry: CronRunEntry = {
             jobName: job.name,
-            startedAt: startedAt.toISOString(),
-            finishedAt: finishedAt.toISOString(),
+            startedAt: localISO(startedAt),
+            finishedAt: localISO(finishedAt),
             status: 'ok',
             durationMs: finishedAt.getTime() - startedAt.getTime(),
             attempt,
@@ -1099,8 +1100,8 @@ export class CronScheduler {
 
           this.runLog.append({
             jobName: job.name,
-            startedAt: startedAt.toISOString(),
-            finishedAt: finishedAt.toISOString(),
+            startedAt: localISO(startedAt),
+            finishedAt: localISO(finishedAt),
             status: attempt < maxAttempts && errorType === 'transient' ? 'retried' : 'error',
             durationMs: finishedAt.getTime() - startedAt.getTime(),
             error: String(err).slice(0, 500),

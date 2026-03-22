@@ -21,7 +21,7 @@ import {
 import path from 'node:path';
 import pino from 'pino';
 
-import { SOURCE_MODS_DIR, PKG_DIR } from '../config.js';
+import { SOURCE_MODS_DIR, PKG_DIR , localISO } from '../config.js';
 
 const logger = pino({ name: 'clementine.source-mods' });
 
@@ -59,7 +59,7 @@ export function recordSourceMod(
     reason: opts.reason,
     description: opts.description,
     experimentId: opts.experimentId,
-    appliedAt: new Date().toISOString(),
+    appliedAt: localISO(),
     status: 'active',
   };
 

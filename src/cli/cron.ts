@@ -12,6 +12,7 @@ import path from 'node:path';
 import cron from 'node-cron';
 import matter from 'gray-matter';
 import type { CronJobDefinition } from '../types.js';
+import { localISO } from '../config.js';
 import {
   parseCronJobs,
   HeartbeatScheduler,
@@ -105,8 +106,8 @@ export async function cmdCronRun(jobName: string): Promise<void> {
 
     runLog.append({
       jobName: job.name,
-      startedAt: startedAt.toISOString(),
-      finishedAt: finishedAt.toISOString(),
+      startedAt: localISO(startedAt),
+      finishedAt: localISO(finishedAt),
       status: 'ok',
       durationMs: finishedAt.getTime() - startedAt.getTime(),
       attempt: 1,
@@ -121,8 +122,8 @@ export async function cmdCronRun(jobName: string): Promise<void> {
     const finishedAt = new Date();
     runLog.append({
       jobName: job.name,
-      startedAt: startedAt.toISOString(),
-      finishedAt: finishedAt.toISOString(),
+      startedAt: localISO(startedAt),
+      finishedAt: localISO(finishedAt),
       status: 'error',
       durationMs: finishedAt.getTime() - startedAt.getTime(),
       error: String(err).slice(0, 500),
@@ -189,7 +190,7 @@ export async function cmdCronRunDue(): Promise<void> {
 
   for (const job of dueJobs) {
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    console.log(`[${new Date().toISOString()}] Running due job: ${job.name}`);
+    console.log(`[${localISO()}] Running due job: ${job.name}`);
 
     // Determine retry ceiling from error history
     const priorErrors = runLog.consecutiveErrors(job.name);
@@ -204,8 +205,8 @@ export async function cmdCronRunDue(): Promise<void> {
 
         runLog.append({
           jobName: job.name,
-          startedAt: startedAt.toISOString(),
-          finishedAt: finishedAt.toISOString(),
+          startedAt: localISO(startedAt),
+          finishedAt: localISO(finishedAt),
           status: 'ok',
           durationMs: finishedAt.getTime() - startedAt.getTime(),
           attempt,
@@ -224,8 +225,8 @@ export async function cmdCronRunDue(): Promise<void> {
 
         runLog.append({
           jobName: job.name,
-          startedAt: startedAt.toISOString(),
-          finishedAt: finishedAt.toISOString(),
+          startedAt: localISO(startedAt),
+          finishedAt: localISO(finishedAt),
           status: attempt < maxAttempts && errorType === 'transient' ? 'retried' : 'error',
           durationMs: finishedAt.getTime() - startedAt.getTime(),
           error: String(err).slice(0, 500),
@@ -249,7 +250,7 @@ export async function cmdCronRunDue(): Promise<void> {
     }
 
     if (succeeded) {
-      lastRuns[job.name] = now.toISOString();
+      lastRuns[job.name] = localISO(now);
     }
   }
 

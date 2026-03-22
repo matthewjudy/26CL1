@@ -36,6 +36,7 @@ import { runSetup } from './setup.js';
 import { cmdCronList, cmdCronRun, cmdCronRunDue, cmdCronRuns, cmdCronAdd, cmdCronTest, cmdHeartbeat } from './cron.js';
 import { cmdDashboard } from './dashboard.js';
 import { cmdChat } from './chat.js';
+import { localISO } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -935,7 +936,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
   }
 
   // 3. Back up user config
-  const backupDir = path.join(BASE_DIR, 'backups', `pre-update-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}`);
+  const backupDir = path.join(BASE_DIR, 'backups', `pre-update-${localISO().slice(0, 19).replace(/[T:]/g, '-')}`);
   console.log(`  ${S()} Backing up config...`);
 
   if (!options.dryRun) {
@@ -1322,7 +1323,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     const sentinelPath = path.join(BASE_DIR, '.restart-sentinel.json');
     const sentinel: import('../types.js').RestartSentinel = {
       previousPid: process.pid,
-      restartedAt: new Date().toISOString(),
+      restartedAt: localISO(),
       reason: 'update',
       updateDetails: {
         commitHash,

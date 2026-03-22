@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
 import cron from 'node-cron';
 import type { Gateway } from '../gateway/router.js';
+import { localISO } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -368,8 +369,8 @@ function computeMetrics(): Record<string, unknown> {
   let totalDurationMs = 0;
   let runsToday = 0;
   let runsThisWeek = 0;
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+  const todayStr = localISO().slice(0, 10);
+  const weekAgo = localISO(new Date(Date.now() - 7 * 86400000));
   const jobStats: Array<{ name: string; runs: number; successes: number; avgDurationMs: number; lastRun: string }> = [];
 
   if (existsSync(runsDir)) {
@@ -551,7 +552,7 @@ function getStatus(): Record<string, unknown> {
 
   // Scan cron runs for in-progress jobs + today's count
   const runsDir = path.join(BASE_DIR, 'cron', 'runs');
-  const todayPrefix = new Date().toISOString().slice(0, 10);
+  const todayPrefix = localISO().slice(0, 10);
   if (existsSync(runsDir)) {
     try {
       const runFiles = readdirSync(runsDir).filter(f => f.endsWith('.jsonl'));
@@ -938,7 +939,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
           try {
             const entry = JSON.parse(line);
             const msg = entry.msg || '';
-            const logTime = typeof entry.time === 'number' ? new Date(entry.time).toISOString() : String(entry.time || '');
+            const logTime = typeof entry.time === 'number' ? localISO(new Date(entry.time)) : String(entry.time || '');
             if (msg.includes('chat') || msg.includes('message') || msg.includes('gateway')) {
               activities.push({
                 type: 'chat',
@@ -1537,7 +1538,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       return;
     }
     try {
-      writeFileSync(cancelFile, new Date().toISOString());
+      writeFileSync(cancelFile, localISO());
       res.json({ ok: true, message: `Cancel signal sent to "${req.params.name}"` });
     } catch (err) {
       res.status(500).json({ error: String(err) });

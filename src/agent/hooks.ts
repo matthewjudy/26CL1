@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { OWNER_NAME, BASE_DIR } from '../config.js';
+import { OWNER_NAME, BASE_DIR , localISO } from '../config.js';
 
 // ── Shared state ───────────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ function appendAuditFile(line: string): void {
         fs.renameSync(auditLogPath, backup);
       }
     }
-    const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const timestamp = localISO().replace('T', ' ').slice(0, 19);
     fs.appendFileSync(auditLogPath, `${timestamp} ${line}\n`);
   } catch {
     // Non-fatal — audit logging should never crash the assistant

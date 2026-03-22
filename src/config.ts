@@ -50,9 +50,32 @@ function readEnvFile(): Record<string, string> {
 
 const env = readEnvFile();
 
+// ── Timezone ────────────────────────────────────────────────────────
+// TZ must be set on process.env BEFORE any Date operations so that
+// getHours(), toLocaleString(), etc. use the correct local time —
+// especially under launchd which does not inherit the user's timezone.
+// This is safe to expose (not a secret).
+if (env.TZ || process.env.TZ) {
+  process.env.TZ = env.TZ ?? process.env.TZ;
+}
+
 /** Look up a config value: local .env first, then process.env fallback. */
 function getEnv(key: string, fallback = ''): string {
   return env[key] ?? process.env[key] ?? fallback;
+}
+
+/** IANA timezone for the owner (from TZ in .env or system default). */
+export const TIMEZONE = getEnv('TZ') || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/**
+ * ISO-like timestamp in local time: `2026-03-22T16:33:14`.
+ * Drop-in replacement for `new Date().toISOString()` that respects TZ
+ * so user-facing timestamps don't show UTC offsets.
+ */
+export function localISO(date?: Date): string {
+  const d = date ?? new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 // ── Paths ────────────────────────────────────────────────────────────
