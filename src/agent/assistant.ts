@@ -11,6 +11,7 @@
  */
 
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import {
   query,
@@ -19,7 +20,7 @@ import {
   type SDKAssistantMessage,
   type SDKResultMessage,
   type SDKPartialAssistantMessage,
-} from '@anthropic-ai/claude-code';
+} from '@anthropic-ai/claude-agent-sdk';
 import matter from 'gray-matter';
 import pino from 'pino';
 
@@ -100,6 +101,9 @@ function getContextWindow(model: string): number {
 // ── Constants ────────────────────────────────────────────────────────
 
 const logger = pino({ name: 'clementine.assistant' });
+
+const _require = createRequire(import.meta.url);
+const CLAUDE_CLI_PATH = path.join(path.dirname(_require.resolve('@anthropic-ai/claude-agent-sdk')), 'cli.js');
 
 const SESSIONS_FILE = path.join(BASE_DIR, '.sessions.json');
 const MAX_SESSION_EXCHANGES = 40;
@@ -930,10 +934,10 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
     const capturedSource = sourceOverride;
 
     return {
-      customSystemPrompt: this.buildSystemPrompt({
+      pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
+      systemPrompt: this.buildSystemPrompt({
         isHeartbeat, cronTier: isPlanStep ? null : cronTier, retrievalContext, profile, sessionKey, model, verboseLevel,
-      }),
-      appendSystemPrompt: securityPrompt,
+      }) + (securityPrompt ? `\n\n${securityPrompt}` : ''),
       model: resolvedModel,
       ...(fallback ? { fallbackModel: fallback } : {}),
       permissionMode: 'bypassPermissions',
@@ -1315,10 +1319,10 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
         }
 
         // Context window guard: estimate token usage and bail if too tight
-        const systemPromptTokens = estimateTokens(sdkOptions.customSystemPrompt ?? '');
-        const appendPromptTokens = estimateTokens(sdkOptions.appendSystemPrompt ?? '');
+        const systemPromptStr = typeof sdkOptions.systemPrompt === 'string' ? sdkOptions.systemPrompt : '';
+        const systemPromptTokens = estimateTokens(systemPromptStr);
         const promptTokens = estimateTokens(prompt);
-        const totalEstimate = systemPromptTokens + appendPromptTokens + promptTokens;
+        const totalEstimate = systemPromptTokens + promptTokens;
         const contextWindow = getContextWindow(sdkOptions.model ?? MODEL);
         const remainingTokens = contextWindow - totalEstimate;
 
@@ -1598,7 +1602,8 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
       const stream = query({
         prompt: summarizePrompt,
         options: {
-          customSystemPrompt: 'You are a conversation summarizer. Output only bullet points.',
+          pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
+          systemPrompt: 'You are a conversation summarizer. Output only bullet points.',
           model: AUTO_MEMORY_MODEL,
           permissionMode: 'bypassPermissions',
           maxTurns: 1,
@@ -1754,7 +1759,8 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
       const stream = query({
         prompt: memPrompt,
         options: {
-          customSystemPrompt: 'You are a silent memory extraction agent. Save facts to the vault and exit.',
+          pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
+          systemPrompt: 'You are a silent memory extraction agent. Save facts to the vault and exit.',
           model: AUTO_MEMORY_MODEL,
           permissionMode: 'bypassPermissions',
           allowedTools: [
