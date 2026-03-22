@@ -109,7 +109,7 @@ That's it. Clementine is now running, connected to your configured channels, and
 │   ├── state.json                 ← Loop status, baseline metrics
 │   └── pending-changes/           ← Proposed diffs awaiting approval
 │       └── {experiment-id}.json
-└── vault/                         ← Obsidian vault (or set VAULT_PATH to use an existing one)
+└── vault/                         ← Default Obsidian vault (set VAULT_PATH in .env to use an existing one)
     ├── Meta/Clementine/           ← System files (SOUL.md, MEMORY.md, HEARTBEAT.md, CRON.md)
     ├── Daily/                     ← Daily notes (YYYY-MM-DD.md)
     ├── People/                    ← Person notes (auto-created from conversations)
@@ -644,7 +644,7 @@ After the loop completes, memory maintenance runs automatically (temporal decay 
 
 ## Vault
 
-The vault is an Obsidian-compatible folder of Markdown files with YAML frontmatter, `[[wikilinks]]`, and `#tags`. Open `~/.clementine/vault/` in Obsidian to browse your assistant's memory visually.
+The vault is an Obsidian-compatible folder of Markdown files with YAML frontmatter, `[[wikilinks]]`, and `#tags`. If `VAULT_PATH` is set in `.env`, that directory is used instead of the default `~/.clementine/vault/`. Open your vault in Obsidian to browse your assistant's memory visually.
 
 Key system files:
 
