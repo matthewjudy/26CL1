@@ -34,7 +34,7 @@ import {
 } from 'discord.js';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { AGENTS_DIR, localISO } from '../config.js';
+import { AGENTS_DIR, localISO, nextTaskId } from '../config.js';
 import path from 'node:path';
 import pino from 'pino';
 import type { AgentProfile } from '../types.js';
@@ -148,7 +148,7 @@ export function writeConversationComplete(opts: {
 
     const completedDir = path.join(AGENTS_DIR, opts.agentSlug, 'tasks', 'completed');
     if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
-    const id = randomBytes(4).toString('hex');
+    const id = nextTaskId();
     const task = {
       id,
       fromAgent: 'conversation',

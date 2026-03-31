@@ -7,7 +7,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -335,6 +335,39 @@ export const VAULT_MIGRATIONS_STATE = path.join(BASE_DIR, '.vault-migrations.jso
 // ── Source Self-Edit Staging ─────────────────────────────────────────
 
 export const STAGING_DIR = path.join(BASE_DIR, 'staging');
+
+// ── Task ID Generator ────────────────────────────────────────────────
+// Format: YYYYMMDD00XXXX (e.g., 20260331000001)
+// Short form: #XXXX (last 4 digits)
+
+const TASK_COUNTER_FILE = path.join(BASE_DIR, '.task-counter.json');
+
+export function nextTaskId(): string {
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+
+  let counter = 1;
+  try {
+    if (existsSync(TASK_COUNTER_FILE)) {
+      const data = JSON.parse(readFileSync(TASK_COUNTER_FILE, 'utf-8'));
+      if (data.date === dateStr) {
+        counter = (data.counter || 0) + 1;
+      }
+    }
+  } catch { /* start fresh */ }
+
+  writeFileSync(TASK_COUNTER_FILE, JSON.stringify({ date: dateStr, counter }));
+  return `${dateStr}00${String(counter).padStart(4, '0')}`;
+}
+
+/** Extract the short display ID (#XXXX) from a full task ID. */
+export function shortTaskId(fullId: string): string {
+  if (/^\d{14}$/.test(fullId)) {
+    return '#' + fullId.slice(-4);
+  }
+  // Legacy hex IDs — show as-is
+  return fullId.slice(0, 8);
+}
 
 // ── API ──────────────────────────────────────────────────────────────
 

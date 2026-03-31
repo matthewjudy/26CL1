@@ -45,6 +45,7 @@ import {
 import type { CronJobDefinition, CronRunEntry, HeartbeatState, SelfImproveConfig, SelfImproveExperiment, SelfImproveState, WorkflowDefinition } from '../types.js';
 import type { NotificationDispatcher } from './notifications.js';
 import type { Gateway } from './router.js';
+import { nextTaskId } from '../config.js';
 import { scanner } from '../security/scanner.js';
 
 // ── Activity log helper for cron lifecycle events ─────────────────────
@@ -1159,7 +1160,7 @@ export class CronScheduler {
             try {
               const completedDir = path.join(AGENTS_DIR, agentSlugForTask, 'tasks', 'completed');
               if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
-              const taskId = randomBytes(4).toString('hex');
+              const taskId = nextTaskId();
               const completedTask = {
                 id: taskId,
                 fromAgent: 'cron',

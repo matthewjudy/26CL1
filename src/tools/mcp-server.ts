@@ -20,7 +20,7 @@ import express from 'express';
 import pino from 'pino';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import { localISO } from '../config.js';
+import { localISO, nextTaskId, shortTaskId } from '../config.js';
 
 // ── Resolve paths ──────────────────────────────────────────────────────
 
@@ -4265,7 +4265,7 @@ server.tool(
     const tasksDir = path.join(DELEGATIONS_BASE, to_agent, 'tasks');
     if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
 
-    const id = randomBytes(4).toString('hex');
+    const id = nextTaskId();
     const callerSlug = process.env.CLEMENTINE_TEAM_AGENT || 'clementine';
     const delegation = {
       id,
@@ -4280,7 +4280,7 @@ server.tool(
 
     writeFileSync(path.join(tasksDir, `${id}.json`), JSON.stringify(delegation, null, 2));
     logger.info({ delegationId: id, from: callerSlug, to: to_agent }, 'Task delegated');
-    return textResult(`Task delegated to ${to_agent} (ID: ${id}). They'll pick it up on their next cron run.\nTask: ${task.slice(0, 100)}`);
+    return textResult(`Task delegated to ${to_agent} (${shortTaskId(id)}). They'll pick it up on their next cron run.\nTask: ${task.slice(0, 100)}`);
   },
 );
 
@@ -4309,7 +4309,7 @@ server.tool(
     const tasksDir = path.join(DELEGATIONS_BASE, resolvedSlug, 'tasks');
     if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
 
-    const id = randomBytes(4).toString('hex');
+    const id = nextTaskId();
     const callerSlug = process.env.CLEMENTINE_TEAM_AGENT || 'clementine';
     const delegation = {
       id,
@@ -4353,7 +4353,7 @@ server.tool(
       logger.warn({ err, taskProcessor: taskProcessorName }, 'Immediate dispatch failed — task will be picked up on next cron run');
     }
 
-    return textResult(`Task delegated to ${resolvedSlug} (ID: ${id}) — they're starting now.\nTask: ${task.slice(0, 100)}`);
+    return textResult(`Task delegated to ${resolvedSlug} (${shortTaskId(id)}) — they're starting now.\nTask: ${task.slice(0, 100)}`);
   },
 );
 
@@ -4483,7 +4483,7 @@ server.tool(
     const completedDir = path.join(DELEGATIONS_BASE, agentSlug, 'tasks', 'completed');
     if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
 
-    const taskId = randomBytes(4).toString('hex');
+    const taskId = nextTaskId();
     const completedTask = {
       id: taskId,
       fromAgent: callerSlug,
@@ -4531,7 +4531,7 @@ server.tool(
     // Write completed task JSON
     const completedDir = path.join(DELEGATIONS_BASE, callerSlug, 'tasks', 'completed');
     if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
-    const id = randomBytes(4).toString('hex');
+    const id = nextTaskId();
     const task = {
       id,
       fromAgent: 'conversation',

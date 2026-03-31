@@ -1054,6 +1054,9 @@ program
       return `${barClr}${'█'.repeat(filled)}${c.gray}${'░'.repeat(empty)}${c.reset} ${c.dim}${rpad(String(pct), 3)}%${c.reset}`;
     }
 
+    let currentScreen: 'ops' | 'roster' = 'ops';
+    let lastData: Record<string, unknown> | null = null;
+
     async function render() {
       // Detect terminal dimensions
       const cols = process.stdout.columns || 120;
@@ -1067,7 +1070,10 @@ program
           const resp = await fetch(`http://127.0.0.1:3030/api/ops-board`, {
             headers: { Authorization: `Bearer ${token}` },
           });
-          if (resp.ok) data = await resp.json() as Record<string, unknown>;
+          if (resp.ok) {
+            data = await resp.json() as Record<string, unknown>;
+            lastData = data;
+          }
         } catch { /* dashboard not running, fall back */ }
       }
 
@@ -1171,6 +1177,13 @@ program
           pendingTasks: [],
           summary: { online: agents.filter((a: Record<string, unknown>) => a.opStatus !== 'OFFLINE').length, working: agents.filter((a: Record<string, unknown>) => a.opStatus === 'WORKING').length, queued: 0, errors: 0, runsToday, deployed: agents.length, poolSize: 0 },
         };
+      }
+
+      // Route to roster screen if toggled
+      if (currentScreen === 'roster') {
+        lastData = data;
+        await renderRoster();
+        return;
       }
 
       const agents = (data.agents || []) as Array<Record<string, any>>;
@@ -1412,14 +1425,254 @@ program
       }
 
       out += `${c.dim}  ${pad('', usable)}${c.reset}\n`;
-      out += `${c.dim}  Refreshing every 10s · ${cols}x${rows} · Ctrl+C to exit${c.reset}`;
+      out += `${c.dim}  Refreshing every 10s · [r] roster · ${cols}x${rows} · Ctrl+C to exit${c.reset}`;
+      process.stdout.write(out);
+    }
+
+    // ── Roster screen (toggled with 'r') ──
+    async function renderRoster() {
+      if (!lastData) return;
+      const cols = process.stdout.columns || 120;
+      const agents = (lastData.agents || []) as Array<Record<string, any>>;
+      const completedTasks = (lastData.completedTasks || []) as Array<Record<string, any>>;
+
+      // Count completed tasks per agent
+      const completedCounts: Record<string, number> = {};
+      for (const ct of completedTasks) {
+        const name = ct.agent || '';
+        completedCounts[name] = (completedCounts[name] || 0) + 1;
+      }
+
+      const statusStyle: Record<string, { sym: string; clr: string }> = {
+        'AVAILABLE': { sym: 'READY', clr: c.green },
+        'WORKING': { sym: 'BUSY', clr: c.blue },
+        'QUEUED': { sym: 'QUEUED', clr: c.yellow },
+        'CONNECTING': { sym: 'CONN', clr: c.yellow },
+        'ERROR': { sym: 'ERROR', clr: c.red },
+        'OFFLINE': { sym: 'OFF', clr: c.gray },
+      };
+
+      const nameW = 20;
+      const unitW = 7;
+      const statusW = 8;
+      const modelW = 7;
+      const doneW = 6;
+      const usable2 = cols - 4;
+      const gap2 = 2;
+      const g2 = '  ';
+      const descW = Math.max(20, usable2 - nameW - unitW - statusW - modelW - doneW - (gap2 * 5));
+
+      let out = c.clear;
+      out += `  ${c.bold}${c.blue}AGENT ROSTER${c.reset}  ${c.dim}${agents.filter(a => a.deployed).length} deployed${c.reset}\n`;
+      out += `  ${c.dim}${'\u2500'.repeat(usable2)}${c.reset}\n`;
+      out += `  ${c.dim}${pad('AGENT', nameW)}${g2}${pad('UNIT', unitW)}${g2}${pad('STATUS', statusW)}${g2}${pad('MODEL', modelW)}${g2}${pad('DONE', doneW)}${g2}${pad('SPECIALTY / ROLE', descW)}${c.reset}\n`;
+      out += `  ${c.dim}${'\u2500'.repeat(nameW)}${g2}${'\u2500'.repeat(unitW)}${g2}${'\u2500'.repeat(statusW)}${g2}${'\u2500'.repeat(modelW)}${g2}${'\u2500'.repeat(doneW)}${g2}${'\u2500'.repeat(descW)}${c.reset}\n`;
+
+      const sorted = [...agents].sort((a, b) => {
+        if (a.slug === '19q1') return -1;
+        if (b.slug === '19q1') return 1;
+        return (a.name || '').localeCompare(b.name || '');
+      });
+
+      for (const a of sorted) {
+        if (!a.deployed) continue;
+        const st = statusStyle[a.opStatus] || statusStyle['OFFLINE'];
+        const name = a.name || a.slug;
+        const unit = a.unit || '';
+        const model = a.model || 'sonnet';
+        const done = completedCounts[name] || 0;
+        const desc = (a.description || '').slice(0, descW);
+        const nameClr = a.opStatus === 'AVAILABLE' ? c.white : a.opStatus === 'WORKING' ? c.blue : c.gray;
+        out += `  ${nameClr}${pad(name, nameW)}${c.reset}${g2}${c.dim}${pad(unit, unitW)}${c.reset}${g2}${st.clr}${pad(st.sym, statusW)}${c.reset}${g2}${c.dim}${pad(model, modelW)}${c.reset}${g2}${done > 0 ? c.green : c.dim}${pad(String(done), doneW)}${c.reset}${g2}${c.gray}${desc}${c.reset}\n`;
+        if (a.opStatus === 'WORKING' && a.activity) {
+          out += `  ${' '.repeat(nameW)}${g2}${' '.repeat(unitW)}${g2}${c.blue}${pad('', statusW)}${c.reset}${g2}${' '.repeat(modelW)}${g2}${' '.repeat(doneW)}${g2}${c.cyan}${a.activity.slice(0, descW)}${c.reset}\n`;
+        }
+      }
+
+      // Communication topology
+      out += `\n  ${c.dim}${'\u2500'.repeat(usable2)}${c.reset}\n`;
+      out += `  ${c.bold}${c.blue}COMMUNICATION${c.reset}\n\n`;
+      for (const a of sorted) {
+        if (!a.deployed) continue;
+        const canMsg = a.canMessage || [];
+        if (canMsg.length > 0) {
+          const targets = canMsg.map((slug: string) => {
+            const target = agents.find((x: Record<string, any>) => x.slug === slug);
+            return target ? target.name : slug;
+          }).join(', ');
+          out += `  ${c.white}${pad(a.name || a.slug, nameW)}${c.reset}${g2}${c.dim}can message:${c.reset} ${targets}\n`;
+        }
+      }
+
+      // Channels
+      out += `\n  ${c.dim}${'\u2500'.repeat(usable2)}${c.reset}\n`;
+      out += `  ${c.bold}${c.blue}CHANNELS${c.reset}\n\n`;
+      for (const a of sorted) {
+        if (!a.deployed || !a.channel) continue;
+        out += `  ${c.white}${pad(a.name || a.slug, nameW)}${c.reset}${g2}${c.dim}#${a.channel}${c.reset}\n`;
+      }
+
+      out += `\n${c.dim}  Press [o] for ops board · Ctrl+C to exit${c.reset}`;
       process.stdout.write(out);
     }
 
     await render();
     if (opts.watch !== false) {
       setInterval(render, 10000);
+
+      // Keyboard handling for screen switching
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (key: string) => {
+          if (key === '\u0003') { process.exit(); } // Ctrl+C
+          if (key === 'r' && currentScreen === 'ops') {
+            currentScreen = 'roster';
+            render();
+          } else if ((key === 'o' || key === '\u001b') && currentScreen === 'roster') { // 'o' or Escape
+            currentScreen = 'ops';
+            render();
+          }
+        });
+      }
     }
+  });
+
+program
+  .command('roster')
+  .description('Show agent roster with specialties, availability, and recent workload')
+  .action(async () => {
+    const { readFileSync, existsSync, readdirSync } = await import('node:fs');
+    const pathMod = await import('node:path');
+    const BASE_DIR = process.env.CLEMENTINE_HOME || pathMod.default.join(process.env.HOME || '', '.clementine');
+    const tokenPath = pathMod.default.join(BASE_DIR, '.dashboard-token');
+
+    const c = {
+      reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
+      green: '\x1b[32m', blue: '\x1b[34m', yellow: '\x1b[33m', red: '\x1b[31m',
+      cyan: '\x1b[36m', gray: '\x1b[90m', white: '\x1b[97m',
+      orange: '\x1b[38;5;208m', purple: '\x1b[38;5;141m',
+    };
+
+    function pad(s: string, w: number) { return s.length >= w ? s.slice(0, w) : s + ' '.repeat(w - s.length); }
+
+    // Fetch from dashboard API
+    let data: Record<string, unknown> | null = null;
+    if (existsSync(tokenPath)) {
+      try {
+        const token = readFileSync(tokenPath, 'utf-8').trim();
+        const resp = await fetch('http://127.0.0.1:3030/api/ops-board', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (resp.ok) data = await resp.json() as Record<string, unknown>;
+      } catch { /* dashboard not running */ }
+    }
+
+    if (!data) {
+      console.log('  Dashboard not running. Start with: clementine dashboard');
+      process.exit(1);
+    }
+
+    const agents = (data.agents || []) as Array<Record<string, any>>;
+    const completedTasks = (data.completedTasks || []) as Array<Record<string, any>>;
+    const cols = process.stdout.columns || 120;
+    const usable = cols - 4;
+    const gap = 2;
+    const g = ' '.repeat(gap);
+
+    // Count completed tasks per agent (recent)
+    const completedCounts: Record<string, number> = {};
+    for (const ct of completedTasks) {
+      const name = ct.agent || '';
+      completedCounts[name] = (completedCounts[name] || 0) + 1;
+    }
+
+    // Status styling
+    const statusStyle: Record<string, { sym: string; clr: string }> = {
+      'AVAILABLE':  { sym: 'READY', clr: c.green },
+      'WORKING':    { sym: 'BUSY', clr: c.blue },
+      'QUEUED':     { sym: 'QUEUED', clr: c.yellow },
+      'CONNECTING': { sym: 'CONN', clr: c.yellow },
+      'ERROR':      { sym: 'ERROR', clr: c.red },
+      'OFFLINE':    { sym: 'OFF', clr: c.gray },
+    };
+
+    // Column widths
+    const nameW = 20;
+    const unitW = 7;
+    const statusW = 8;
+    const modelW = 7;
+    const doneW = 6;
+    const descW = Math.max(20, usable - nameW - unitW - statusW - modelW - doneW - (gap * 5));
+
+    // Header
+    console.log();
+    console.log(`  ${c.bold}${c.blue}AGENT ROSTER${c.reset}  ${c.dim}${agents.length} deployed${c.reset}`);
+    console.log(`  ${c.dim}${'─'.repeat(usable)}${c.reset}`);
+    console.log(`  ${c.dim}${pad('AGENT', nameW)}${g}${pad('UNIT', unitW)}${g}${pad('STATUS', statusW)}${g}${pad('MODEL', modelW)}${g}${pad('DONE', doneW)}${g}${pad('SPECIALTY / ROLE', descW)}${c.reset}`);
+    console.log(`  ${c.dim}${'─'.repeat(nameW)}${g}${'─'.repeat(unitW)}${g}${'─'.repeat(statusW)}${g}${'─'.repeat(modelW)}${g}${'─'.repeat(doneW)}${g}${'─'.repeat(descW)}${c.reset}`);
+
+    // Sort: Q1 first, then deployed agents alphabetically
+    const sorted = [...agents].sort((a, b) => {
+      if (a.slug === '19q1') return -1;
+      if (b.slug === '19q1') return 1;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+
+    for (const a of sorted) {
+      if (!a.deployed) continue;
+      const st = statusStyle[a.opStatus] || statusStyle['OFFLINE'];
+      const name = a.name || a.slug;
+      const unit = a.unit || '';
+      const model = a.model || 'sonnet';
+      const done = completedCounts[name] || 0;
+      const desc = (a.description || '').slice(0, descW);
+      const nameClr = a.opStatus === 'AVAILABLE' ? c.white : a.opStatus === 'WORKING' ? c.blue : c.gray;
+
+      console.log(
+        `  ${nameClr}${pad(name, nameW)}${c.reset}${g}` +
+        `${c.dim}${pad(unit, unitW)}${c.reset}${g}` +
+        `${st.clr}${pad(st.sym, statusW)}${c.reset}${g}` +
+        `${c.dim}${pad(model, modelW)}${c.reset}${g}` +
+        `${done > 0 ? c.green : c.dim}${pad(String(done), doneW)}${c.reset}${g}` +
+        `${c.gray}${desc}${c.reset}`
+      );
+
+      // If working, show current activity indented
+      if (a.opStatus === 'WORKING' && a.activity) {
+        console.log(`  ${' '.repeat(nameW)}${g}${' '.repeat(unitW)}${g}${c.blue}${pad('', statusW)}${c.reset}${g}${' '.repeat(modelW)}${g}${' '.repeat(doneW)}${g}${c.cyan}${a.activity.slice(0, descW)}${c.reset}`);
+      }
+    }
+
+    // Show who can message whom
+    console.log();
+    console.log(`  ${c.dim}${'─'.repeat(usable)}${c.reset}`);
+    console.log(`  ${c.bold}${c.blue}COMMUNICATION${c.reset}`);
+    console.log();
+    for (const a of sorted) {
+      if (!a.deployed) continue;
+      const canMsg = a.canMessage || [];
+      if (canMsg.length > 0) {
+        const targets = canMsg.map((slug: string) => {
+          const target = agents.find(x => x.slug === slug);
+          return target ? target.name : slug;
+        }).join(', ');
+        console.log(`  ${c.white}${pad(a.name || a.slug, nameW)}${c.reset}${g}${c.dim}can message:${c.reset} ${targets}`);
+      }
+    }
+
+    // Show channel assignments
+    console.log();
+    console.log(`  ${c.dim}${'─'.repeat(usable)}${c.reset}`);
+    console.log(`  ${c.bold}${c.blue}CHANNELS${c.reset}`);
+    console.log();
+    for (const a of sorted) {
+      if (!a.deployed || !a.channel) continue;
+      console.log(`  ${c.white}${pad(a.name || a.slug, nameW)}${c.reset}${g}${c.dim}#${a.channel}${c.reset}`);
+    }
+
+    console.log();
   });
 
 program
