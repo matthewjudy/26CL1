@@ -27,6 +27,7 @@ import matter from 'gray-matter';
 import cron from 'node-cron';
 import type { Gateway } from '../gateway/router.js';
 import { localISO } from '../config.js';
+import { getMorningBriefHTML, ensureBriefDirs, briefPaths, MORNING_BRIEF_PROMPT } from './morning-brief.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -869,6 +870,71 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
   app.get('/', (_req, res) => {
     res.type('html').send(getDashboardHTML(dashboardToken));
+  });
+
+  // ── Morning Brief ─────────────────────────────────────────────────
+
+  const mbPaths = ensureBriefDirs(BASE_DIR, VAULT_DIR);
+
+  app.get('/morning-brief', (_req, res) => {
+    res.type('html').send(getMorningBriefHTML(dashboardToken));
+  });
+
+  app.get('/api/morning-brief/data', (_req, res) => {
+    if (existsSync(mbPaths.latestJson)) {
+      try {
+        const data = JSON.parse(readFileSync(mbPaths.latestJson, 'utf-8'));
+        res.json(data);
+      } catch {
+        res.status(500).json({ error: 'Failed to parse brief data' });
+      }
+    } else {
+      res.status(404).json({ error: 'No brief generated yet' });
+    }
+  });
+
+  app.get('/api/morning-brief/todos', (_req, res) => {
+    if (existsSync(mbPaths.todosJson)) {
+      try {
+        res.json(JSON.parse(readFileSync(mbPaths.todosJson, 'utf-8')));
+      } catch {
+        res.json({ items: [] });
+      }
+    } else {
+      res.json({ items: [] });
+    }
+  });
+
+  app.post('/api/morning-brief/todos', express.json(), (req, res) => {
+    try {
+      writeFileSync(mbPaths.todosJson, JSON.stringify(req.body, null, 2));
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post('/api/morning-brief/generate', (_req, res) => {
+    try {
+      // Build the prompt with actual paths
+      const prompt = MORNING_BRIEF_PROMPT
+        .replace('{OUTPUT_PATH}', mbPaths.latestJson)
+        .replace('{TODOS_PATH}', mbPaths.todosJson);
+
+      // Spawn cron-style generation job
+      const child = spawn('node', [
+        DIST_ENTRY, 'cron', 'run', 'morning-brief',
+      ], {
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: BASE_DIR,
+        env: { ...process.env, CLEMENTINE_HOME: BASE_DIR },
+      });
+      child.unref();
+      res.json({ ok: true, message: 'Morning brief generation started' });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   app.get('/api/version', (_req, res) => {
@@ -2547,7 +2613,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       const systemCron = cronRuns['_system'] || [];
 
       // Build event log from all cron run files (today's entries + last N)
-      const events: Array<{ time: string; type: string; agent: string; detail: string }> = [];
+      const events: Array<{ time: string; type: string; agent: string; detail: string; toolName?: string }> = [];
       let runsToday = 0;
       const todayPrefix = localISO().slice(0, 10);
       if (existsSync(runsDir)) {
@@ -2638,6 +2704,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                   agent: entry.agent + (entry.unit ? ' (' + entry.unit + ')' : ''),
                   detail: (entry.type === 'start' ? '▶ ' : entry.type === 'done' ? '✓ ' : entry.type === 'error' ? '✖ ' : entry.type === 'tool' ? '  · ' : '')
                     + (entry.type === 'tool' ? (entry.detail || '') : (entry.trigger ? entry.trigger + ': ' : '') + (entry.detail || '')),
+                  ...(entry.toolName ? { toolName: entry.toolName } : {}),
                 });
               }
             } catch { /* skip bad line */ }
@@ -2665,25 +2732,31 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       // Sort newest first
       events.sort((a, b) => b.time.localeCompare(a.time));
 
-      // Build a set of agents that have "done" events, keyed by agent name
-      const agentDoneSet = new Set<string>();
+      // Build a set of agent+trigger pairs that have "done" events
+      // so we can suppress redundant "start" entries for the same conversation
+      const agentDoneTriggers = new Set<string>();
       for (const ev of events) {
         if (ev.type === 'ok' && ev.detail.startsWith('✓ ')) {
-          agentDoneSet.add(ev.agent);
+          // Extract trigger portion: "✓ DM from user: ..." → "DM from user"
+          const triggerMatch = ev.detail.match(/^✓\s+(.+?):\s/);
+          if (triggerMatch) {
+            agentDoneTriggers.add(ev.agent + '|' + triggerMatch[1]);
+          }
         }
       }
 
       // Deduplicate:
-      // 1. Remove "▶ start" entries if the same agent has ANY "done" entry (no time window)
-      // 2. Remove "▶ start" entries if the same agent has a live "⚡" entry (live supersedes logged start)
+      // 1. Remove "▶ start" entries if the same agent+trigger has a matching "done" entry
+      // 2. Remove "▶ start" entries if the same agent has a live "⚡" entry
       // 3. Standard key-based dedup for everything else
       const deduped: typeof events = [];
       const seen = new Set<string>();
       for (const ev of events) {
         const key = ev.agent + '|' + ev.time.slice(0, 16); // same agent, same minute
         if (ev.type === 'working' && ev.detail.startsWith('▶ ')) {
-          // Skip start entries if there's a matching done for this agent
-          if (agentDoneSet.has(ev.agent)) continue;
+          // Extract trigger from start entry: "▶ DM from user: ..." → "DM from user"
+          const startTrigger = ev.detail.match(/^▶\s+(.+?):\s/);
+          if (startTrigger && agentDoneTriggers.has(ev.agent + '|' + startTrigger[1])) continue;
           // Skip start entries if there's a live ⚡ entry for this agent
           if (liveAgents.has(ev.agent)) continue;
         }
@@ -4894,6 +4967,11 @@ function getDashboardHTML(token: string): string {
   <!-- Sidebar -->
   <nav class="sidebar">
     <div class="nav-section">
+      <a href="/morning-brief" target="_blank" class="nav-item" style="color:#f59e0b;text-decoration:none;display:flex;align-items:center;gap:6px">
+        <span class="nav-icon">☀️</span> Morning Brief
+      </a>
+    </div>
+    <div class="nav-section">
       <div class="nav-section-title">Overview</div>
       <div class="nav-item active" data-page="overview">
         <span class="nav-icon">&#9679;</span> Dashboard
@@ -7014,7 +7092,7 @@ async function refreshOpsBoard() {
       compEl.innerHTML = chtml;
     }
 
-    // ── Activity feed (live agent thinking/doing) ──
+    // ── Activity feed (live agent thinking/doing — newest at bottom, like a terminal) ──
     function timeAgoShort(ts) {
       if (!ts) return '';
       var ms = Date.now() - new Date(ts).getTime();
@@ -7026,8 +7104,20 @@ async function refreshOpsBoard() {
       if (h < 24) return h + 'h';
       return Math.floor(h / 24) + 'd';
     }
-    var typeColors2 = { ok: '#3fb950', error: '#f85149', working: '#58a6ff', queued: '#d29922', tool: '#7c8a99' };
-    var typeIcons = { ok: '\u2713', error: '\u2716', working: '\u25b6', queued: '\u25c6', tool: '\u2022' };
+    var typeColors2 = { ok: '#3fb950', error: '#f85149', working: '#58a6ff', queued: '#d29922', tool: '#79c0ff' };
+    var typeIcons = { ok: '\u2713', error: '\u2716', working: '\u25b6', queued: '\u25c6', tool: '\u2023' };
+    // Per-tool-type colors for activity feed
+    var toolColors = {
+      Read: '#79c0ff',     // blue — reading/inspecting
+      Write: '#d2a8ff',    // purple — creating files
+      Edit: '#f0883e',     // orange — modifying files
+      Bash: '#8b949e',     // gray — shell commands
+      Grep: '#7ee787',     // green — searching content
+      Glob: '#56d364',     // bright green — finding files
+      Agent: '#d29922',    // yellow — delegating
+      WebSearch: '#39d353', // teal-green — web search
+      WebFetch: '#39d353',  // teal-green — web fetch
+    };
 
     var evEl = document.getElementById('ops-board-events');
     if (evEl) {
@@ -7041,18 +7131,30 @@ async function refreshOpsBoard() {
           var ti = typeIcons[ev.type] || '\u00b7';
           var ago = timeAgoShort(ev.time);
           var evTime = ev.time ? new Date(ev.time) : null;
-          var evTs = evTime ? (String(evTime.getHours()).padStart(2, '0') + ':' + String(evTime.getMinutes()).padStart(2, '0')) : '';
-          // Highlight live "working" entries with a subtle pulse
-          var isCompletion = ev.detail && (ev.detail.indexOf('\u2713 Completed') === 0 || ev.detail.indexOf('\u2713 Completed') === 0);
-          var rowBg = isCompletion ? 'background:rgba(46,160,67,0.12);border-left:3px solid #3fb950;padding-left:3px'
-            : ev.type === 'tool' ? 'opacity:0.7;padding-left:16px'
-            : ev.type === 'working' ? 'background:rgba(88,166,255,0.06)' : '';
+          var evTs = evTime ? (String(evTime.getHours()).padStart(2, '0') + ':' + String(evTime.getMinutes()).padStart(2, '0') + ':' + String(evTime.getSeconds()).padStart(2, '0')) : '';
+          var isCompletion = ev.type === 'ok' && ev.detail && (ev.detail.indexOf('\u2713 Completed:') === 0 || ev.detail.indexOf('\u2713 Cancelled:') === 0 || ev.detail.indexOf('\u2716 Cancelled:') === 0);
+          var isLive = ev.type === 'working' && ev.detail && ev.detail.indexOf('\u26a1') === 0;
+          var isTool = ev.type === 'tool';
+          // Resolve tool-specific color
+          var evToolColor = isTool && ev.toolName ? (toolColors[ev.toolName] || '#8b949e') : null;
+          var borderColor = isCompletion ? '#3fb950'
+            : isLive ? '#58a6ff'
+            : evToolColor ? evToolColor
+            : '#transparent';
+          var rowBg = isCompletion ? 'background:rgba(46,160,67,0.18);border-left:3px solid #3fb950;padding-left:4px'
+            : isLive ? 'background:rgba(88,166,255,0.08);border-left:2px solid ' + borderColor + ';padding-left:4px'
+            : isTool ? 'border-left:2px solid ' + borderColor + ';padding-left:4px'
+            : ev.type === 'working' ? 'background:rgba(88,166,255,0.04)' : '';
+          // Completion rows: all text green. Tool steps: agent dimmer. Otherwise default.
+          var agentColor = isCompletion ? '#3fb950' : isTool ? '#6e7681' : '#c9d1d9';
+          var detailColor = isCompletion ? '#56d364' : isLive ? '#79c0ff' : evToolColor ? evToolColor : ev.type === 'working' ? '#79c0ff' : '#8b949e';
+          var tsColor = isCompletion ? '#2ea043' : '#484f58';
+          var iconColor = isCompletion ? '#3fb950' : (evToolColor || tc);
           html += '<div style="display:flex;gap:8px;padding:3px 6px;border-bottom:1px solid #0d1117;align-items:baseline;font-size:11px;' + rowBg + '">'
-            + '<span style="color:#484f58;min-width:34px;flex-shrink:0;font-family:monospace">' + esc(evTs) + '</span>'
-            + '<span style="color:#6e7681;min-width:26px;text-align:right;flex-shrink:0">' + esc(ago) + '</span>'
-            + '<span style="color:' + tc + ';min-width:14px;flex-shrink:0;text-align:center">' + ti + '</span>'
-            + '<span style="color:#c9d1d9;min-width:120px;max-width:160px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ev.agent) + '</span>'
-            + '<span style="color:' + (ev.type === 'working' ? '#79c0ff' : '#8b949e') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ev.detail || '') + '</span>'
+            + '<span style="color:' + tsColor + ';min-width:46px;flex-shrink:0;font-family:monospace;font-size:10px">' + esc(evTs) + '</span>'
+            + '<span style="color:' + iconColor + ';min-width:14px;flex-shrink:0;text-align:center">' + ti + '</span>'
+            + '<span style="color:' + agentColor + ';min-width:120px;max-width:160px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + esc(ev.agent) + '</span>'
+            + '<span style="color:' + detailColor + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ev.detail || '') + '</span>'
             + '</div>';
         }
         evEl.innerHTML = html;
