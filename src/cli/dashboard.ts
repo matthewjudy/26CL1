@@ -2669,18 +2669,20 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         }
 
         // Fall through to existing sources if no live activity
+        // Skip stale "idle" progress — only show progress when actively working
+        const activeProgress = progress && progress.phase && progress.phase.toLowerCase() !== 'idle' && progress.phase.toLowerCase() !== 'complete' && progress.phase.toLowerCase() !== 'waiting';
         if (!activity) {
           if (inProgressTasks.length > 0) {
-            if (progress) {
-              activity = progress.phase + ': ' + progress.detail;
+            if (activeProgress) {
+              activity = progress!.phase + ': ' + progress!.detail;
             } else {
               activity = shortTitle(inProgressTasks[0].task);
             }
           } else if (pendingTasks.length > 0) {
-            activity = 'Queued: ' + shortTitle(pendingTasks[0].task);
-          } else if (progress) {
-            // No active tasks but has progress data — show last known state
-            activity = progress.phase + ': ' + progress.detail;
+            const taskLabel = pendingTasks.length === 1
+              ? 'Queued: ' + shortTitle(pendingTasks[0].task)
+              : pendingTasks.length + ' tasks queued';
+            activity = taskLabel;
           } else if (latestCron) {
             const ago = Math.round((Date.now() - new Date(latestCron.lastRun).getTime()) / 60000);
             const label = humanCronLabel(latestCron.jobName);
