@@ -19,6 +19,7 @@ import type { AgentProfile } from '../types.js';
 import type { Gateway } from '../gateway/router.js';
 import { mdToSlack, sendChunkedSlack, SlackStreamingMessage } from './slack-utils.js';
 import { friendlyToolName } from './discord-utils.js';
+import { appendActivityLog } from './discord-agent-bot.js';
 
 const logger = pino({ name: 'clementine.slack-agent-bot' });
 
@@ -387,7 +388,17 @@ export class SlackAgentBotClient {
         },
         undefined, // model
         undefined, // maxTurns
-        async (toolName, toolInput) => { streamer.setToolStatus(friendlyToolName(toolName, toolInput)); },
+        async (toolName, toolInput) => {
+          const friendly = friendlyToolName(toolName, toolInput);
+          streamer.setToolStatus(friendly);
+          appendActivityLog({
+            agent: this.config.profile.name,
+            unit: this.config.profile.unit,
+            type: 'tool',
+            trigger: 'Slack msg',
+            detail: friendly,
+          });
+        },
       );
       await streamer.finalize(response);
     } catch (err) {

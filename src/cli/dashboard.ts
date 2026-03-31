@@ -2628,7 +2628,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                 const typeMap: Record<string, string> = {
                   start: 'working',
                   done: 'ok',
-                  tool: 'working',
+                  tool: 'tool',
                   error: 'error',
                   cron: 'ok',
                 };
@@ -2636,9 +2636,8 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                   time: entry.ts,
                   type: typeMap[entry.type] || 'ok',
                   agent: entry.agent + (entry.unit ? ' (' + entry.unit + ')' : ''),
-                  detail: (entry.type === 'start' ? '▶ ' : entry.type === 'done' ? '✓ ' : entry.type === 'error' ? '✖ ' : '')
-                    + (entry.trigger ? entry.trigger + ': ' : '')
-                    + (entry.detail || ''),
+                  detail: (entry.type === 'start' ? '▶ ' : entry.type === 'done' ? '✓ ' : entry.type === 'error' ? '✖ ' : entry.type === 'tool' ? '  · ' : '')
+                    + (entry.type === 'tool' ? (entry.detail || '') : (entry.trigger ? entry.trigger + ': ' : '') + (entry.detail || '')),
                 });
               }
             } catch { /* skip bad line */ }
@@ -7027,8 +7026,8 @@ async function refreshOpsBoard() {
       if (h < 24) return h + 'h';
       return Math.floor(h / 24) + 'd';
     }
-    var typeColors2 = { ok: '#3fb950', error: '#f85149', working: '#58a6ff', queued: '#d29922' };
-    var typeIcons = { ok: '\u2713', error: '\u2716', working: '\u25b6', queued: '\u25c6' };
+    var typeColors2 = { ok: '#3fb950', error: '#f85149', working: '#58a6ff', queued: '#d29922', tool: '#7c8a99' };
+    var typeIcons = { ok: '\u2713', error: '\u2716', working: '\u25b6', queued: '\u25c6', tool: '\u2022' };
 
     var evEl = document.getElementById('ops-board-events');
     if (evEl) {
@@ -7046,6 +7045,7 @@ async function refreshOpsBoard() {
           // Highlight live "working" entries with a subtle pulse
           var isCompletion = ev.detail && (ev.detail.indexOf('\u2713 Completed') === 0 || ev.detail.indexOf('\u2713 Completed') === 0);
           var rowBg = isCompletion ? 'background:rgba(46,160,67,0.12);border-left:3px solid #3fb950;padding-left:3px'
+            : ev.type === 'tool' ? 'opacity:0.7;padding-left:16px'
             : ev.type === 'working' ? 'background:rgba(88,166,255,0.06)' : '';
           html += '<div style="display:flex;gap:8px;padding:3px 6px;border-bottom:1px solid #0d1117;align-items:baseline;font-size:11px;' + rowBg + '">'
             + '<span style="color:#484f58;min-width:34px;flex-shrink:0;font-family:monospace">' + esc(evTs) + '</span>'

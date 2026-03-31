@@ -891,6 +891,14 @@ export class AgentBotClient {
           streamer.setToolStatus(friendly);
           // Update live activity with current tool
           this.activity.action = friendly;
+          // Log each tool step to activity feed for real-time dashboard visibility
+          appendActivityLog({
+            agent: this.config.profile.name,
+            unit: this.config.profile.unit,
+            type: 'tool',
+            trigger: triggerLabel,
+            detail: friendly,
+          });
         },
       );
       await streamer.finalize(response);

@@ -39,6 +39,7 @@ import {
   THINKING_INDICATOR,
   DISCORD_MSG_LIMIT,
 } from './discord-utils.js';
+import { appendActivityLog } from './discord-agent-bot.js';
 import {
   DISCORD_TOKEN,
   DISCORD_OWNER_ID,
@@ -1145,7 +1146,18 @@ export async function startDiscord(
         (t) => streamer.update(t),
         oneOffModel,
         oneOffMaxTurns,
-        (toolName, toolInput) => { streamer.setToolStatus(friendlyToolName(toolName, toolInput)); return Promise.resolve(); },
+        (toolName, toolInput) => {
+          const friendly = friendlyToolName(toolName, toolInput);
+          streamer.setToolStatus(friendly);
+          appendActivityLog({
+            agent: 'Clementine',
+            unit: '19Q1',
+            type: 'tool',
+            trigger: 'DM from ' + (message.author.displayName || message.author.username),
+            detail: friendly,
+          });
+          return Promise.resolve();
+        },
       );
       await streamer.finalize(response);
       updatePresence(sessionKey);

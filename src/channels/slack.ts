@@ -18,6 +18,7 @@ import type { Gateway } from '../gateway/router.js';
 import type { SlackBotManager } from './slack-bot-manager.js';
 import { mdToSlack, sendChunkedSlack, SlackStreamingMessage } from './slack-utils.js';
 import { friendlyToolName } from './discord-utils.js';
+import { appendActivityLog } from './discord-agent-bot.js';
 
 const logger = pino({ name: 'clementine.slack' });
 
@@ -158,7 +159,17 @@ export async function startSlack(
         (t) => streamer.update(t),
         undefined, // model
         undefined, // maxTurns
-        async (toolName, toolInput) => { streamer.setToolStatus(friendlyToolName(toolName, toolInput)); },
+        async (toolName, toolInput) => {
+          const friendly = friendlyToolName(toolName, toolInput);
+          streamer.setToolStatus(friendly);
+          appendActivityLog({
+            agent: 'Clementine',
+            unit: '19Q1',
+            type: 'tool',
+            trigger: 'Slack msg',
+            detail: friendly,
+          });
+        },
       );
       await streamer.finalize(response);
 
