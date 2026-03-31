@@ -229,24 +229,82 @@ function ensureDailyNote(dateStr?: string): string {
 
   if (!existsSync(notePath)) {
     mkdirSync(DAILY_NOTES_DIR, { recursive: true });
+    // Compute prev/next dates for navigation
+    const dt = new Date(d + 'T12:00:00');
+    const prev = new Date(dt.getTime() - 86400000);
+    const next = new Date(dt.getTime() + 86400000);
+    const fmt = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const nextDay = fmt(next);
+
     const content = `---
-type: daily-note
-date: "${d}"
+created: ${d} 00:00
+modified: ${d} 00:00
 tags:
   - daily
+first-proposals:
+sales-landed:
+sales-installed:
 ---
 
 # ${d}
 
-## Morning
+<< [[${fmt(prev)}]] | [[${fmt(next)}]] >>
 
-## Afternoon
 
-## Evening
+## Journal
+
+>[!idea]- Journaling Ideas
+> *Pick 1-2 to reflect on:*
+> - *What are you leaving behind?*
+> - *What are you avoiding or scared of?*
+> - *What conversation are you not having?*
+> - *What's on your start/stop list?*
+> - *What's your personal best right now?*
+> - *What's your business best right now?*
+> - *Are you living your core values today?*
+
+
+## Tasks
+
+\`\`\`tasks
+not done
+due before ${nextDay}
+\`\`\`
+
+## Log
+
+<!-- Both personal entries and Claude session logs go here -->
+
+## Notes
+
+\`\`\`dataviewjs
+const today = dv.current().file.name + "";
+function isToday(val) {
+  if (!val) return false;
+  try { if (val.toFormat("yyyy-MM-dd") === today) return true; } catch(e) {}
+  return (val + "").substring(0, 10) === today;
+}
+dv.list(
+  dv.pages('-"Daily" AND -"Meta" AND -"Templates"')
+    .where(p => p.file.name.includes(today) || isToday(p.date) || isToday(p.created))
+    .sort(p => p.file.name)
+    .file.link
+);
+
+const todayStart = new Date(today + "T00:00:00").getTime();
+const todayEnd = new Date(today + "T23:59:59").getTime();
+const mdExts = new Set(["md"]);
+const attachments = app.vault.getFiles()
+  .filter(f => !mdExts.has(f.extension) && f.name && !f.name.startsWith(".") && f.stat.mtime >= todayStart && f.stat.mtime <= todayEnd)
+  .sort((a, b) => a.name.localeCompare(b.name));
+if (attachments.length > 0) {
+  dv.header(4, "Attachments");
+  dv.list(attachments.map(f => \`[[\${f.name}]]\`));
+}
+\`\`\`
 
 ## Interactions
 
-## Summary
 `;
     writeFileSync(notePath, content, 'utf-8');
   }
@@ -1346,31 +1404,34 @@ server.tool(
 
 server.tool(
   'note_take',
-  "Quick capture a timestamped note to today's daily log.",
+  "Quick capture a timestamped note to today's daily log. Writes to the ## Log section.",
   {
     text: z.string().describe('Note text'),
   },
   async ({ text }) => {
-    const section = timeOfDaySection();
     const dailyPath = ensureDailyNote();
     let body = readFileSync(dailyPath, 'utf-8');
 
     const timestamp = nowTime();
-    const entry = `\n- **${timestamp}** — ${text}`;
+    const entry = `\n**${timestamp}** - ${text}`;
 
-    const escapedSection = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`(## ${escapedSection}.*?)(\\n## |$)`, 's');
-    const match = pattern.exec(body);
-    if (match) {
-      body = body.slice(0, match.index + match[1].length) + entry + body.slice(match.index + match[1].length);
+    const marker = '## Log';
+    const idx = body.indexOf(marker);
+    if (idx === -1) {
+      body += `\n\n${marker}\n${entry}\n`;
     } else {
-      body += `\n\n## ${section}${entry}`;
+      const afterMarker = idx + marker.length;
+      const nextNewline = body.indexOf('\n', afterMarker);
+      const searchFrom = nextNewline === -1 ? body.length : nextNewline + 1;
+      const nextSection = body.indexOf('\n## ', searchFrom);
+      const insertPoint = nextSection === -1 ? body.length : nextSection;
+      body = body.slice(0, insertPoint) + entry + '\n' + body.slice(insertPoint);
     }
 
     writeFileSync(dailyPath, body, 'utf-8');
     const rel = path.relative(VAULT_DIR, dailyPath);
     await incrementalSync(rel);
-    return textResult(`Noted in ${path.basename(dailyPath)} > ${section}`);
+    return textResult(`Noted in ${path.basename(dailyPath)} > Log`);
   },
 );
 

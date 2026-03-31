@@ -2181,6 +2181,19 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
       const trace: TraceEntry[] = [];
       const stream = query({ prompt, options: sdkOptions });
       const cronAgentSlug = sdkOptions.env?.CLEMENTINE_TEAM_AGENT || 'clementine';
+      // Resolve agent display name and unit for activity logging
+      let cronAgentName = cronAgentSlug === 'clementine' ? 'Clementine' : cronAgentSlug;
+      let cronAgentUnit = cronAgentSlug === 'clementine' ? '19Q1' : '';
+      try {
+        const agentMdPath = path.join(AGENTS_DIR, cronAgentSlug, 'agent.md');
+        if (fs.existsSync(agentMdPath)) {
+          const raw = fs.readFileSync(agentMdPath, 'utf-8');
+          const nameMatch = raw.match(/^name:\s*(.+)$/m);
+          const unitMatch = raw.match(/^unit:\s*(.+)$/m);
+          if (nameMatch) cronAgentName = nameMatch[1].trim().replace(/^["']|["']$/g, '');
+          if (unitMatch) cronAgentUnit = unitMatch[1].trim().replace(/^["']|["']$/g, '');
+        }
+      } catch { /* use defaults */ }
 
       for await (const message of stream) {
         if (message.type === 'assistant') {
@@ -2196,7 +2209,8 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
               }
               // Stream tool use to activity feed for real-time dashboard visibility
               appendActivityLog({
-                agent: cronAgentSlug,
+                agent: cronAgentName,
+                unit: cronAgentUnit,
                 type: 'tool',
                 trigger: jobName,
                 detail: humanizeToolUse(block.name, (block.input ?? {}) as Record<string, unknown>),

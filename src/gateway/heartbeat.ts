@@ -8,7 +8,7 @@
  * the NotificationDispatcher, which fans out to all active channels.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -83,32 +83,29 @@ function todayISO(): string {
 }
 
 /**
- * Append a line to today's daily note under ## Interactions.
- * Creates the section if it doesn't exist. Non-fatal — never throws.
+ * Append a line to today's daily note under ## Log.
+ * Inserts at the end of the Log section (before the next ## heading).
+ * Non-fatal — never throws.
  */
 function logToDailyNote(line: string): void {
   try {
     const notePath = path.join(DAILY_NOTES_DIR, `${todayISO()}.md`);
-    if (!existsSync(notePath)) return; // template hasn't created the note yet
+    if (!existsSync(notePath)) return;
 
     let content = readFileSync(notePath, 'utf-8');
-    const marker = '## Interactions';
+    const marker = '## Log';
     const idx = content.indexOf(marker);
     if (idx === -1) {
-      // No Interactions section — append one
-      content += `\n\n${marker}\n\n- ${line}`;
+      // No Log section — append one
+      content += `\n\n${marker}\n\n${line}`;
     } else {
-      // Find the end of the marker line and insert after it
+      // Find end of the Log section (next ## heading or EOF)
       const afterMarker = idx + marker.length;
       const nextNewline = content.indexOf('\n', afterMarker);
-      const insertAt = nextNewline === -1 ? content.length : nextNewline;
-      // Check if there's already content in this section
-      const nextSection = content.indexOf('\n## ', insertAt + 1);
-      const sectionEnd = nextSection === -1 ? content.length : nextSection;
-      const sectionContent = content.slice(insertAt, sectionEnd).trim();
-      // Insert at the end of the section (before next ## or EOF)
+      const searchFrom = nextNewline === -1 ? content.length : nextNewline + 1;
+      const nextSection = content.indexOf('\n## ', searchFrom);
       const insertPoint = nextSection === -1 ? content.length : nextSection;
-      content = content.slice(0, insertPoint) + `\n- ${line}` + content.slice(insertPoint);
+      content = content.slice(0, insertPoint) + `\n${line}\n` + content.slice(insertPoint);
     }
     writeFileSync(notePath, content);
   } catch {
@@ -261,10 +258,14 @@ export class HeartbeatScheduler {
       const timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
       if (response && !HeartbeatScheduler.isSilent(response)) {
         await this.dispatcher.send(`**[Heartbeat — ${timeStr}]**\n\n${response}`);
-        logToDailyNote(`**Heartbeat ${timeStr}**: ${response.slice(0, 100).replace(/\n/g, ' ')}`);
+        // Only log to daily note if the heartbeat found something actionable
+        const lower = response.toLowerCase();
+        const isActionable = /overdue|critical|urgent|escalat|blocked|lapsed|action needed|attention/i.test(response);
+        if (isActionable) {
+          logToDailyNote(`**${timeStr}** - Heartbeat: ${response.slice(0, 150).replace(/\n/g, ' ')}`);
+        }
       } else {
         logger.info(`Heartbeat silent at ${timeStr}`);
-        // Don't log "all clear" heartbeats to daily notes — they create noise
       }
     } catch (err) {
       logger.error({ err }, 'Heartbeat tick failed');
@@ -1144,10 +1145,36 @@ export class CronScheduler {
           this.runLog.append(entry);
           cronResult = { ok: true, preview: entry.outputPreview?.replace(/\*\*/g, '').split('\n')[0].slice(0, 100) || 'Completed' };
 
-          // Log to daily note so end-of-day summary has data to work with
-          const durationSec = Math.round(entry.durationMs / 1000);
-          const preview = response ? response.slice(0, 100).replace(/\n/g, ' ') : 'no output';
-          logToDailyNote(`**${job.name}** (${durationSec}s): ${preview}`);
+          // Only log to daily note and completed tasks if real output (not noise)
+          if (response && !CronScheduler.isCronNoise(response)) {
+            const durationSec = Math.round(entry.durationMs / 1000);
+            const now = new Date();
+            const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+            const preview = response.slice(0, 100).replace(/\n/g, ' ');
+            const label = job.name.replace(/-task-processor$/, ': Tasks').replace(/-/g, ' ').replace(/\b\w/g, (ch: string) => ch.toUpperCase());
+            logToDailyNote(`**${timeStr}** - ${label} (${durationSec}s): ${preview}`);
+
+            // Write completed task record so it shows in the dashboard
+            const agentSlugForTask = job.agentSlug || 'clementine';
+            try {
+              const completedDir = path.join(AGENTS_DIR, agentSlugForTask, 'tasks', 'completed');
+              if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+              const taskId = randomBytes(4).toString('hex');
+              const completedTask = {
+                id: taskId,
+                fromAgent: 'cron',
+                toAgent: agentSlugForTask,
+                task: label + ': ' + preview,
+                expectedOutput: '',
+                status: 'completed',
+                createdAt: localISO(),
+                updatedAt: localISO(),
+                completedAt: localISO(),
+                result: preview,
+              };
+              writeFileSync(path.join(completedDir, `${taskId}.json`), JSON.stringify(completedTask, null, 2));
+            } catch { /* non-fatal */ }
+          }
 
           // Fire dependent chained jobs (async, non-blocking)
           const dependents = this.jobs.filter(j => j.after === job.name && j.enabled && !this.disabledJobs.has(j.name));
@@ -1527,7 +1554,11 @@ export class CronScheduler {
           if (result && !CronScheduler.isCronNoise(result)) {
             this.dispatcher.send(`🎯 **Goal work: ${goal.title}**\n\n${result.slice(0, 1500)}`).catch(() => {});
           }
-          logToDailyNote(`**Goal work: ${goal.title}** — ${(result || 'completed').slice(0, 100).replace(/\n/g, ' ')}`);
+          if (result && !CronScheduler.isCronNoise(result)) {
+            const now = new Date();
+            const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+            logToDailyNote(`**${timeStr}** - Goal: ${goal.title} — ${result.slice(0, 100).replace(/\n/g, ' ')}`);
+          }
         }).catch((err) => {
           logger.error({ err, goalId: trigger.goalId }, 'Goal work session failed');
         });
@@ -1568,7 +1599,11 @@ export class CronScheduler {
       }
 
       const durationSec = Math.round((Date.now() - startedAt.getTime()) / 1000);
-      logToDailyNote(`**Workflow: ${name}** (${durationSec}s): ${(response || 'no output').slice(0, 100).replace(/\n/g, ' ')}`);
+      if (response && !CronScheduler.isCronNoise(response)) {
+        const now = new Date();
+        const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        logToDailyNote(`**${timeStr}** - Workflow: ${name} (${durationSec}s): ${response.slice(0, 100).replace(/\n/g, ' ')}`);
+      }
 
       return response;
     } catch (err) {
