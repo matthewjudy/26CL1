@@ -19,7 +19,7 @@ import type { AgentProfile } from '../types.js';
 import type { Gateway } from '../gateway/router.js';
 import { mdToSlack, sendChunkedSlack, SlackStreamingMessage } from './slack-utils.js';
 import { friendlyToolName } from './discord-utils.js';
-import { appendActivityLog } from './discord-agent-bot.js';
+import { appendActivityLog, writeConversationComplete } from './discord-agent-bot.js';
 
 const logger = pino({ name: 'clementine.slack-agent-bot' });
 
@@ -379,6 +379,11 @@ export class SlackAgentBotClient {
     const streamer = new SlackStreamingMessage(client, channel, threadTs);
     await streamer.start();
 
+    const triggerLabel = `Slack msg`;
+    const msgPreview = text.length > 80 ? text.slice(0, 77) + '...' : text;
+    const startTime = Date.now();
+    let toolCalls = 0;
+
     try {
       const response = await this.gateway.handleMessage(
         sessionKey,
@@ -389,19 +394,31 @@ export class SlackAgentBotClient {
         undefined, // model
         undefined, // maxTurns
         async (toolName, toolInput) => {
+          toolCalls++;
           const friendly = friendlyToolName(toolName, toolInput);
           streamer.setToolStatus(friendly);
           appendActivityLog({
             agent: this.config.profile.name,
             unit: this.config.profile.unit,
             type: 'tool',
-            trigger: 'Slack msg',
+            trigger: triggerLabel,
             detail: friendly,
             toolName,
           });
         },
       );
       await streamer.finalize(response);
+      const cleanResponse = response.replace(/\*\*/g, '').replace(/```[\s\S]*?```/g, '[code]');
+      const summaryLine = cleanResponse.split('\n').map((l: string) => l.trim()).find((l: string) => l.length > 0) || 'Completed';
+      const shortSummary = summaryLine.length > 120 ? summaryLine.slice(0, 117) + '...' : summaryLine;
+      if (toolCalls > 0) {
+        writeConversationComplete({
+          agentSlug: this.config.slug,
+          trigger: triggerLabel,
+          summary: shortSummary,
+          durationMs: Date.now() - startTime,
+        });
+      }
     } catch (err) {
       logger.error({ err, slug: this.config.slug }, 'Slack agent bot message handling error');
       await streamer.finalize(`Something went wrong: ${err}`);

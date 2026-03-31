@@ -2342,6 +2342,10 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
   // ── Ops Board — aggregated agent status ──────────────────────────────
   app.get('/api/ops-board', async (_req, res) => {
     try {
+      // Declared early to avoid TDZ issues — populated below after activity log is read
+      const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
+      const latestAgentActivity: Record<string, { detail: string; type: string; ts: string }> = {};
+
       const gw = await getGateway();
       const mgr = gw.getAgentManager();
       const all = mgr.listAll();
@@ -2402,12 +2406,12 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       }
 
       // Delegation queue per agent
-      const delegations: Record<string, Array<{ id: string; task: string; status: string; from: string; updatedAt: string; priority: number }>> = {};
+      const delegations: Record<string, Array<{ id: string; task: string; status: string; from: string; updatedAt: string; createdAt: string; priority: number }>> = {};
       if (VAULT_DIR) {
         const agentsDir = path.join(VAULT_DIR, 'Meta', 'Clementine', 'agents');
         if (existsSync(agentsDir)) {
           try {
-            for (const a of all) {
+            for (const a of [...all, { slug: 'clementine', name: 'Clementine', unit: '19Q1' }]) {
               const tasksDir = path.join(agentsDir, a.slug, 'tasks');
               if (existsSync(tasksDir)) {
                 const taskFiles = readdirSync(tasksDir).filter(f => f.endsWith('.json'));
@@ -2445,6 +2449,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                       task: task.task || '',
                       status: task.status || 'unknown',
                       from: task.fromAgent || '',
+                      createdAt: task.createdAt || '',
                       updatedAt: task.updatedAt || task.createdAt || '',
                       priority: task.priority ?? 0,
                     });
@@ -2508,6 +2513,43 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         }
       } catch { /* ignore */ }
 
+      // Running cron jobs per agent (from daemon status)
+      let runningJobsByAgent: Record<string, string[]> = {};
+      try {
+        const daemonPath = path.join(BASE_DIR, '.daemon-status.json');
+        if (existsSync(daemonPath)) {
+          const ds = JSON.parse(readFileSync(daemonPath, 'utf-8'));
+          runningJobsByAgent = ds.runningJobsByAgent || {};
+        }
+      } catch { /* ignore */ }
+
+      // ── Build latest activity per agent from activity log ──
+      // Used to show what each agent is actually doing in the agent table
+      if (existsSync(activityLogPath)) {
+        try {
+          const logContent = readFileSync(activityLogPath, 'utf-8');
+          const logLines = logContent.trim().split('\n').filter(Boolean).slice(-200);
+          const fiveMin = new Date(Date.now() - 5 * 60000).toISOString();
+          for (const line of logLines) {
+            try {
+              const entry = JSON.parse(line);
+              if (!entry.ts || entry.ts < fiveMin) continue;
+              const agentKey = entry.agent || '';
+              if (entry.type === 'tool' || entry.type === 'start' || entry.type === 'done') {
+                const existing = latestAgentActivity[agentKey];
+                if (!existing || entry.ts > existing.ts) {
+                  latestAgentActivity[agentKey] = {
+                    detail: entry.detail || '',
+                    type: entry.type,
+                    ts: entry.ts,
+                  };
+                }
+              }
+            } catch { /* skip */ }
+          }
+        } catch { /* ignore */ }
+      }
+
       // Build response
       const agents = all.map(a => {
         const bot = botStatuses[a.slug];
@@ -2515,6 +2557,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         const agentTasks = delegations[a.slug] || [];
         const pendingTasks = agentTasks.filter(t => t.status === 'pending' || t.status === 'in-progress');
         const latestCron = agentCron.sort((x, y) => y.lastRun.localeCompare(x.lastRun))[0] || null;
+        const agentRunningJobs = runningJobsByAgent[a.slug] || [];
 
         // Determine operational status
         let opStatus = 'OFFLINE';
@@ -2522,6 +2565,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         const inProgressTasks = agentTasks.filter(t => t.status === 'in-progress');
         const queuedTasks = agentTasks.filter(t => t.status === 'pending');
         if (botStatus === 'processing') {
+          opStatus = 'WORKING';
+        } else if (agentRunningJobs.length > 0) {
+          // Agent has active cron jobs running
           opStatus = 'WORKING';
         } else if (botStatus === 'online') {
           if (inProgressTasks.length > 0) {
@@ -2554,10 +2600,21 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         let activity = '';
         const botActivity = bot?.activity as { trigger?: string; action?: string; since?: string; lastSummary?: string; lastCompletedAt?: string } | undefined;
 
-        if (botStatus === 'processing' && botActivity?.trigger) {
-          // Agent is actively processing right now — show live context
+        // Check activity log for the most recent action by this agent
+        const agentLabel = a.name + (a.unit ? ' (' + a.unit + ')' : '');
+        const agentLatest = latestAgentActivity[agentLabel] || latestAgentActivity[a.name];
+
+        if (botStatus === 'processing' && agentLatest && agentLatest.type === 'tool') {
+          // Agent is actively processing — show the current tool step
+          activity = agentLatest.detail;
+        } else if (botStatus === 'processing' && botActivity?.trigger) {
+          // Fall back to bot activity context
           const action = botActivity.action || 'Processing...';
           activity = botActivity.trigger + ' → ' + action;
+        } else if (agentRunningJobs.length > 0) {
+          // Agent is executing cron job(s)
+          const jobLabels = agentRunningJobs.map(j => humanCronLabel(j));
+          activity = 'Running: ' + jobLabels.join(', ');
         } else if (botActivity?.lastSummary && botActivity?.lastCompletedAt) {
           // Agent just finished something recently (within 5 min) — show what they did
           const completedAge = Date.now() - new Date(botActivity.lastCompletedAt).getTime();
@@ -2681,7 +2738,6 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       }
 
       // ── Activity log — real-time agent thinking/doing events ──
-      const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
       if (existsSync(activityLogPath)) {
         try {
           const logContent = readFileSync(activityLogPath, 'utf-8');
@@ -2811,7 +2867,17 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         const exchangeAge = latestExchange ? (Date.now() - latestExchange) / 60000 : Infinity;
         if (exchangeAge < 10) {
           q1Status = 'WORKING';
-          q1Activity = 'Active session (' + totalExchanges + ' exchanges)';
+          // Show what Q1 is actually doing from the activity log, not just "Active session"
+          const q1Latest = latestAgentActivity['Clementine'] || latestAgentActivity['Clementine (19Q1)'];
+          if (q1Latest && q1Latest.type === 'tool') {
+            q1Activity = q1Latest.detail;
+          } else if (q1Latest && q1Latest.type === 'start') {
+            q1Activity = q1Latest.detail;
+          } else if (q1Latest && q1Latest.type === 'done') {
+            q1Activity = q1Latest.detail;
+          } else {
+            q1Activity = 'Active session (' + totalExchanges + ' exchanges)';
+          }
         } else if (q1Status === 'AVAILABLE' && !q1Activity) {
           // Show heartbeat watchlist or uptime when idle
           const d = hbState.details;
@@ -2887,7 +2953,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       const errors = visibleAgents.filter(a => a.opStatus === 'ERROR').length;
 
       // Collect active delegated tasks from vault (pending/in-progress only — completed are auto-archived)
-      const allPendingTasks: Array<{ agent: string; id: string; title: string; status: string; displayStatus: string; priority: number; age: string; elapsed: string; sortTime: number }> = [];
+      const allPendingTasks: Array<{ agent: string; from: string; id: string; title: string; status: string; displayStatus: string; priority: number; age: string; elapsed: string; createdAt: string; sortTime: number }> = [];
       const allDelegationEntries = Object.entries(delegations);
       for (const [agentSlug, tasks] of allDelegationEntries) {
         // Resolve agent display name
@@ -2900,7 +2966,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
           const firstLine = t.task.split('\n')[0].trim();
           const sentenceMatch = firstLine.match(/^(.+?[.!?])\s/);
           const raw = sentenceMatch ? sentenceMatch[1] : firstLine;
-          const title = raw.length > 60 ? raw.slice(0, 57) + '...' : raw;
+          const title = raw.length > 200 ? raw.slice(0, 197) + '...' : raw;
           const ageD = Math.floor(ageMs / 86400000);
           const ageH = Math.floor(ageMs / 3600000);
           const ageM = Math.floor(ageMs / 60000);
@@ -2914,7 +2980,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
             displayStatus = prog.phase.slice(0, 16);
           }
           const sortTime = t.updatedAt ? new Date(t.updatedAt).getTime() : 0;
-          allPendingTasks.push({ agent: agentName, id: t.id, title, status: t.status, displayStatus, priority: t.priority ?? 0, age, elapsed, sortTime });
+          allPendingTasks.push({ agent: agentName, from: t.from || '', id: t.id, title, status: t.status, displayStatus, priority: t.priority ?? 0, age, elapsed, createdAt: t.createdAt || t.updatedAt || '', sortTime });
         }
       }
       // Sort: pending/in-progress first, then completed/cancelled. Within each group, newest first.
@@ -2929,8 +2995,10 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       // Completed tasks — scan agents/*/tasks/completed/*.json
       const completedTasks: Array<{ agent: string; unit: string; id: string; title: string; status: string; result: string; completedAt: string; ago: string }> = [];
       const agentsDir2 = path.join(SYSTEM_DIR, 'agents');
+      // Include Q1 (clementine) in the scan — it's not in the agent manager's `all` list
+      const allWithQ1 = [...all, { slug: 'clementine', name: 'Clementine', unit: '19Q1' }];
       if (existsSync(agentsDir2)) {
-        for (const a of all) {
+        for (const a of allWithQ1) {
           const completedDir = path.join(agentsDir2, a.slug, 'tasks', 'completed');
           if (!existsSync(completedDir)) continue;
           try {
@@ -2939,7 +3007,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
               try {
                 const ct = JSON.parse(readFileSync(path.join(completedDir, cf), 'utf-8'));
                 const firstLine = (ct.task || '').split('\n')[0].trim();
-                const title = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+                const title = firstLine.length > 200 ? firstLine.slice(0, 197) + '...' : firstLine;
                 const result = ct.result ? (ct.result.length > 120 ? ct.result.slice(0, 117) + '...' : ct.result) : '';
                 const completedAt = ct.completedAt || ct.updatedAt || '';
                 const ageMs = completedAt ? Date.now() - new Date(completedAt).getTime() : 0;
@@ -6013,8 +6081,16 @@ async function refreshCron() {
       document.getElementById('panel-cron').innerHTML = '<div class="task-grid"><div class="task-card-add" onclick="openCreateCronModal()">+ New Task</div></div>';
       return;
     }
-    let html = '<div class="task-grid">';
-    for (const job of cronJobsData) {
+    // Split into task processors vs other scheduled tasks
+    var taskProcessors = cronJobsData.filter(function(j) { return j.name.endsWith('-task-processor'); });
+    var scheduledTasks = cronJobsData.filter(function(j) { return !j.name.endsWith('-task-processor'); });
+
+    let html = '';
+
+    // ── Scheduled Tasks section ──
+    html += '<h3 style="margin:0 0 12px;font-size:14px;color:var(--text-secondary)">Scheduled Tasks (' + scheduledTasks.length + ')</h3>';
+    html += '<div class="task-grid">';
+    for (const job of scheduledTasks) {
       var enabled = job.enabled !== false;
       var cardCls = 'task-card' + (enabled ? '' : ' disabled');
       // Check if running
@@ -6062,6 +6138,52 @@ async function refreshCron() {
     // Add "new task" card
     html += '<div class="task-card-add" onclick="openCreateCronModal()">+ New Task</div>';
     html += '</div>';
+
+    // ── Agent Task Processors section ──
+    if (taskProcessors.length > 0) {
+      html += '<h3 style="margin:24px 0 12px;font-size:14px;color:var(--text-secondary)">Agent Task Processors (' + taskProcessors.length + ')</h3>';
+      html += '<div class="task-grid">';
+      for (const job of taskProcessors) {
+        var tpEnabled = job.enabled !== false;
+        var tpCardCls = 'task-card' + (tpEnabled ? '' : ' disabled');
+        if (job.recentRuns && job.recentRuns.length > 0 && job.recentRuns[0].startedAt && !job.recentRuns[0].finishedAt) {
+          tpCardCls += ' running';
+        }
+        var tpDesc = describeCron(job.schedule || '');
+        var tpSchedHtml = tpDesc
+          ? esc(tpDesc) + ' <code>' + esc(job.schedule) + '</code>'
+          : '<code style="color:var(--accent)">' + esc(job.schedule) + '</code>';
+
+        var tpLastRunHtml = '<span style="color:var(--text-muted)">Never run</span>';
+        if (job.recentRuns && job.recentRuns.length > 0) {
+          var tpLr = job.recentRuns[0];
+          var tpStatusIcon = tpLr.status === 'ok' ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--red)">&#10007;</span>';
+          tpLastRunHtml = tpStatusIcon + ' ' + esc(tpLr.status) + ' · ' + timeAgo(tpLr.finishedAt || tpLr.startedAt);
+        }
+
+        var tpBadgesHtml = '';
+        tpBadgesHtml += '<span class="badge ' + (tpEnabled ? 'badge-green' : 'badge-gray') + '">' + (tpEnabled ? 'Enabled' : 'Disabled') + '</span>';
+
+        var tpSafeName = esc(job.name).replace(/'/g, '');
+
+        // Compact card for task processors — show agent name prominently
+        var tpAgentName = job.name.replace(/-task-processor$/, '').replace(/-/g, ' ').replace(/\b\w/g, function(ch) { return ch.toUpperCase(); });
+        html += '<div class="' + tpCardCls + '">'
+          + '<div class="task-card-header">'
+          + '<strong>' + esc(tpAgentName) + '</strong>'
+          + '<div class="toggle' + (tpEnabled ? ' on' : '') + '" onclick="apiPost(\\'/api/cron/' + encodeURIComponent(job.name) + '/toggle\\')"></div>'
+          + '</div>'
+          + '<div class="task-card-schedule">' + tpSchedHtml + '</div>'
+          + '<div class="task-card-status">' + tpLastRunHtml + '</div>'
+          + '<div class="task-card-badges">' + tpBadgesHtml + '</div>'
+          + '<div class="task-card-actions">'
+          + '<button class="btn-sm btn-success" onclick="apiPost(\\'/api/cron/run/' + encodeURIComponent(job.name) + '\\')">Run Now</button>'
+          + '<button class="btn-sm" data-trace-job="' + esc(job.name) + '">Trace</button>'
+          + '<button class="btn-sm" onclick="openEditCronModal(\\'' + tpSafeName + '\\')">Edit</button>'
+          + '</div></div>';
+      }
+      html += '</div>';
+    }
 
     // Fetch unleashed task status and append if any exist
     try {
@@ -7049,6 +7171,15 @@ async function refreshOpsBoard() {
     if (pendEl) {
       var statusColors2 = { 'WORKING': '#58a6ff', 'PENDING': '#d29922', 'DONE': '#3fb950', 'CANCELLED': '#6e7681' };
       var phtml = '<div style="color:#d29922;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">PENDING TASKS (' + pendingTasks.length + ')</div>';
+      // Header row
+      var phCss = 'color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;padding:2px 0';
+      phtml += '<div style="display:flex;gap:8px;' + phCss + ';border-bottom:1px solid #21262d;margin-bottom:2px">'
+        + '<span style="min-width:70px;flex-shrink:0">CREATED</span>'
+        + '<span style="min-width:50px;flex-shrink:0">ELAPSED</span>'
+        + '<span style="min-width:120px;flex-shrink:0">AGENT</span>'
+        + '<span style="min-width:70px;flex-shrink:0">STATUS</span>'
+        + '<span style="flex:1">TASK</span>'
+        + '</div>';
       if (pendingTasks.length === 0) {
         phtml += '<div style="color:#6e7681;font-size:11px;padding:2px 0">No pending tasks</div>';
       } else {
@@ -7056,11 +7187,15 @@ async function refreshOpsBoard() {
           var pt = pendingTasks[pi];
           var ds = pt.displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING');
           var sc = statusColors2[ds] || (ds === 'DONE' ? '#3fb950' : ds === 'CANCELLED' ? '#6e7681' : ds === 'PENDING' ? '#d29922' : '#58a6ff');
+          // Format created time
+          var ptCreated = pt.createdAt ? new Date(pt.createdAt) : null;
+          var ptCreatedStr = ptCreated ? (String(ptCreated.getMonth()+1) + '/' + String(ptCreated.getDate()) + ' ' + String(ptCreated.getHours()).padStart(2,'0') + ':' + String(ptCreated.getMinutes()).padStart(2,'0')) : '';
           phtml += '<div style="display:flex;gap:8px;padding:2px 0;font-size:11px;align-items:baseline">'
+            + '<span style="color:#6e7681;min-width:70px;flex-shrink:0;font-family:monospace;font-size:10px">' + esc(ptCreatedStr) + '</span>'
+            + '<span style="color:#484f58;min-width:50px;flex-shrink:0">' + esc(pt.elapsed || pt.age || '') + '</span>'
             + '<span style="color:#c9d1d9;min-width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.agent) + '</span>'
             + '<span style="color:' + sc + ';min-width:70px;font-weight:600;flex-shrink:0">' + esc(ds) + '</span>'
-            + '<span style="color:#484f58;min-width:44px;flex-shrink:0">' + esc(pt.elapsed || pt.age || '') + '</span>'
-            + '<span style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.title || '') + '</span>'
+            + '<span style="color:#8b949e;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.title || '') + '</span>'
             + '</div>';
         }
       }
@@ -7084,8 +7219,8 @@ async function refreshOpsBoard() {
             + '<span style="color:#6e7681;min-width:26px;text-align:right;flex-shrink:0">' + esc(ctAgo) + '</span>'
             + '<span style="color:#3fb950;min-width:14px;flex-shrink:0;text-align:center">\u2713</span>'
             + '<span style="color:#6e7681;min-width:36px;flex-shrink:0;font-size:10px">' + esc(ct.unit || '') + '</span>'
-            + '<span style="color:#c9d1d9;min-width:120px;max-width:140px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.agent) + '</span>'
-            + '<span style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.title || '') + '</span>'
+            + '<span style="color:#c9d1d9;min-width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.agent) + '</span>'
+            + '<span style="color:#8b949e;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.title || '') + '</span>'
             + '</div>';
         }
       }

@@ -32,7 +32,9 @@ import {
   type Interaction,
   type Message,
 } from 'discord.js';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { AGENTS_DIR, localISO } from '../config.js';
 import path from 'node:path';
 import pino from 'pino';
 import type { AgentProfile } from '../types.js';
@@ -119,6 +121,47 @@ export function appendActivityLog(entry: {
         }
       } catch { /* ignore */ }
     }
+  } catch { /* non-fatal */ }
+}
+
+const MARK_COMPLETE_FLAG_DIR = path.join(
+  process.env.CLEMENTINE_HOME || path.join(process.env.HOME || '', '.clementine'),
+  '.mark-complete',
+);
+
+/** Write a completed task record for a finished conversation exchange.
+ *  Only call when actual work was done (toolCalls > 0).
+ *  Skips if the agent already called mark_complete during this exchange. */
+export function writeConversationComplete(opts: {
+  agentSlug: string;
+  trigger: string;
+  summary: string;
+  durationMs: number;
+}) {
+  try {
+    // Check if mark_complete was already called — if so, skip the auto-generated entry
+    const flagPath = path.join(MARK_COMPLETE_FLAG_DIR, `${opts.agentSlug}.flag`);
+    if (existsSync(flagPath)) {
+      try { unlinkSync(flagPath); } catch { /* ignore */ }
+      return; // Agent wrote its own clean summary via mark_complete
+    }
+
+    const completedDir = path.join(AGENTS_DIR, opts.agentSlug, 'tasks', 'completed');
+    if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+    const id = randomBytes(4).toString('hex');
+    const task = {
+      id,
+      fromAgent: 'conversation',
+      toAgent: opts.agentSlug,
+      task: opts.trigger + ': ' + opts.summary,
+      expectedOutput: '',
+      status: 'completed',
+      createdAt: localISO(),
+      updatedAt: localISO(),
+      completedAt: localISO(),
+      result: opts.summary,
+    };
+    writeFileSync(path.join(completedDir, `${id}.json`), JSON.stringify(task, null, 2));
   } catch { /* non-fatal */ }
 }
 
@@ -871,6 +914,7 @@ export class AgentBotClient {
       since: new Date().toISOString(),
     };
     const startTime = Date.now();
+    let toolCalls = 0;
     appendActivityLog({
       agent: this.config.profile.name,
       unit: this.config.profile.unit,
@@ -888,6 +932,7 @@ export class AgentBotClient {
         undefined, // model
         undefined, // maxTurns
         async (toolName: string, toolInput: Record<string, unknown>) => {
+          toolCalls++;
           const friendly = friendlyToolName(toolName, toolInput);
           streamer.setToolStatus(friendly);
           // Update live activity with current tool
@@ -918,6 +963,15 @@ export class AgentBotClient {
         detail: shortSummary,
         durationMs: Date.now() - startTime,
       });
+      // Record as completed task on dashboard if actual work was done
+      if (toolCalls > 0) {
+        writeConversationComplete({
+          agentSlug: this.config.slug,
+          trigger: triggerLabel,
+          summary: shortSummary,
+          durationMs: Date.now() - startTime,
+        });
+      }
     } catch (err) {
       logger.error({ err, slug: this.config.slug }, 'Agent bot message handling error');
       await streamer.finalize(`Something went wrong: ${sanitizeResponse(String(err))}`);

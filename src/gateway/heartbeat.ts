@@ -46,6 +46,22 @@ import type { CronJobDefinition, CronRunEntry, HeartbeatState, SelfImproveConfig
 import type { NotificationDispatcher } from './notifications.js';
 import type { Gateway } from './router.js';
 import { scanner } from '../security/scanner.js';
+
+// ── Activity log helper for cron lifecycle events ─────────────────────
+const ACTIVITY_LOG_PATH = path.join(BASE_DIR, '.activity-log.jsonl');
+function logCronActivity(entry: {
+  agent: string;
+  unit?: string;
+  type: 'start' | 'done' | 'error';
+  trigger: string;
+  detail: string;
+  durationMs?: number;
+}) {
+  try {
+    const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + '\n';
+    appendFileSync(ACTIVITY_LOG_PATH, line);
+  } catch { /* non-fatal */ }
+}
 import { parseAllWorkflows as parseAllWorkflowsSync } from '../agent/workflow-runner.js';
 import { SelfImproveLoop } from '../agent/self-improve.js';
 
@@ -767,6 +783,7 @@ export class CronScheduler {
   private disabledJobs = new Set<string>();
   private scheduledTasks = new Map<string, cron.ScheduledTask>();
   private runningJobs = new Set<string>();
+  private runningJobAgents = new Map<string, string>(); // jobName → agentSlug
   private completedJobs = new Map<string, number>(); // jobName → completion timestamp
   private watching = false;
   readonly runLog: CronRunLog;
@@ -814,8 +831,11 @@ export class CronScheduler {
     // Wire up push notifications for unleashed task completions
     this.gateway.setUnleashedCompleteCallback((jobName, result) => {
       this.completedJobs.set(jobName, Date.now());
-      if (result && result !== '__NOTHING__') {
-        this.dispatcher.send(`✅ Unleashed task **${jobName}** completed:\n\n${result.slice(0, 1500)}`).catch(() => {});
+      if (result && !CronScheduler.isCronNoise(result)) {
+        const cleanResult = result.replace(/__NOTHING__/g, '').trim();
+        if (cleanResult) {
+          this.dispatcher.send(`✅ Unleashed task **${jobName}** completed:\n\n${cleanResult.slice(0, 1500)}`).catch(() => {});
+        }
       }
     });
 
@@ -1007,8 +1027,46 @@ export class CronScheduler {
       this.completedJobs.delete(job.name);
     }
 
+    // Skip task processors when the agent has no pending/in-progress tasks
+    // This avoids burning API tokens just to hear "no tasks" every 10 minutes
+    if (job.name.endsWith('-task-processor') && job.agentSlug) {
+      try {
+        const tasksDir = path.join(AGENTS_DIR, job.agentSlug, 'tasks');
+        if (existsSync(tasksDir)) {
+          const taskFiles = readdirSync(tasksDir).filter(f => f.endsWith('.json'));
+          if (taskFiles.length === 0) {
+            return; // No pending tasks — skip silently
+          }
+        } else {
+          return; // No tasks directory — skip
+        }
+      } catch { /* on error, let the job run normally */ }
+    }
+
     this.runningJobs.add(job.name);
+    if (job.agentSlug) this.runningJobAgents.set(job.name, job.agentSlug);
     this.emitStatusChange();
+
+    // Resolve agent display name for activity logging
+    let agentName = 'Clementine';
+    let agentUnit = '19Q1';
+    if (job.agentSlug) {
+      try {
+        const profile = this.gateway.getAgentManager().get(job.agentSlug);
+        if (profile) { agentName = profile.name; agentUnit = profile.unit || ''; }
+      } catch { /* fall back to slug */ agentName = job.agentSlug; agentUnit = ''; }
+    }
+    const cronStartTime = Date.now();
+    let cronResult: { ok: boolean; preview: string; error?: string } = { ok: true, preview: '' };
+
+    // Log cron start to activity feed
+    logCronActivity({
+      agent: agentName,
+      unit: agentUnit,
+      type: 'start',
+      trigger: `cron: ${job.name}`,
+      detail: job.prompt.slice(0, 80),
+    });
 
     try {
       logger.info(`Running cron job: ${job.name}${job.agentSlug ? ` (agent: ${job.agentSlug})` : ''}`);
@@ -1057,29 +1115,34 @@ export class CronScheduler {
           };
 
           if (response && !CronScheduler.isCronNoise(response)) {
-            const result = await this.dispatcher.send(response);
-            if (!result.delivered) {
-              entry.deliveryFailed = true;
-              entry.deliveryError = Object.values(result.channelErrors).join('; ').slice(0, 300);
-              // Preserve more output when delivery fails so it's recoverable
-              entry.outputPreview = response.slice(0, 2000);
-              logger.warn({ job: job.name, errors: result.channelErrors }, 'Cron output not delivered to any channel');
-            } else if (Object.keys(result.channelErrors).length > 0) {
-              // Partial success — some channels failed. Log so broken channels are visible.
-              entry.deliveryError = `partial: ${Object.entries(result.channelErrors).map(([ch, e]) => `${ch}: ${e}`).join('; ').slice(0, 300)}`;
-              logger.warn({ job: job.name, errors: result.channelErrors }, 'Cron output delivered but some channels failed');
-            }
-            // Inject into owner's DM session so follow-up conversation has context
-            if (DISCORD_OWNER_ID && DISCORD_OWNER_ID !== '0') {
-              this.gateway.injectContext(
-                `discord:user:${DISCORD_OWNER_ID}`,
-                `[Scheduled cron: ${job.name}]`,
-                response,
-              );
+            // Strip any residual __NOTHING__ sentinel before dispatching
+            const cleanedResponse = response.replace(/__NOTHING__/g, '').trim();
+            if (cleanedResponse) {
+              const result = await this.dispatcher.send(cleanedResponse);
+              if (!result.delivered) {
+                entry.deliveryFailed = true;
+                entry.deliveryError = Object.values(result.channelErrors).join('; ').slice(0, 300);
+                // Preserve more output when delivery fails so it's recoverable
+                entry.outputPreview = cleanedResponse.slice(0, 2000);
+                logger.warn({ job: job.name, errors: result.channelErrors }, 'Cron output not delivered to any channel');
+              } else if (Object.keys(result.channelErrors).length > 0) {
+                // Partial success — some channels failed. Log so broken channels are visible.
+                entry.deliveryError = `partial: ${Object.entries(result.channelErrors).map(([ch, e]) => `${ch}: ${e}`).join('; ').slice(0, 300)}`;
+                logger.warn({ job: job.name, errors: result.channelErrors }, 'Cron output delivered but some channels failed');
+              }
+              // Inject into owner's DM session so follow-up conversation has context
+              if (DISCORD_OWNER_ID && DISCORD_OWNER_ID !== '0') {
+                this.gateway.injectContext(
+                  `discord:user:${DISCORD_OWNER_ID}`,
+                  `[Scheduled cron: ${job.name}]`,
+                  cleanedResponse,
+                );
+              }
             }
           }
 
           this.runLog.append(entry);
+          cronResult = { ok: true, preview: entry.outputPreview?.replace(/\*\*/g, '').split('\n')[0].slice(0, 100) || 'Completed' };
 
           // Log to daily note so end-of-day summary has data to work with
           const durationSec = Math.round(entry.durationMs / 1000);
@@ -1113,6 +1176,7 @@ export class CronScheduler {
 
           // Permanent error — stop immediately
           if (errorType === 'permanent') {
+            cronResult = { ok: false, preview: '', error: String(err).slice(0, 120) };
             logger.error({ err, job: job.name }, `Cron job '${job.name}' permanent error — not retrying`);
             await this.dispatcher.send(`${job.name} failed: ${err}`);
             return;
@@ -1127,6 +1191,7 @@ export class CronScheduler {
             );
             await sleep(backoffMs);
           } else {
+            cronResult = { ok: false, preview: '', error: String(err).slice(0, 120) };
             logger.error({ err, job: job.name }, `Cron job '${job.name}' failed after ${attempt} attempt(s)`);
             await this.dispatcher.send(CronScheduler.formatCronError(job.name, err));
           }
@@ -1134,7 +1199,19 @@ export class CronScheduler {
       }
     } finally {
       this.runningJobs.delete(job.name);
+      this.runningJobAgents.delete(job.name);
       this.emitStatusChange();
+
+      // Log cron completion to activity feed
+      const cronDuration = Date.now() - cronStartTime;
+      logCronActivity({
+        agent: agentName,
+        unit: agentUnit,
+        type: cronResult.ok ? 'done' : 'error',
+        trigger: `cron: ${job.name}`,
+        detail: cronResult.ok ? (cronResult.preview || 'Completed') : (cronResult.error || 'Unknown error'),
+        durationMs: cronDuration,
+      });
     }
   }
 
@@ -1160,6 +1237,9 @@ export class CronScheduler {
   private static isCronNoise(response: string): boolean {
     const trimmed = response.trim();
     if (trimmed === '__NOTHING__') return true;
+    // If __NOTHING__ appears anywhere, the agent intended "don't dispatch."
+    // Any text alongside it is reasoning/work output, not user-facing content.
+    if (trimmed.includes('__NOTHING__')) return true;
 
     // Only treat as noise if the response is short — avoids filtering out
     // substantive responses that happen to start with "No updates, but..."
@@ -1229,6 +1309,16 @@ export class CronScheduler {
 
   getRunningJobs(): string[] {
     return [...this.runningJobs];
+  }
+
+  /** Returns a map of agentSlug → array of running job names for that agent. */
+  getRunningJobsByAgent(): Record<string, string[]> {
+    const byAgent: Record<string, string[]> = {};
+    for (const [jobName, agentSlug] of this.runningJobAgents) {
+      if (!byAgent[agentSlug]) byAgent[agentSlug] = [];
+      byAgent[agentSlug].push(jobName);
+    }
+    return byAgent;
   }
 
   getRunningWorkflowNames(): string[] {

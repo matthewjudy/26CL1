@@ -98,6 +98,7 @@ export const RESOURCES_DIR = path.join(VAULT_DIR, getEnv('VAULT_RESOURCES_DIR', 
 export const PROFILES_DIR = path.join(SYSTEM_DIR, 'profiles');
 export const AGENTS_DIR = path.join(SYSTEM_DIR, 'agents');
 
+export const VAULT_CLAUDE_MD = path.join(VAULT_DIR, 'CLAUDE.md');
 export const SOUL_FILE = path.join(SYSTEM_DIR, 'SOUL.md');
 export const AGENTS_FILE = path.join(SYSTEM_DIR, 'AGENTS.md');
 export const MEMORY_FILE = path.join(SYSTEM_DIR, 'MEMORY.md');

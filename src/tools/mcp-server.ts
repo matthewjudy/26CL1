@@ -8,7 +8,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -292,6 +292,31 @@ async function incrementalSync(relPath: string, agentSlug?: string): Promise<voi
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
+}
+
+/** Simple edit distance (Levenshtein) for fuzzy name matching. */
+function editDist(a: string, b: string): number {
+  if (a === b) return 0;
+  const la = a.length, lb = b.length;
+  if (la === 0) return lb;
+  if (lb === 0) return la;
+  // Quick bail for very different lengths
+  if (Math.abs(la - lb) > 3) return Math.abs(la - lb);
+  const dp: number[][] = [];
+  for (let i = 0; i <= la; i++) {
+    dp[i] = [i];
+    for (let j = 1; j <= lb; j++) {
+      dp[i][j] = i === 0 ? j : 0;
+    }
+  }
+  for (let i = 1; i <= la; i++) {
+    for (let j = 1; j <= lb; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i][j - 1], dp[i - 1][j]);
+    }
+  }
+  return dp[la][lb];
 }
 
 const EXTERNAL_CONTENT_TAG =
@@ -755,6 +780,69 @@ server.tool(
 
     if (existsSync(notePath)) {
       return textResult(`Already exists: ${relPath}`);
+    }
+
+    // Fuzzy name matching for person and organization notes
+    if (note_type === 'person' || note_type === 'organization') {
+      try {
+        const existing = readdirSync(folder)
+          .filter(f => f.endsWith('.md'))
+          .map(f => f.replace(/\.md$/, ''));
+        const titleLower = safe.toLowerCase();
+        const titleParts = titleLower.split(/[\s\-]+/).filter(p => p.length > 1);
+
+        // Check for close matches: same last name, similar first name, or parenthetical variants
+        const matches: string[] = [];
+        for (const name of existing) {
+          const nameLower = name.toLowerCase();
+          const nameParts = nameLower.split(/[\s\-]+/).filter(p => p.length > 1);
+
+          // Exact case-insensitive match
+          if (nameLower === titleLower) { matches.push(name); continue; }
+
+          // Shared last word (likely surname) + similar first word
+          if (titleParts.length >= 2 && nameParts.length >= 2) {
+            const titleLast = titleParts[titleParts.length - 1];
+            const nameLast = nameParts[nameParts.length - 1];
+            // Levenshtein-like: allow 1-2 char difference for typos
+            if (editDist(titleLast, nameLast) <= 2 && editDist(titleParts[0], nameParts[0]) <= 2) {
+              matches.push(name);
+              continue;
+            }
+          }
+
+          // First name match + either contains company or partial last name
+          if (titleParts.length >= 1 && nameParts.length >= 1 &&
+              editDist(titleParts[0], nameParts[0]) <= 1) {
+            // "Robyn (Convertros)" vs "Robyn Masirovits" — first name matches
+            if (titleParts.length === 1 || title.includes('(')) {
+              matches.push(name);
+              continue;
+            }
+          }
+
+          // Check against aliases in the file frontmatter
+          try {
+            const fileContent = readFileSync(path.join(folder, `${name}.md`), 'utf-8');
+            const aliasMatch = fileContent.match(/^aliases:\s*\n((?:\s+-\s+.+\n)*)/m);
+            if (aliasMatch) {
+              const aliases = aliasMatch[1].match(/- (.+)/g)?.map(a => a.replace(/^- /, '').trim().toLowerCase()) || [];
+              if (aliases.some(a => editDist(a, titleLower) <= 2)) {
+                matches.push(name);
+                continue;
+              }
+            }
+          } catch { /* skip unreadable files */ }
+        }
+
+        if (matches.length > 0) {
+          return textResult(
+            `BLOCKED: Similar ${note_type} note(s) already exist: ${matches.map(m => `[[${m}]]`).join(', ')}. ` +
+            `Use note_take to update the existing note instead of creating a duplicate. ` +
+            `If this is genuinely a different ${note_type}, use a more specific title.`
+          );
+        }
+      } catch { /* fuzzy check failure is non-fatal — proceed with creation */ }
     }
 
     // Dedup check for note content
@@ -1636,6 +1724,23 @@ async function graphPost(endpoint: string, body: unknown): Promise<any> {
   return res.json();
 }
 
+async function graphPatch(endpoint: string, body: unknown): Promise<any> {
+  const token = await getGraphToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0${endpoint}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph API PATCH ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
 // ── 17. outlook_inbox ───────────────────────────────────────────────────
 
 server.tool(
@@ -1725,38 +1830,57 @@ server.tool(
 
 server.tool(
   'outlook_draft',
-  'Create a draft email in the Outlook Drafts folder (does NOT send). Use this for cron jobs that prepare emails for owner review.',
+  'Create a draft email in the Outlook Drafts folder (does NOT send). Always creates reply-all drafts when reply_to_message_id is provided. Do NOT sign the owner\'s name — Outlook handles signatures automatically.',
   {
     to: z.string().describe('Recipient email address'),
     subject: z.string().describe('Email subject line'),
-    body: z.string().describe('Email body (plain text)'),
+    body: z.string().describe('Email body (plain text — do NOT include a signature or sign-off name)'),
     cc: z.string().optional().describe('CC email address (optional)'),
-    reply_to_message_id: z.string().optional().describe('Message ID to reply to. If provided, creates a threaded reply draft instead of a new email. The To and Subject are auto-filled from the original message.'),
+    reply_to_message_id: z.string().optional().describe('Message ID to reply to. If provided, creates a threaded reply-all draft. The To, CC, and Subject are auto-filled from the original message.'),
   },
   async ({ to, subject, body, cc, reply_to_message_id }) => {
     const userEmail = env['MS_USER_EMAIL'] ?? '';
 
+    // Convert plain text body to Aptos 11pt HTML
+    const FONT_STYLE = 'font-family:Aptos,Calibri,sans-serif;font-size:11pt';
+    const htmlBody = body.split('\n').map((l: string) =>
+      l.trim() ? `<p style="${FONT_STYLE}">${l}</p>` : `<p style="${FONT_STYLE}"><br></p>`
+    ).join('\n');
+
     if (reply_to_message_id) {
-      // Create a reply draft — Graph auto-fills To, Subject, and conversation threading
+      // Create a reply-all draft — Graph auto-fills To, CC, Subject, and conversation threading
       const replyDraft = await graphPost(
-        `/users/${userEmail}/messages/${reply_to_message_id}/createReply`,
-        { message: { body: { contentType: 'Text', content: body } } }
+        `/users/${userEmail}/messages/${reply_to_message_id}/createReplyAll`,
+        {}
       );
-      const replyTo = replyDraft.toRecipients?.[0]?.emailAddress?.address ?? to;
+      // Prepend our reply before the existing quoted thread
+      const existingBody = replyDraft.body?.content ?? '';
+      let newBody: string;
+      const bodyTagMatch = existingBody.match(/<body[^>]*>/i);
+      if (bodyTagMatch) {
+        const insertPos = existingBody.indexOf(bodyTagMatch[0]) + bodyTagMatch[0].length;
+        newBody = existingBody.slice(0, insertPos) + '\n' + htmlBody + '\n' + existingBody.slice(insertPos);
+      } else {
+        newBody = htmlBody + '\n' + existingBody;
+      }
+      await graphPatch(
+        `/users/${userEmail}/messages/${replyDraft.id}`,
+        { body: { contentType: 'HTML', content: newBody } }
+      );
+      const replyTo = replyDraft.toRecipients?.map((r: any) => r.emailAddress?.address).join(', ') ?? to;
       const replySubject = replyDraft.subject ?? subject;
-      return textResult(`Reply draft created: "${replySubject}" to ${replyTo} (ID: ${replyDraft.id?.slice(0, 20)}...)`);
+      return textResult(`Reply-all draft created: "${replySubject}" to ${replyTo} (ID: ${replyDraft.id?.slice(0, 20)}...)`);
     }
 
-    // New draft (not a reply)
+    // New draft (not a reply) — still uses Aptos 11pt HTML
     const message: any = {
       subject,
-      body: { contentType: 'Text', content: body },
+      body: { contentType: 'HTML', content: htmlBody },
       toRecipients: [{ emailAddress: { address: to } }],
     };
     if (cc) {
       message.ccRecipients = [{ emailAddress: { address: cc } }];
     }
-    // POST to /messages (not /sendMail) creates a draft
     const draft = await graphPost(`/users/${userEmail}/messages`, message);
     return textResult(`Draft created: "${subject}" to ${to} (ID: ${draft.id?.slice(0, 20)}...)`);
   },
@@ -1766,18 +1890,51 @@ server.tool(
 
 server.tool(
   'outlook_send',
-  'Send an email from your Outlook account. REQUIRES owner approval (Tier 3).',
+  'Send an email from your Outlook account. Use reply_to_message_id to send as a threaded reply-all. Do NOT sign the owner\'s name. REQUIRES owner approval (Tier 3).',
   {
     to: z.string().describe('Recipient email address'),
     subject: z.string().describe('Email subject line'),
-    body: z.string().describe('Email body (plain text)'),
+    body: z.string().describe('Email body (plain text — do NOT include a signature or sign-off name)'),
     cc: z.string().optional().describe('CC email address (optional)'),
+    reply_to_message_id: z.string().optional().describe('Message ID to reply to. If provided, sends as a threaded reply-all instead of a new email.'),
   },
-  async ({ to, subject, body, cc }) => {
+  async ({ to, subject, body, cc, reply_to_message_id }) => {
     const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const FONT_STYLE = 'font-family:Aptos,Calibri,sans-serif;font-size:11pt';
+    const htmlBody = body.split('\n').map((l: string) =>
+      l.trim() ? `<p style="${FONT_STYLE}">${l}</p>` : `<p style="${FONT_STYLE}"><br></p>`
+    ).join('\n');
+
+    if (reply_to_message_id) {
+      // Create a reply-all, update body, then send
+      const replyDraft = await graphPost(
+        `/users/${userEmail}/messages/${reply_to_message_id}/createReplyAll`,
+        {}
+      );
+      const existingBody = replyDraft.body?.content ?? '';
+      let newBody: string;
+      const bodyTagMatch = existingBody.match(/<body[^>]*>/i);
+      if (bodyTagMatch) {
+        const insertPos = existingBody.indexOf(bodyTagMatch[0]) + bodyTagMatch[0].length;
+        newBody = existingBody.slice(0, insertPos) + '\n' + htmlBody + '\n' + existingBody.slice(insertPos);
+      } else {
+        newBody = htmlBody + '\n' + existingBody;
+      }
+      const updatePayload: any = { body: { contentType: 'HTML', content: newBody } };
+      if (cc) {
+        updatePayload.ccRecipients = [{ emailAddress: { address: cc } }];
+      }
+      await graphPatch(`/users/${userEmail}/messages/${replyDraft.id}`, updatePayload);
+      await graphPost(`/users/${userEmail}/messages/${replyDraft.id}/send`, {});
+      const replyTo = replyDraft.toRecipients?.map((r: any) => r.emailAddress?.address).join(', ') ?? to;
+      const replySubject = replyDraft.subject ?? subject;
+      return textResult(`Reply-all sent to ${replyTo}: "${replySubject}"`);
+    }
+
+    // New email (not a reply) — still uses Aptos 11pt HTML
     const message: any = {
       subject,
-      body: { contentType: 'Text', content: body },
+      body: { contentType: 'HTML', content: htmlBody },
       toRecipients: [{ emailAddress: { address: to } }],
     };
     if (cc) {
@@ -4067,6 +4224,79 @@ server.tool(
 );
 
 server.tool(
+  'delegate_task_now',
+  'Delegate a task to a team agent AND immediately trigger their task processor so they start working right away. Use this instead of delegate_task when the work should begin immediately, not wait for the next cron cycle.',
+  {
+    to_agent: z.string().describe('Slug of the target agent (e.g., "ross-barrett", "olivia-pope", "davis-park")'),
+    task: z.string().describe('What needs to be done — be specific and include file paths, context, and acceptance criteria'),
+    expected_output: z.string().describe('What the result should look like when done'),
+  },
+  async ({ to_agent, task, expected_output }) => {
+    // Resolve agent slug (support short names like "ross" → "ross-barrett")
+    let resolvedSlug = to_agent;
+    if (!existsSync(path.join(DELEGATIONS_BASE, to_agent))) {
+      // Try to find by prefix match
+      try {
+        const allDirs = readdirSync(DELEGATIONS_BASE, { withFileTypes: true })
+          .filter(d => d.isDirectory())
+          .map(d => d.name);
+        const match = allDirs.find(d => d.startsWith(to_agent) || d.split('-')[0] === to_agent);
+        if (match) resolvedSlug = match;
+      } catch { /* use as-is */ }
+    }
+
+    const tasksDir = path.join(DELEGATIONS_BASE, resolvedSlug, 'tasks');
+    if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
+
+    const id = randomBytes(4).toString('hex');
+    const callerSlug = process.env.CLEMENTINE_TEAM_AGENT || 'clementine';
+    const delegation = {
+      id,
+      fromAgent: callerSlug,
+      toAgent: resolvedSlug,
+      task,
+      expectedOutput: expected_output,
+      status: 'pending' as const,
+      createdAt: localISO(),
+      updatedAt: localISO(),
+    };
+
+    writeFileSync(path.join(tasksDir, `${id}.json`), JSON.stringify(delegation, null, 2));
+
+    // Log to activity feed
+    const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
+    const activityEntry = {
+      ts: new Date().toISOString(),
+      type: 'start' as const,
+      agent: callerSlug === 'clementine' ? 'Clementine' : callerSlug,
+      unit: callerSlug === 'clementine' ? '19Q1' : '',
+      trigger: 'delegation',
+      detail: `Delegated to ${resolvedSlug}: ${task.slice(0, 80)}`,
+    };
+    appendFileSync(activityLogPath, JSON.stringify(activityEntry) + '\n');
+
+    // Immediately trigger the agent's task processor in the background
+    const taskProcessorName = `${resolvedSlug}-task-processor`;
+    try {
+      const nodeExec = process.execPath;
+      const cliScript = path.join(path.dirname(path.dirname(__filename)), 'cli', 'index.js');
+      const child = spawn(nodeExec, [cliScript, 'cron', 'run', taskProcessorName], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: BASE_DIR,
+        env: { ...process.env, CLEMENTINE_HOME: BASE_DIR },
+      });
+      child.unref();
+      logger.info({ delegationId: id, from: callerSlug, to: resolvedSlug, taskProcessor: taskProcessorName }, 'Task delegated with immediate dispatch');
+    } catch (err) {
+      logger.warn({ err, taskProcessor: taskProcessorName }, 'Immediate dispatch failed — task will be picked up on next cron run');
+    }
+
+    return textResult(`Task delegated to ${resolvedSlug} (ID: ${id}) — they're starting now.\nTask: ${task.slice(0, 100)}`);
+  },
+);
+
+server.tool(
   'check_delegation',
   'Check the status of a delegated task or list all delegated tasks for an agent.',
   {
@@ -4117,6 +4347,150 @@ server.tool(
     }
 
     return textResult('Provide either an "id" to check a specific delegation or "agent" to list all delegations for an agent.');
+  },
+);
+
+// ── Log Context ─────────────────────────────────────────────────────────
+
+server.tool(
+  'log_context',
+  "Log a conversation or task summary to today's daily note and record it as a completed task on the ops board. Use when the user asks to 'log context', 'capture this session', or 'log what we did'.",
+  {
+    title: z.string().describe('Brief title for the log entry (e.g., "Ops board improvements")'),
+    topic: z.string().describe('Main subject or task'),
+    summary: z.string().describe('1-2 sentence overview of what happened'),
+    decisions: z.string().optional().describe('Key decisions or choices made'),
+    progress: z.string().describe('What was accomplished'),
+    next_steps: z.string().optional().describe('What is pending or next'),
+    files: z.array(z.string()).optional().describe('Files or notes created/modified (use wiki-link names)'),
+  },
+  async ({ title, topic, summary, decisions, progress, next_steps, files }) => {
+    const callerSlug = process.env.CLEMENTINE_TEAM_AGENT || 'clementine';
+    const time = nowTime();
+
+    // ── 1. Write structured log entry to daily note ──
+    const dailyPath = ensureDailyNote();
+    let body = readFileSync(dailyPath, 'utf-8');
+
+    const fileLinks = files?.length ? files.map(f => f.startsWith('[[') ? f : `[[${f}]]`).join(', ') : '';
+    const logLines = [
+      `**${time}** - ${title}`,
+      `- **Topic:** ${topic}`,
+      `- **Summary:** ${summary}`,
+    ];
+    if (decisions) logLines.push(`- **Decisions:** ${decisions}`);
+    logLines.push(`- **Progress:** ${progress}`);
+    if (next_steps) logLines.push(`- **Next:** ${next_steps}`);
+    if (fileLinks) logLines.push(`- **Files:** ${fileLinks}`);
+    const logEntry = logLines.join('\n');
+
+    // Find or create ## Log section and insert chronologically
+    const logSectionMatch = body.match(/^## Log\s*$/m);
+    if (logSectionMatch && logSectionMatch.index != null) {
+      // Find the end of the Log section (next ## or EOF)
+      const sectionStart = logSectionMatch.index + logSectionMatch[0].length;
+      const nextSection = body.slice(sectionStart).match(/\n## /);
+      const sectionEnd = nextSection ? sectionStart + nextSection.index! : body.length;
+      const sectionContent = body.slice(sectionStart, sectionEnd);
+
+      // Parse existing entries by **HH:MM** and insert chronologically
+      const entries: Array<{ time: string; text: string }> = [];
+      const entryPattern = /\n(\*\*\d{2}:\d{2}\*\*[\s\S]*?)(?=\n\*\*\d{2}:\d{2}\*\*|$)/g;
+      let m;
+      while ((m = entryPattern.exec(sectionContent)) !== null) {
+        const timeMatch = m[1].match(/^\*\*(\d{2}:\d{2})\*\*/);
+        entries.push({ time: timeMatch ? timeMatch[1] : '99:99', text: m[1] });
+      }
+      entries.push({ time, text: logEntry });
+      entries.sort((a, b) => a.time.localeCompare(b.time));
+
+      // Non-entry content (preamble/comments) at top of section
+      const preamble = sectionContent.replace(/\n\*\*\d{2}:\d{2}\*\*[\s\S]*$/, '');
+      const rebuilt = preamble + '\n' + entries.map(e => e.text).join('\n\n') + '\n';
+      body = body.slice(0, sectionStart) + rebuilt + body.slice(sectionEnd);
+    } else {
+      // No ## Log section — append one
+      body += `\n\n## Log\n\n${logEntry}\n`;
+    }
+
+    writeFileSync(dailyPath, body, 'utf-8');
+    const rel = path.relative(VAULT_DIR, dailyPath);
+    await incrementalSync(rel);
+
+    // ── 2. Create completed task record for the dashboard ──
+    const agentSlug = callerSlug;
+    const completedDir = path.join(DELEGATIONS_BASE, agentSlug, 'tasks', 'completed');
+    if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+
+    const taskId = randomBytes(4).toString('hex');
+    const completedTask = {
+      id: taskId,
+      fromAgent: callerSlug,
+      toAgent: agentSlug,
+      task: title + ': ' + summary,
+      expectedOutput: 'Context logged to daily note',
+      status: 'completed',
+      createdAt: localISO(),
+      updatedAt: localISO(),
+      completedAt: localISO(),
+      result: `Logged to ${todayStr()}.md at ${time}. ${progress}`,
+    };
+    writeFileSync(path.join(completedDir, `${taskId}.json`), JSON.stringify(completedTask, null, 2));
+
+    // ── 3. Write activity log entry for real-time dashboard visibility ──
+    const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
+    const activityEntry = {
+      ts: new Date().toISOString(),
+      type: 'done',
+      agent: callerSlug === 'clementine' ? 'Clementine' : callerSlug,
+      unit: callerSlug === 'clementine' ? '19Q1' : '',
+      trigger: 'log-context',
+      detail: '\u2713 Completed: ' + title,
+    };
+    appendFileSync(activityLogPath, JSON.stringify(activityEntry) + '\n');
+
+    logger.info({ taskId, agent: callerSlug, title }, 'Context logged to daily note and dashboard');
+    return textResult(`Context logged:\n- Daily note: ${todayStr()}.md > ## Log at ${time}\n- Dashboard: completed task ${taskId}\n- Title: ${title}`);
+  },
+);
+
+// ── Mark Complete ───────────────────────────────────────────────────────
+
+const MARK_COMPLETE_DIR = path.join(BASE_DIR, '.mark-complete');
+
+server.tool(
+  'mark_complete',
+  'Record a clean one-line summary of work you just finished. Call this at the end of any substantive task — creating notes, drafting emails, researching, editing files, etc. The summary should be action-oriented and specific (e.g., "Created Meeting Note: 2026-03-31 Ad-hoc - Chris Degenhardt", "Drafted reply to Harvey Tuck re: QBR scheduling", "Researched Georgia EV tax credits and updated vault note").',
+  {
+    summary: z.string().describe('Clean, action-oriented one-liner describing what was done'),
+  },
+  async ({ summary }) => {
+    const callerSlug = process.env.CLEMENTINE_TEAM_AGENT || 'clementine';
+
+    // Write completed task JSON
+    const completedDir = path.join(DELEGATIONS_BASE, callerSlug, 'tasks', 'completed');
+    if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+    const id = randomBytes(4).toString('hex');
+    const task = {
+      id,
+      fromAgent: 'conversation',
+      toAgent: callerSlug,
+      task: summary,
+      expectedOutput: '',
+      status: 'completed',
+      createdAt: localISO(),
+      updatedAt: localISO(),
+      completedAt: localISO(),
+      result: summary,
+    };
+    writeFileSync(path.join(completedDir, `${id}.json`), JSON.stringify(task, null, 2));
+
+    // Write flag so the auto-fallback in the message handler skips its own write
+    if (!existsSync(MARK_COMPLETE_DIR)) mkdirSync(MARK_COMPLETE_DIR, { recursive: true });
+    writeFileSync(path.join(MARK_COMPLETE_DIR, `${callerSlug}.flag`), id);
+
+    logger.info({ id, agent: callerSlug, summary }, 'Marked complete');
+    return textResult(`Recorded: ${summary}`);
   },
 );
 

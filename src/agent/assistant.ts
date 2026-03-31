@@ -30,6 +30,7 @@ import {
   VAULT_DIR,
   SYSTEM_DIR,
   DAILY_NOTES_DIR,
+  VAULT_CLAUDE_MD,
   SOUL_FILE,
   AGENTS_FILE,
   MEMORY_FILE,
@@ -171,7 +172,7 @@ const AUTO_MEMORY_PROMPT = `You are a memory extraction agent. Your ONLY job is 
 
 ## What to extract:
 - **Facts about ${OWNER}** — preferences, opinions, decisions, personal details → update_memory in "About ${OWNER}" section
-- **People mentioned** — names, relationships, context → create or update person notes in People/
+- **People mentioned** — names, relationships, context → BEFORE creating a Person note, ALWAYS use memory_search to check if the person already exists (search their name, partial name, and company). If they exist, update the existing note with note_take instead of creating a new one. Only use note_create for genuinely new people not already in the vault. When creating, use the person's FULL NAME as the title (never "FirstName (Company)" format). Include organization, role, and any contact info in the note body.
 - **Projects/work** — project names, status updates, decisions → update relevant project notes
 - **Tasks** — anything ${OWNER} asked to be done later → task_add
 - **Preferences** — tools, workflows, foods, styles, etc. → update_memory in "Preferences" section
@@ -355,7 +356,10 @@ function extractDeliverable(trace: TraceEntry[]): string {
     if (trace[i].type === 'text') {
       const text = trace[i].content.trim();
       if (text === '__NOTHING__') return '';
-      if (text.length > 0) return text;
+      // Strip __NOTHING__ sentinel if embedded in a larger response
+      const cleaned = text.replace(/__NOTHING__/g, '').trim();
+      if (cleaned.length === 0) return '';
+      if (text.length > 0) return cleaned;
     }
   }
 
@@ -505,6 +509,7 @@ export class PersonalAssistant {
   }
 
   private initPromptWatchers(): void {
+    this.promptCache.watch(VAULT_CLAUDE_MD);
     this.promptCache.watch(SOUL_FILE);
     this.promptCache.watch(AGENTS_FILE);
     this.promptCache.watch(MEMORY_FILE);
@@ -644,6 +649,13 @@ export class PersonalAssistant {
     if (soulEntry) {
       // Autonomous runs only need identity, not full personality guidance
       parts.push(isAutonomous ? soulEntry.content.slice(0, 1500) : soulEntry.content);
+    }
+
+    // Vault CLAUDE.md — filing rules, property reference, conventions, skills
+    // Skip for autonomous runs to save context (cron jobs don't need vault conventions)
+    if (!isAutonomous) {
+      const claudeMdEntry = this.promptCache.get(VAULT_CLAUDE_MD);
+      if (claudeMdEntry) parts.push(claudeMdEntry.content);
     }
 
     if (profile?.systemPromptBody) {

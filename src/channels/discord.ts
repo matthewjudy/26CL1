@@ -39,7 +39,7 @@ import {
   THINKING_INDICATOR,
   DISCORD_MSG_LIMIT,
 } from './discord-utils.js';
-import { appendActivityLog } from './discord-agent-bot.js';
+import { appendActivityLog, writeConversationComplete } from './discord-agent-bot.js';
 import {
   DISCORD_TOKEN,
   DISCORD_OWNER_ID,
@@ -1144,6 +1144,7 @@ export async function startDiscord(
       : `Channel msg from ${message.author.displayName || message.author.username}`;
     const msgPreview = text.length > 80 ? text.slice(0, 77) + '...' : text;
     const startTime = Date.now();
+    let toolCalls = 0;
     appendActivityLog({
       agent: 'Clementine',
       unit: '19Q1',
@@ -1160,6 +1161,7 @@ export async function startDiscord(
         oneOffModel,
         oneOffMaxTurns,
         (toolName, toolInput) => {
+          toolCalls++;
           const friendly = friendlyToolName(toolName, toolInput);
           streamer.setToolStatus(friendly);
           appendActivityLog({
@@ -1187,6 +1189,15 @@ export async function startDiscord(
         detail: shortSummary,
         durationMs: Date.now() - startTime,
       });
+      // Record as completed task on dashboard if actual work was done
+      if (toolCalls > 0) {
+        writeConversationComplete({
+          agentSlug: 'clementine',
+          trigger: triggerLabel,
+          summary: shortSummary,
+          durationMs: Date.now() - startTime,
+        });
+      }
 
       // Track bot message for feedback reactions
       if (streamer.messageId) {

@@ -98,68 +98,205 @@ export function getMorningBriefHTML(token: string): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MJ's Morning Brief</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            navy: '#1a2744',
+            'navy-light': '#243356',
+          }
+        }
+      }
+    }
+  </script>
   <style>
-    :root { --navy: #1a2744; }
+    :root { --navy: #1a2744; --navy-light: #243356; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .section-header { @apply text-lg font-bold pb-1 mb-4 border-b-2; }
-    .story-card { @apply shadow-md rounded-lg p-4 mb-4 bg-white border border-gray-100; }
-    .pill-link { @apply inline-flex items-center px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 no-underline transition-colors; }
-    .todo-item { @apply flex items-start gap-2 py-2 border-b border-gray-100; }
-    .todo-cb { @apply mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 cursor-pointer; }
-    details summary { cursor: pointer; }
+
+    /* Card styles */
+    .brief-card {
+      @apply bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden;
+      transition: box-shadow 0.2s ease, transform 0.15s ease;
+    }
+    .brief-card:hover { @apply shadow-md; }
+    .brief-section { @apply mb-6; }
+    .section-label {
+      @apply text-xs font-semibold uppercase tracking-widest mb-3 flex items-center gap-2;
+    }
+    .section-label::after {
+      content: '';
+      @apply flex-1 h-px bg-gray-200;
+    }
+
+    /* Story cards */
+    .story-card {
+      @apply bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-5 mb-4;
+      transition: box-shadow 0.2s ease, transform 0.15s ease;
+    }
+    .story-card:hover { @apply shadow-md; transform: translateY(-1px); }
+
+    /* Pill links */
+    .pill-link {
+      @apply inline-flex items-center px-3 py-1 text-xs font-medium rounded-full no-underline transition-colors;
+    }
+    .pill-blue { @apply bg-blue-50 text-blue-700 hover:bg-blue-100; }
+    .pill-red { @apply bg-red-50 text-red-700 hover:bg-red-100; }
+    .pill-gray { @apply bg-gray-100 text-gray-600 hover:bg-gray-200; }
+
+    /* Timeline */
+    .timeline-item {
+      @apply relative pl-6 pb-4 border-l-2 border-green-200 ml-2;
+    }
+    .timeline-item:last-child { @apply border-l-transparent pb-0; }
+    .timeline-dot {
+      @apply absolute -left-[7px] top-1 w-3 h-3 rounded-full bg-green-500 border-2 border-white;
+    }
+
+    /* Email action card */
+    .email-action-card {
+      @apply bg-white rounded-lg border p-3 sm:p-4 mb-3 transition-shadow;
+    }
+    .email-action-card:hover { @apply shadow-sm; }
+    .email-urgent { @apply border-red-300 bg-red-50/30; }
+    .urgent-badge {
+      @apply inline-block px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-red-100 text-red-700;
+    }
+
+    /* Todo */
+    .todo-item { @apply flex items-start gap-3 py-2.5 border-b border-gray-100; }
+    .todo-cb { @apply mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 cursor-pointer accent-blue-600; }
+
+    /* Collapsible */
+    details summary { cursor: pointer; list-style: none; }
     details summary::-webkit-details-marker { display: none; }
-    details summary::before { content: '▸ '; font-size: 0.8em; }
-    details[open] summary::before { content: '▾ '; }
-    .status-line span { @apply block; }
-    .empty-msg { @apply text-gray-400 text-sm italic py-2; }
-    .gen-banner { @apply bg-amber-50 border border-amber-200 rounded-lg p-4 text-center text-amber-800; }
+    details summary .chevron { transition: transform 0.2s ease; display: inline-block; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+
+    /* IDS tabs */
+    .ids-tab {
+      @apply px-4 py-2 text-sm font-medium rounded-t-lg cursor-pointer transition-colors;
+    }
+    .ids-tab-active { @apply bg-white text-indigo-700 border border-b-0 border-gray-200; }
+    .ids-tab-inactive { @apply bg-gray-50 text-gray-500 hover:text-gray-700 hover:bg-gray-100; }
+    .ids-panel { @apply bg-white border border-gray-200 rounded-b-lg rounded-tr-lg p-4; }
+    .stale-marker {
+      @apply inline-block ml-1 px-1.5 py-0 text-[10px] font-medium uppercase tracking-wider rounded bg-amber-100 text-amber-700;
+    }
+
+    /* Weather */
+    .weather-widget {
+      @apply flex items-center gap-4 bg-white/10 backdrop-blur rounded-lg px-4 py-2 text-white;
+    }
+    .weather-temp { @apply text-2xl font-light; }
+    .weather-detail { @apply text-xs text-gray-300; }
+
+    /* Generating state */
+    .gen-banner { @apply bg-amber-50 border border-amber-200 rounded-xl p-6 text-center text-amber-800; }
     .generating-pulse { animation: pulse 2s ease-in-out infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    .empty-msg { @apply text-gray-400 text-sm italic py-3; }
 
     /* Print stylesheet */
     @media print {
       .no-print { display: none !important; }
+      body { color: black !important; background: white !important; font-size: 11pt; }
+      .brief-card, .story-card, .email-action-card, .ids-panel {
+        box-shadow: none !important; border: 1px solid #ccc !important;
+        break-inside: avoid;
+      }
       details { display: block !important; }
-      details > summary { display: none !important; }
+      details[open] > summary { display: none !important; }
       details > *:not(summary) { display: block !important; }
-      .story-card { box-shadow: none !important; border: 1px solid #ddd !important; }
-      body { color: black !important; background: white !important; }
-      .bg-\\[\\#1a2744\\] { background: white !important; color: black !important; border-bottom: 2px solid black; }
-      .section-header { color: black !important; }
-      section { break-inside: avoid; }
-      @page { margin: 1in; }
+      details:not([open]) > *:not(summary) { display: block !important; }
+      #header-bar {
+        position: static !important;
+        background: white !important;
+        color: black !important;
+        border-bottom: 3px solid black;
+      }
+      #header-bar * { color: black !important; }
+      #weather-section { display: none !important; }
+      .section-label { color: black !important; }
+      .section-label::after { background: #999 !important; }
+      section { break-inside: avoid; page-break-inside: avoid; }
+      @page { margin: 0.75in; }
       .pill-link { border: 1px solid #999; background: none !important; color: black !important; }
-      #header-bar::before { content: "MJ's Morning Brief — " attr(data-date); font-weight: bold; }
+      .timeline-item { border-left-color: #999 !important; }
+      .timeline-dot { background: #666 !important; }
+      #print-header {
+        display: block !important;
+        text-align: center;
+        font-size: 14pt;
+        font-weight: bold;
+        margin-bottom: 12pt;
+        padding-bottom: 8pt;
+        border-bottom: 2px solid black;
+      }
+      .email-urgent { background: none !important; border-color: #999 !important; }
+      .urgent-badge { background: none !important; border: 1px solid #999; color: black !important; }
+      .ids-tab-bar { display: none !important; }
+      .ids-panel-container > div { display: block !important; }
+      .ids-panel { border: none !important; padding-left: 0 !important; }
+      footer { break-before: avoid; }
     }
   </style>
 </head>
-<body class="bg-gray-50 text-gray-900">
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+
+  <!-- Print-only header -->
+  <div id="print-header" style="display:none;"></div>
 
   <!-- Header -->
-  <div id="header-bar" class="bg-[#1a2744] text-white sticky top-0 z-50 shadow-lg">
-    <div class="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
-      <div>
-        <h1 class="text-xl font-bold tracking-tight">MJ's Morning Brief</h1>
-        <p class="text-sm text-gray-300" id="brief-date">Loading...</p>
-      </div>
-      <div class="flex gap-2 no-print">
-        <button onclick="regenerateBrief()" id="regen-btn"
-          class="bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-3 py-1.5 rounded text-sm font-medium transition-colors">
-          ↻ Regenerate
-        </button>
+  <div id="header-bar" class="bg-navy text-white sticky top-0 z-50 shadow-lg">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 py-4">
+      <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+        <div class="flex-1">
+          <h1 class="text-2xl sm:text-3xl font-bold tracking-tight" id="brief-title">Morning Brief</h1>
+          <p class="text-sm text-gray-300 mt-1" id="brief-date">Loading...</p>
+        </div>
+        <div id="weather-section" class="hidden">
+          <div class="weather-widget">
+            <div>
+              <span class="weather-temp" id="weather-temp">--</span>
+            </div>
+            <div>
+              <p class="text-sm font-medium" id="weather-condition">--</p>
+              <p class="weather-detail" id="weather-range">--</p>
+            </div>
+          </div>
+        </div>
+        <div class="flex gap-2 no-print self-start sm:self-center">
+          <button onclick="window.print()" class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">
+            Print
+          </button>
+          <button onclick="regenerateBrief()" id="regen-btn"
+            class="bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors">
+            Regenerate
+          </button>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- Content -->
-  <div class="max-w-4xl mx-auto px-4 py-6 space-y-8" id="content">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-8" id="content">
     <div id="loading" class="gen-banner">Loading morning brief...</div>
   </div>
+
+  <!-- Footer -->
+  <footer id="brief-footer" class="hidden border-t border-gray-200 bg-white mt-8">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 py-4">
+      <div id="footer-stats" class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400 justify-center"></div>
+    </div>
+  </footer>
 
   <script>
     var TOKEN = ${JSON.stringify(token)};
     var briefData = null;
     var todosData = { items: [] };
+    var activeIdsTab = 'executive';
 
     function apiFetch(path, opts) {
       opts = opts || {};
@@ -170,7 +307,7 @@ export function getMorningBriefHTML(token: string): string {
     function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
     function fmtDate(iso) {
       if (!iso) return '';
-      var d = new Date(iso);
+      var d = new Date(iso + 'T12:00:00');
       return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     }
     function timeAgo(iso) {
@@ -181,6 +318,26 @@ export function getMorningBriefHTML(token: string): string {
       var h = Math.floor(m / 60);
       if (h < 24) return h + 'h ago';
       return Math.floor(h / 24) + 'd ago';
+    }
+
+    // ── Weather ────────────────────────────
+    function loadWeather() {
+      fetch('https://wttr.in/30092?format=j1')
+        .then(function(r) { if (!r.ok) throw new Error(); return r.json(); })
+        .then(function(data) {
+          var cur = data.current_condition && data.current_condition[0];
+          var today = data.weather && data.weather[0];
+          if (!cur) return;
+          var tempF = cur.temp_F || cur.temp_C;
+          var condition = (cur.weatherDesc && cur.weatherDesc[0] && cur.weatherDesc[0].value) || '';
+          var hi = today ? (today.maxtempF || today.maxtempC) : '';
+          var lo = today ? (today.mintempF || today.mintempC) : '';
+          document.getElementById('weather-temp').textContent = tempF + 'F';
+          document.getElementById('weather-condition').textContent = condition;
+          document.getElementById('weather-range').textContent = hi && lo ? 'H ' + hi + 'F / L ' + lo + 'F' : '';
+          document.getElementById('weather-section').classList.remove('hidden');
+        })
+        .catch(function() { /* hide weather gracefully */ });
     }
 
     // ── Load Data ──────────────────────────
@@ -219,227 +376,324 @@ export function getMorningBriefHTML(token: string): string {
       var d = briefData;
       if (!d) return;
       var s = d.sections;
+      var dateStr = fmtDate(d.date);
 
-      document.getElementById('brief-date').textContent = fmtDate(d.date) + ' · Generated ' + timeAgo(d.generated);
+      document.getElementById('brief-title').textContent = dateStr || 'Morning Brief';
+      document.getElementById('brief-date').textContent = 'Generated ' + timeAgo(d.generated);
       document.getElementById('header-bar').setAttribute('data-date', d.date);
+
+      // Print header
+      var ph = document.getElementById('print-header');
+      if (ph) ph.textContent = 'MJ\\x27s Morning Brief - ' + (dateStr || d.date);
 
       var html = '';
 
-      // Section A — Top Stories
-      html += sectionStart('A', 'Top Stories', 'border-blue-600');
+      // ── Top Stories ──────────────────
+      html += '<section class="brief-section">';
+      html += '<div class="section-label text-blue-600">Top Stories</div>';
       if (s.topStories && s.topStories.length) {
+        html += '<div class="grid gap-4 sm:grid-cols-1 lg:grid-cols-2">';
         for (var i = 0; i < s.topStories.length; i++) {
           var st = s.topStories[i];
           html += '<div class="story-card">'
-            + '<h3 class="font-semibold text-base mb-1">' + esc(st.title) + '</h3>'
-            + '<p class="text-sm text-gray-700 mb-2">' + esc(st.summary) + '</p>'
-            + '<p class="text-sm text-blue-800 mb-1"><strong>Why it matters:</strong> ' + esc(st.whyItMatters) + '</p>'
-            + (st.suggestedAction ? '<p class="text-sm text-green-800"><strong>Action:</strong> ' + esc(st.suggestedAction) + '</p>' : '')
-            + '<div class="mt-2 flex gap-2 items-center">'
-            + (st.url ? '<a href="' + esc(st.url) + '" target="_blank" class="pill-link">Source ↗</a>' : '')
+            + '<h3 class="font-semibold text-base text-gray-900 mb-2">' + esc(st.title) + '</h3>'
+            + '<p class="text-sm text-gray-600 mb-3">' + esc(st.summary) + '</p>'
+            + '<div class="bg-blue-50 rounded-lg p-3 mb-3">'
+            + '<p class="text-sm text-blue-900"><span class="font-semibold">Why it matters:</span> ' + esc(st.whyItMatters) + '</p>'
+            + '</div>'
+            + (st.suggestedAction ? '<div class="bg-green-50 rounded-lg p-3 mb-3"><p class="text-sm text-green-900"><span class="font-semibold">Suggested action:</span> ' + esc(st.suggestedAction) + '</p></div>' : '')
+            + '<div class="flex items-center justify-between mt-2">'
             + '<span class="text-xs text-gray-400">' + esc(st.source) + '</span>'
+            + (st.url ? '<a href="' + esc(st.url) + '" target="_blank" class="pill-link pill-blue">Read source</a>' : '')
             + '</div></div>';
         }
+        html += '</div>';
       } else { html += emptyMsg('No major developments today.'); }
-      html += sectionEnd();
+      html += '</section>';
 
-      // Section B — On My Radar
-      html += sectionStart('B', 'On My Radar', 'border-teal-500');
-      if (s.onRadar && s.onRadar.length) {
-        html += '<ul class="space-y-1">';
-        for (var i = 0; i < s.onRadar.length; i++) {
-          html += '<li class="text-sm">• <a href="' + esc(s.onRadar[i].url) + '" target="_blank" class="text-blue-700 hover:underline">' + esc(s.onRadar[i].title) + '</a></li>';
+      // ── On My Radar + Trends ─────────
+      var hasRadar = s.onRadar && s.onRadar.length;
+      var hasTrends = s.trends && s.trends.length;
+      if (hasRadar || hasTrends) {
+        html += '<section class="brief-section">';
+        html += '<div class="grid gap-4 sm:grid-cols-1 md:grid-cols-2">';
+
+        if (hasRadar) {
+          html += '<div class="brief-card p-4 sm:p-5">';
+          html += '<div class="section-label text-teal-600">On My Radar</div>';
+          html += '<ul class="space-y-2">';
+          for (var i = 0; i < s.onRadar.length; i++) {
+            html += '<li class="text-sm flex items-start gap-2">'
+              + '<span class="text-teal-400 mt-0.5 flex-shrink-0">--</span>'
+              + '<a href="' + esc(s.onRadar[i].url) + '" target="_blank" class="text-gray-700 hover:text-blue-700 hover:underline">' + esc(s.onRadar[i].title) + '</a></li>';
+          }
+          html += '</ul></div>';
         }
-        html += '</ul>';
-      } else { html += emptyMsg('Nothing noteworthy today.'); }
-      html += sectionEnd();
 
-      // Section C — Trends to Watch
-      html += sectionStart('C', 'Trends to Watch', 'border-purple-500');
-      if (s.trends && s.trends.length) {
-        for (var i = 0; i < s.trends.length; i++) {
-          html += '<div class="mb-3"><p class="text-sm font-medium">' + esc(s.trends[i].title) + '</p>'
-            + '<p class="text-sm text-gray-600">' + esc(s.trends[i].summary) + '</p></div>';
+        if (hasTrends) {
+          html += '<div class="brief-card p-4 sm:p-5">';
+          html += '<div class="section-label text-purple-600">Trends to Watch</div>';
+          for (var i = 0; i < s.trends.length; i++) {
+            html += '<div class="mb-3 last:mb-0"><p class="text-sm font-medium text-gray-900">' + esc(s.trends[i].title) + '</p>'
+              + '<p class="text-sm text-gray-500 mt-0.5">' + esc(s.trends[i].summary) + '</p></div>';
+          }
+          html += '</div>';
         }
-      } else { html += emptyMsg('No emerging patterns detected.'); }
-      html += sectionEnd();
 
-      // Section D — Email: Needs Action
-      html += sectionStart('D', 'Email: Needs Action', 'border-red-500');
+        html += '</div></section>';
+      }
+
+      // ── Headlines ────────────────────
+      if (s.headlines && s.headlines.length) {
+        html += '<section class="brief-section">';
+        html += '<div class="section-label text-yellow-600">Headlines</div>';
+        html += '<div class="brief-card divide-y divide-gray-100">';
+        for (var i = 0; i < s.headlines.length; i++) {
+          var hl = s.headlines[i];
+          html += '<div class="px-4 sm:px-5 py-3 flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3">'
+            + '<p class="text-sm font-medium text-gray-900 flex-1">' + esc(hl.text) + '</p>'
+            + '<p class="text-xs text-gray-400 flex-shrink-0">' + esc(hl.context) + '</p>'
+            + '</div>';
+        }
+        html += '</div></section>';
+      }
+
+      // ── Schedule ─────────────────────
+      html += '<section class="brief-section">';
+      html += '<div class="section-label text-green-600">Schedule</div>';
+      html += '<div class="brief-card p-4 sm:p-5">';
+
+      // Today
+      if (s.calendarToday && s.calendarToday.length) {
+        html += '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Today</p>';
+        html += '<div class="mb-6">';
+        for (var i = 0; i < s.calendarToday.length; i++) {
+          var ct = s.calendarToday[i];
+          html += '<div class="timeline-item">'
+            + '<span class="timeline-dot"></span>'
+            + '<div>'
+            + '<span class="text-xs font-mono text-green-700 font-medium">' + esc(ct.time) + '</span>'
+            + '<p class="text-sm font-medium text-gray-900 mt-0.5">' + esc(ct.title) + '</p>'
+            + (ct.attendees ? '<p class="text-xs text-gray-400 mt-0.5">' + esc(ct.attendees) + '</p>' : '')
+            + (ct.prep ? '<p class="text-xs text-gray-500 mt-1 bg-gray-50 rounded px-2 py-1">Prep: ' + esc(ct.prep) + '</p>' : '')
+            + '</div></div>';
+        }
+        html += '</div>';
+      } else {
+        html += '<p class="text-sm text-gray-400 italic mb-4">No meetings today.</p>';
+      }
+
+      // Tomorrow
+      if (s.calendarTomorrow && s.calendarTomorrow.length) {
+        html += '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Tomorrow</p>';
+        html += '<div class="mb-4">';
+        for (var i = 0; i < s.calendarTomorrow.length; i++) {
+          var ct = s.calendarTomorrow[i];
+          html += '<div class="timeline-item">'
+            + '<span class="timeline-dot" style="background:#94a3b8;"></span>'
+            + '<div>'
+            + '<span class="text-xs font-mono text-gray-500 font-medium">' + esc(ct.time) + '</span>'
+            + '<p class="text-sm font-medium text-gray-700 mt-0.5">' + esc(ct.title) + '</p>'
+            + (ct.attendees ? '<p class="text-xs text-gray-400 mt-0.5">' + esc(ct.attendees) + '</p>' : '')
+            + (ct.prep ? '<p class="text-xs text-gray-500 mt-1 bg-gray-50 rounded px-2 py-1">Prep: ' + esc(ct.prep) + '</p>' : '')
+            + '</div></div>';
+        }
+        html += '</div>';
+      }
+
+      // Suggested meetings
+      if (s.suggestedMeetings && s.suggestedMeetings.length) {
+        html += '<div class="border-t border-gray-100 pt-4 mt-2">';
+        html += '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Suggested Meetings</p>';
+        for (var i = 0; i < s.suggestedMeetings.length; i++) {
+          var sm = s.suggestedMeetings[i];
+          html += '<div class="flex items-start gap-3 py-2">'
+            + '<div class="flex-1">'
+            + '<p class="text-sm"><span class="font-medium">' + esc(sm.who) + '</span> -- ' + esc(sm.topic) + '</p>'
+            + '<p class="text-xs text-gray-500 mt-0.5">' + esc(sm.why) + '</p>'
+            + '</div>'
+            + '<span class="text-xs text-gray-400 flex-shrink-0 bg-gray-100 rounded px-2 py-0.5">' + esc(sm.duration) + '</span>'
+            + '</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div></section>';
+
+      // ── Email: Action Needed ─────────
+      html += '<section class="brief-section">';
+      html += '<div class="section-label text-red-600">Email: Action Needed</div>';
       if (s.emailAction && s.emailAction.length) {
         for (var i = 0; i < s.emailAction.length; i++) {
           var em = s.emailAction[i];
-          html += '<div class="flex items-start gap-3 py-2 border-b border-gray-100">'
-            + (em.timeSensitive ? '<span class="text-lg flex-shrink-0">⏰</span>' : '<span class="w-5 flex-shrink-0"></span>')
+          html += '<div class="email-action-card' + (em.timeSensitive ? ' email-urgent' : ' border-gray-200') + '">'
+            + '<div class="flex flex-col sm:flex-row sm:items-start gap-2">'
             + '<div class="flex-1 min-w-0">'
-            + '<p class="text-sm"><strong>' + esc(em.sender) + '</strong> — ' + esc(em.subject) + '</p>'
-            + '<p class="text-sm text-gray-600">' + esc(em.summary) + '</p>'
+            + '<div class="flex items-center gap-2 flex-wrap">'
+            + '<p class="text-sm font-semibold text-gray-900">' + esc(em.sender) + '</p>'
+            + (em.timeSensitive ? '<span class="urgent-badge">Time-sensitive</span>' : '')
             + '</div>'
-            + (em.outlookUrl ? '<a href="' + esc(em.outlookUrl) + '" target="_blank" class="pill-link flex-shrink-0">Open ↗</a>' : '')
-            + '</div>';
-        }
-      } else { html += emptyMsg('Inbox zero — no action needed.'); }
-      html += sectionEnd();
-
-      // Section E — Email: Awareness & Threads (collapsed)
-      html += sectionStart('E', 'Email: Awareness & Threads', 'border-orange-400');
-      html += '<details><summary class="text-sm font-medium text-gray-600 mb-2">'
-        + ((s.emailAwareness || []).length + (s.emailThreads || []).length) + ' items</summary><div class="space-y-3">';
-      if (s.emailAwareness && s.emailAwareness.length) {
-        html += '<div class="mb-3"><p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">FYI / Awareness</p>';
-        for (var i = 0; i < s.emailAwareness.length; i++) {
-          var ea = s.emailAwareness[i];
-          html += '<p class="text-sm py-1 border-b border-gray-50"><strong>' + esc(ea.sender) + '</strong>: ' + esc(ea.summary)
-            + (ea.outlookUrl ? ' <a href="' + esc(ea.outlookUrl) + '" target="_blank" class="pill-link ml-1">Open ↗</a>' : '')
-            + '</p>';
-        }
-        html += '</div>';
-      }
-      if (s.emailThreads && s.emailThreads.length) {
-        html += '<div><p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Threads to Watch</p>';
-        for (var i = 0; i < s.emailThreads.length; i++) {
-          var et = s.emailThreads[i];
-          html += '<p class="text-sm py-1 border-b border-gray-50"><strong>' + esc(et.subject) + '</strong>: ' + esc(et.summary)
-            + (et.outlookUrl ? ' <a href="' + esc(et.outlookUrl) + '" target="_blank" class="pill-link ml-1">Open ↗</a>' : '')
-            + '</p>';
-        }
-        html += '</div>';
-      }
-      html += '</div></details>';
-      html += sectionEnd();
-
-      // Section F — Schedule
-      html += sectionStart('F', "Today's Schedule + Tomorrow Preview", 'border-green-500');
-      if (s.calendarToday && s.calendarToday.length) {
-        html += '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Today</p>';
-        html += '<div class="space-y-2 mb-4">';
-        for (var i = 0; i < s.calendarToday.length; i++) {
-          var ct = s.calendarToday[i];
-          html += '<div class="flex gap-3 text-sm py-1 border-b border-gray-100">'
-            + '<span class="font-mono text-gray-500 w-16 flex-shrink-0">' + esc(ct.time) + '</span>'
-            + '<div><strong>' + esc(ct.title) + '</strong>'
-            + (ct.attendees ? '<span class="text-gray-400 ml-1">(' + esc(ct.attendees) + ')</span>' : '')
-            + (ct.prep ? '<p class="text-gray-600 text-xs mt-0.5">📋 ' + esc(ct.prep) + '</p>' : '')
+            + '<p class="text-sm text-gray-700 mt-0.5">' + esc(em.subject) + '</p>'
+            + '<p class="text-sm text-gray-500 mt-1">' + esc(em.summary) + '</p>'
+            + '</div>'
+            + (em.outlookUrl ? '<a href="' + esc(em.outlookUrl) + '" target="_blank" class="pill-link pill-red flex-shrink-0 self-start">Open in Outlook</a>' : '')
             + '</div></div>';
         }
-        html += '</div>';
-      } else { html += '<p class="text-sm text-gray-400 italic mb-4">No meetings today.</p>'; }
+      } else { html += emptyMsg('Inbox zero -- no action needed.'); }
+      html += '</section>';
 
-      if (s.calendarTomorrow && s.calendarTomorrow.length) {
-        html += '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Tomorrow</p>';
-        html += '<div class="space-y-2 mb-4">';
-        for (var i = 0; i < s.calendarTomorrow.length; i++) {
-          var ct = s.calendarTomorrow[i];
-          html += '<div class="flex gap-3 text-sm py-1 border-b border-gray-100">'
-            + '<span class="font-mono text-gray-500 w-16 flex-shrink-0">' + esc(ct.time) + '</span>'
-            + '<div><strong>' + esc(ct.title) + '</strong>'
-            + (ct.attendees ? '<span class="text-gray-400 ml-1">(' + esc(ct.attendees) + ')</span>' : '')
-            + (ct.prep ? '<p class="text-gray-600 text-xs mt-0.5">📋 ' + esc(ct.prep) + '</p>' : '')
-            + '</div></div>';
+      // ── Email: Awareness (collapsed) ──
+      var awarenessCount = (s.emailAwareness || []).length + (s.emailThreads || []).length;
+      if (awarenessCount > 0) {
+        html += '<section class="brief-section">';
+        html += '<div class="section-label text-orange-500">Email: Awareness</div>';
+        html += '<div class="brief-card">';
+        html += '<details><summary class="px-4 sm:px-5 py-3 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors">'
+          + '<span class="chevron">&#9656;</span> ' + awarenessCount + ' items -- FYI and threads to watch</summary>';
+        html += '<div class="px-4 sm:px-5 pb-4 space-y-4">';
+
+        if (s.emailAwareness && s.emailAwareness.length) {
+          html += '<div>';
+          html += '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">FYI / Awareness</p>';
+          for (var i = 0; i < s.emailAwareness.length; i++) {
+            var ea = s.emailAwareness[i];
+            html += '<div class="flex items-start gap-2 py-2 border-b border-gray-50">'
+              + '<div class="flex-1 min-w-0">'
+              + '<p class="text-sm"><span class="font-medium">' + esc(ea.sender) + '</span>: ' + esc(ea.summary) + '</p>'
+              + '</div>'
+              + (ea.outlookUrl ? '<a href="' + esc(ea.outlookUrl) + '" target="_blank" class="pill-link pill-gray flex-shrink-0 text-[11px]">Open</a>' : '')
+              + '</div>';
+          }
+          html += '</div>';
         }
-        html += '</div>';
+
+        if (s.emailThreads && s.emailThreads.length) {
+          html += '<div>';
+          html += '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Threads to Watch</p>';
+          for (var i = 0; i < s.emailThreads.length; i++) {
+            var et = s.emailThreads[i];
+            html += '<div class="flex items-start gap-2 py-2 border-b border-gray-50">'
+              + '<div class="flex-1 min-w-0">'
+              + '<p class="text-sm"><span class="font-medium">' + esc(et.subject) + '</span>: ' + esc(et.summary) + '</p>'
+              + '</div>'
+              + (et.outlookUrl ? '<a href="' + esc(et.outlookUrl) + '" target="_blank" class="pill-link pill-gray flex-shrink-0 text-[11px]">Open</a>' : '')
+              + '</div>';
+          }
+          html += '</div>';
+        }
+
+        html += '</div></details></div></section>';
       }
 
-      if (s.suggestedMeetings && s.suggestedMeetings.length) {
-        html += '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 mt-4">Suggested Meetings to Schedule</p>';
-        for (var i = 0; i < s.suggestedMeetings.length; i++) {
-          var sm = s.suggestedMeetings[i];
-          html += '<div class="text-sm py-1 border-b border-gray-100">'
-            + '<strong>' + esc(sm.who) + '</strong> — ' + esc(sm.topic)
-            + '<span class="text-gray-400 ml-1">(' + esc(sm.duration) + ')</span>'
-            + '<p class="text-xs text-gray-500">' + esc(sm.why) + '</p></div>';
-        }
+      // ── IDS Suggestions (tabbed) ─────
+      var hasIds = (s.idsExecutive && s.idsExecutive.length) || (s.idsMlt && s.idsMlt.length) || (s.idsPmt && s.idsPmt.length);
+      if (hasIds) {
+        html += '<section class="brief-section">';
+        html += '<div class="section-label text-indigo-600">L10 IDS Suggestions</div>';
+        html += '<div class="ids-tab-bar flex gap-1 -mb-px relative z-10">'
+          + '<button class="ids-tab ids-tab-active" data-tab="executive" onclick="switchIdsTab(\\x27executive\\x27)">Executive</button>'
+          + '<button class="ids-tab ids-tab-inactive" data-tab="mlt" onclick="switchIdsTab(\\x27mlt\\x27)">MLT</button>'
+          + '<button class="ids-tab ids-tab-inactive" data-tab="pmt" onclick="switchIdsTab(\\x27pmt\\x27)">PMT</button>'
+          + '</div>';
+        html += '<div class="ids-panel-container">';
+        html += '<div id="ids-executive" class="ids-panel">' + renderIDS(s.idsExecutive) + '</div>';
+        html += '<div id="ids-mlt" class="ids-panel" style="display:none;">' + renderIDS(s.idsMlt) + '</div>';
+        html += '<div id="ids-pmt" class="ids-panel" style="display:none;">' + renderIDS(s.idsPmt) + '</div>';
+        html += '</div></section>';
       }
-      html += sectionEnd();
 
-      // Section G — L10 IDS Suggestions
-      html += sectionStart('G', 'L10 IDS Suggestions', 'border-indigo-500');
-      html += renderIDS('Executive L10', s.idsExecutive);
-      html += renderIDS('MLT L10', s.idsMlt);
-      html += renderIDS('PMT L10', s.idsPmt);
-      html += sectionEnd();
-
-      // Section H — Headlines
-      html += sectionStart('H', 'Headlines', 'border-yellow-500');
-      if (s.headlines && s.headlines.length) {
-        html += '<div class="space-y-1">';
-        for (var i = 0; i < s.headlines.length; i++) {
-          html += '<p class="text-sm">💬 <strong>' + esc(s.headlines[i].text) + '</strong>'
-            + ' <span class="text-gray-400">— ' + esc(s.headlines[i].context) + '</span></p>';
-        }
-        html += '</div>';
-      } else { html += emptyMsg('No fresh headlines today.'); }
-      html += sectionEnd();
-
-      // Section I — Background (collapsed)
-      html += sectionStart('I', 'Background / Already Covered', 'border-gray-400');
-      html += '<details><summary class="text-sm font-medium text-gray-600 mb-2">'
-        + (s.background ? s.background.length : 0) + ' items</summary>';
-      if (s.background && s.background.length) {
-        for (var i = 0; i < s.background.length; i++) {
-          html += '<div class="mb-2"><p class="text-sm font-medium">' + esc(s.background[i].title) + '</p>'
-            + '<p class="text-sm text-gray-500">' + esc(s.background[i].summary) + '</p></div>';
-        }
-      } else { html += emptyMsg('Nothing to carry forward.'); }
-      html += '</details>';
-      html += sectionEnd();
-
-      // Section J — To-Do List
-      html += sectionStart('J', 'To-Do List', 'border-pink-500');
+      // ── To-Do List ───────────────────
+      html += '<section class="brief-section">';
+      html += '<div class="section-label text-pink-600">To-Do List</div>';
+      html += '<div class="brief-card p-4 sm:p-5">';
       html += '<div class="no-print flex gap-2 mb-4">'
         + '<input type="text" id="todo-input" placeholder="Add a to-do..." '
-        + 'class="border border-gray-300 rounded-md px-3 py-1.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"'
-        + ' onkeydown="if(event.key===\'Enter\')addTodo()">'
-        + '<button onclick="addTodo()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">Add</button>'
+        + 'class="border border-gray-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"'
+        + ' onkeydown="if(event.key===\\x27Enter\\x27)addTodo()">'
+        + '<button onclick="addTodo()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">Add</button>'
         + '</div>';
       html += '<div id="todos-today"></div>';
       html += '<div id="todos-carried"></div>';
-      html += '<details id="todos-completed-section"><summary class="text-sm font-medium text-gray-500 mt-3">Completed</summary>'
+      html += '<details id="todos-completed-section"><summary class="text-sm font-medium text-gray-500 mt-3 py-1">'
+        + '<span class="chevron">&#9656;</span> Completed</summary>'
         + '<div id="todos-completed"></div></details>';
-      html += '<div class="flex gap-3 mt-3 no-print">'
-        + '<button onclick="clearCompleted()" class="text-xs text-red-500 hover:text-red-700 transition-colors">Clear Completed</button>'
-        + '<button onclick="exportTodos()" class="text-xs text-blue-500 hover:text-blue-700 transition-colors">📋 Export</button>'
+      html += '<div class="flex gap-3 mt-4 pt-3 border-t border-gray-100 no-print">'
+        + '<button onclick="clearCompleted()" class="text-xs text-red-500 hover:text-red-700 transition-colors font-medium">Clear Completed</button>'
+        + '<button onclick="exportTodos()" class="text-xs text-blue-500 hover:text-blue-700 transition-colors font-medium">Copy to Clipboard</button>'
         + '</div>';
-      html += sectionEnd();
+      html += '</div></section>';
 
-      // Status line
-      html += '<div class="text-xs text-gray-400 mt-8 pt-4 border-t border-gray-200 space-y-0.5">';
-      var st = d.stats || {};
-      html += '<span>✅ Report generated: ' + esc(d.date) + '</span>';
-      html += '<span>✅ Web searches: ' + (st.webSearches || 0) + ' queries run</span>';
-      html += '<span>✅ Emails scanned: ' + (st.emailsScanned || 0) + ' from last 24h</span>';
-      html += '<span>✅ Action emails: ' + (st.actionEmails || 0) + ' items needing reply</span>';
-      html += '<span>✅ Calendar: ' + (st.calendarToday || 0) + ' today, ' + (st.calendarTomorrow || 0) + ' tomorrow</span>';
-      html += '<span>✅ Suggested meetings: ' + (st.suggestedMeetings || 0) + ' to schedule</span>';
-      html += '<span>✅ IDS items: ' + (st.idsExecutive || 0) + ' executive / ' + (st.idsMlt || 0) + ' MLT / ' + (st.idsPmt || 0) + ' PMT</span>';
-      html += '<span>✅ To-dos: ' + (st.newTodos || 0) + ' new / ' + (st.carriedForward || 0) + ' carried forward</span>';
-      html += '</div>';
+      // ── Background (collapsed) ───────
+      if (s.background && s.background.length) {
+        html += '<section class="brief-section">';
+        html += '<div class="section-label text-gray-400">Background / Already Covered</div>';
+        html += '<div class="brief-card">';
+        html += '<details><summary class="px-4 sm:px-5 py-3 text-sm font-medium text-gray-500 hover:bg-gray-50 transition-colors">'
+          + '<span class="chevron">&#9656;</span> ' + s.background.length + ' items</summary>';
+        html += '<div class="px-4 sm:px-5 pb-4 divide-y divide-gray-50">';
+        for (var i = 0; i < s.background.length; i++) {
+          html += '<div class="py-2"><p class="text-sm font-medium text-gray-700">' + esc(s.background[i].title) + '</p>'
+            + '<p class="text-sm text-gray-400 mt-0.5">' + esc(s.background[i].summary) + '</p></div>';
+        }
+        html += '</div></details></div></section>';
+      }
 
       document.getElementById('content').innerHTML = html;
+
+      // ── Footer stats ─────────────────
+      var st = d.stats || {};
+      var stats = [
+        'Generated: ' + esc(d.date),
+        'Web searches: ' + (st.webSearches || 0),
+        'Emails scanned: ' + (st.emailsScanned || 0),
+        'Action emails: ' + (st.actionEmails || 0),
+        'Calendar: ' + (st.calendarToday || 0) + ' today, ' + (st.calendarTomorrow || 0) + ' tomorrow',
+        'Meetings to schedule: ' + (st.suggestedMeetings || 0),
+        'IDS: ' + (st.idsExecutive || 0) + ' exec / ' + (st.idsMlt || 0) + ' MLT / ' + (st.idsPmt || 0) + ' PMT',
+        'To-dos: ' + (st.newTodos || 0) + ' new, ' + (st.carriedForward || 0) + ' carried'
+      ];
+      document.getElementById('footer-stats').innerHTML = stats.map(function(s) {
+        return '<span>' + s + '</span>';
+      }).join('<span class="text-gray-300">|</span>');
+      document.getElementById('brief-footer').classList.remove('hidden');
+
       renderTodos();
     }
 
-    function sectionStart(letter, title, borderColor) {
-      return '<section class="mb-2"><h2 class="section-header ' + borderColor + ' text-[#1a2744]">'
-        + letter + ' — ' + esc(title) + '</h2>';
-    }
-    function sectionEnd() { return '</section>'; }
     function emptyMsg(msg) { return '<p class="empty-msg">' + esc(msg) + '</p>'; }
 
-    function renderIDS(label, items) {
-      var html = '<div class="mb-3"><p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">' + esc(label) + '</p>';
+    function renderIDS(items) {
+      var html = '';
       if (items && items.length) {
         for (var i = 0; i < items.length; i++) {
-          html += '<p class="text-sm py-0.5">'
-            + (items[i].stale ? '🔄 ' : '• ')
+          html += '<div class="py-2' + (i < items.length - 1 ? ' border-b border-gray-100' : '') + '">'
+            + '<p class="text-sm text-gray-900">'
             + esc(items[i].issue)
-            + ' <span class="text-gray-500">because ' + esc(items[i].because) + '</span></p>';
+            + (items[i].stale ? '<span class="stale-marker">stale</span>' : '')
+            + '</p>'
+            + '<p class="text-xs text-gray-500 mt-0.5">because ' + esc(items[i].because) + '</p>'
+            + '</div>';
         }
       } else {
-        html += '<p class="text-xs text-gray-400 italic">No suggestions</p>';
+        html += '<p class="text-xs text-gray-400 italic py-2">No suggestions</p>';
       }
-      html += '</div>';
       return html;
+    }
+
+    function switchIdsTab(tab) {
+      activeIdsTab = tab;
+      var tabs = document.querySelectorAll('.ids-tab');
+      for (var i = 0; i < tabs.length; i++) {
+        if (tabs[i].getAttribute('data-tab') === tab) {
+          tabs[i].className = 'ids-tab ids-tab-active';
+        } else {
+          tabs[i].className = 'ids-tab ids-tab-inactive';
+        }
+      }
+      var panels = ['executive', 'mlt', 'pmt'];
+      for (var i = 0; i < panels.length; i++) {
+        var el = document.getElementById('ids-' + panels[i]);
+        if (el) el.style.display = panels[i] === tab ? 'block' : 'none';
+      }
     }
 
     // ── To-Do Rendering ────────────────────
@@ -452,7 +706,7 @@ export function getMorningBriefHTML(token: string): string {
       var todayEl = document.getElementById('todos-today');
       var carriedEl = document.getElementById('todos-carried');
       var completedEl = document.getElementById('todos-completed');
-      if (!todayEl) return; // section not rendered yet
+      if (!todayEl) return;
 
       todayEl.innerHTML = todayItems.length
         ? '<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Today</p>' + todayItems.map(todoRow).join('')
@@ -464,19 +718,19 @@ export function getMorningBriefHTML(token: string): string {
         ? completedItems.map(function(i) { return todoRow(i, true); }).join('')
         : '<p class="text-xs text-gray-400 italic py-2">None</p>';
 
-      // Update completed section count
       var compSection = document.getElementById('todos-completed-section');
       if (compSection) {
-        compSection.querySelector('summary').textContent = 'Completed (' + completedItems.length + ')';
+        var sumEl = compSection.querySelector('summary');
+        if (sumEl) sumEl.innerHTML = '<span class="chevron">&#9656;</span> Completed (' + completedItems.length + ')';
       }
     }
 
     function todoRow(item, isCompleted) {
       return '<div class="todo-item">'
-        + '<input type="checkbox" class="todo-cb no-print" ' + (item.completed ? 'checked' : '') + ' onchange="toggleTodo(\\'' + item.id + '\\')">'
+        + '<input type="checkbox" class="todo-cb no-print" ' + (item.completed ? 'checked' : '') + ' onchange="toggleTodo(\\x27' + item.id + '\\x27)">'
         + '<div class="flex-1 min-w-0">'
-        + '<p class="text-sm ' + (isCompleted ? 'line-through text-gray-400' : '') + '">' + esc(item.description) + '</p>'
-        + '<p class="text-xs text-gray-400">' + esc(item.source) + ' · ' + esc(item.dateAdded) + '</p>'
+        + '<p class="text-sm ' + (isCompleted ? 'line-through text-gray-400' : 'text-gray-900') + '">' + esc(item.description) + '</p>'
+        + '<p class="text-xs text-gray-400">' + esc(item.source) + ' -- ' + esc(item.dateAdded) + '</p>'
         + '</div></div>';
     }
 
@@ -521,7 +775,7 @@ export function getMorningBriefHTML(token: string): string {
       navigator.clipboard.writeText(text).then(function() {
         var btn = document.querySelector('[onclick="exportTodos()"]');
         var orig = btn.textContent;
-        btn.textContent = '✓ Copied!';
+        btn.textContent = 'Copied!';
         setTimeout(function() { btn.textContent = orig; }, 2000);
       });
     }
@@ -530,15 +784,14 @@ export function getMorningBriefHTML(token: string): string {
     async function regenerateBrief() {
       if (!confirm('Generate a new morning brief? This may take several minutes.')) return;
       var btn = document.getElementById('regen-btn');
-      btn.textContent = '⟳ Generating...';
+      btn.textContent = 'Generating...';
       btn.disabled = true;
       btn.classList.add('generating-pulse');
       try {
         await apiFetch('/api/morning-brief/generate', { method: 'POST' });
-        // Poll for completion
         pollForBrief();
       } catch (e) {
-        btn.textContent = '↻ Regenerate';
+        btn.textContent = 'Regenerate';
         btn.disabled = false;
         btn.classList.remove('generating-pulse');
         alert('Failed to start generation: ' + e);
@@ -559,7 +812,7 @@ export function getMorningBriefHTML(token: string): string {
               briefData = newData;
               renderBrief();
               var btn = document.getElementById('regen-btn');
-              btn.textContent = '↻ Regenerate';
+              btn.textContent = 'Regenerate';
               btn.disabled = false;
               btn.classList.remove('generating-pulse');
               await loadTodos();
@@ -567,10 +820,10 @@ export function getMorningBriefHTML(token: string): string {
             }
           }
         } catch (e) { /* keep polling */ }
-        if (attempts > 120) { // 10 minutes
+        if (attempts > 120) {
           clearInterval(poll);
           var btn = document.getElementById('regen-btn');
-          btn.textContent = '↻ Regenerate';
+          btn.textContent = 'Regenerate';
           btn.disabled = false;
           btn.classList.remove('generating-pulse');
         }
@@ -579,6 +832,7 @@ export function getMorningBriefHTML(token: string): string {
 
     // ── Init ───────────────────────────────
     (async function() {
+      loadWeather();
       await Promise.all([loadBrief(), loadTodos()]);
     })();
   </script>
@@ -640,8 +894,9 @@ This report is for one reader. Write for him, not a general audience. Keep it ti
 ---
 
 ## Email Rules:
-For EVERY email surfaced, include a direct Outlook Web App link:
-\`https://outlook.office365.com/mail/inbox/id/{messageId}\`
+For EVERY email surfaced, include a direct Outlook Web App link using this format:
+\`https://outlook.office365.com/mail/id/{urlEncodedMessageId}\`
+IMPORTANT: The messageId from the Graph API contains characters like +, /, and = that MUST be URL-encoded (encodeURIComponent). Do NOT include "/inbox/" in the path — just "/mail/id/".
 
 Organize into three tiers:
 1. **Needs reply/action** — MJ is on To line, response expected. Flag time-sensitive with timeSensitive: true.

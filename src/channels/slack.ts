@@ -18,7 +18,7 @@ import type { Gateway } from '../gateway/router.js';
 import type { SlackBotManager } from './slack-bot-manager.js';
 import { mdToSlack, sendChunkedSlack, SlackStreamingMessage } from './slack-utils.js';
 import { friendlyToolName } from './discord-utils.js';
-import { appendActivityLog } from './discord-agent-bot.js';
+import { appendActivityLog, writeConversationComplete } from './discord-agent-bot.js';
 
 const logger = pino({ name: 'clementine.slack' });
 
@@ -155,6 +155,7 @@ export async function startSlack(
     const triggerLabel = `Slack msg from ${userId}`;
     const msgPreview = text.length > 80 ? text.slice(0, 77) + '...' : text;
     const startTime = Date.now();
+    let toolCalls = 0;
     appendActivityLog({
       agent: 'Clementine',
       unit: '19Q1',
@@ -171,6 +172,7 @@ export async function startSlack(
         undefined, // model
         undefined, // maxTurns
         async (toolName, toolInput) => {
+          toolCalls++;
           const friendly = friendlyToolName(toolName, toolInput);
           streamer.setToolStatus(friendly);
           appendActivityLog({
@@ -196,6 +198,14 @@ export async function startSlack(
         detail: shortSummary,
         durationMs: Date.now() - startTime,
       });
+      if (toolCalls > 0) {
+        writeConversationComplete({
+          agentSlug: 'clementine',
+          trigger: triggerLabel,
+          summary: shortSummary,
+          durationMs: Date.now() - startTime,
+        });
+      }
 
       // Track bot message for feedback reactions
       if (streamer.messageTs) {

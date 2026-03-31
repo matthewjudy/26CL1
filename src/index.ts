@@ -582,6 +582,7 @@ async function asyncMain(): Promise<void> {
   const writeDaemonStatus = () => {
     try {
       const runningJobs = cronScheduler.getRunningJobs();
+      const runningJobsByAgent = cronScheduler.getRunningJobsByAgent();
       const status = {
         pid: process.pid,
         startedAt: daemonStartedAt,
@@ -589,6 +590,7 @@ async function asyncMain(): Promise<void> {
         uptime: Math.round(process.uptime()),
         status: runningJobs.length > 0 ? 'working' : 'online',
         runningJobs,
+        runningJobsByAgent,
         channels: activeChannels,
       };
       writeFileSync(daemonStatusPath, JSON.stringify(status, null, 2));
