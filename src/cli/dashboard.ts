@@ -824,9 +824,21 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
   app.use(express.json());
 
   // ── Dashboard authentication ────────────────────────────────────────
-  const dashboardToken = randomBytes(24).toString('hex');
   const tokenPath = path.join(BASE_DIR, '.dashboard-token');
-  writeFileSync(tokenPath, dashboardToken, { mode: 0o600 });
+  // Reuse existing token if present, so the URL stays stable across restarts
+  let dashboardToken: string;
+  try {
+    const existing = readFileSync(tokenPath, 'utf-8').trim();
+    if (existing.length >= 24) {
+      dashboardToken = existing;
+    } else {
+      dashboardToken = randomBytes(24).toString('hex');
+      writeFileSync(tokenPath, dashboardToken, { mode: 0o600 });
+    }
+  } catch {
+    dashboardToken = randomBytes(24).toString('hex');
+    writeFileSync(tokenPath, dashboardToken, { mode: 0o600 });
+  }
 
   // Protect /api routes with bearer token (GET / serves the SPA with token injected)
   app.use('/api', (req, res, next) => {
@@ -1093,6 +1105,25 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         writeFileSync(getPidFilePath(), String(child.pid));
       }
       res.json({ ok: true, message: `Daemon started (PID ${child.pid})` });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post('/api/dashboard/restart', (_req, res) => {
+    try {
+      res.json({ ok: true, message: 'Dashboard restarting...' });
+      // Spawn a new dashboard process, then exit this one
+      const distEntry = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
+      const child = spawn('node', [distEntry, 'dashboard'], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: BASE_DIR,
+        env: { ...process.env, CLEMENTINE_HOME: BASE_DIR },
+      });
+      child.unref();
+      // Give the response time to flush, then exit
+      setTimeout(() => process.exit(0), 300);
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -1652,6 +1683,12 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         { key: 'HEARTBEAT_ACTIVE_END', label: 'Active End Hour', hint: '0-23 (default 22)' },
       ],
     },
+    {
+      label: 'Agent Bots',
+      keys: [
+        { key: 'SUPPRESS_AGENT_STARTUP_DM', label: 'Suppress Startup DMs', hint: 'Hide "X is online" DMs when agent bots connect', type: 'select:true,false' },
+      ],
+    },
   ];
 
   function parseEnvFile(): Record<string, string> {
@@ -2037,6 +2074,8 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
           description: a.description,
           avatar: a.avatar ?? null,
           tier: a.tier,
+          unit: a.unit ?? null,
+          deployed: a.deployed ?? false,
           model: a.model ?? null,
           channelName: a.team?.channelName ?? null,
           teamChat: a.team?.teamChat ?? false,
@@ -2061,6 +2100,722 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       }));
     } catch (err) {
       res.json([]);
+    }
+  });
+
+  // ── Claude Code Usage Stats ─────────────────────────────────────────
+  function computeClaudeUsage(): {
+    currentSession: { opus: number; sonnet: number; other: number; total: number; sessionId: string | null };
+    weekly: { opus: number; sonnet: number; other: number; total: number; sessions: number };
+    weekStart: string;
+    weekReset: string;
+  } {
+    const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+    const now = new Date();
+    // Week starts Monday 00:00 local
+    const day = now.getDay(); // 0=Sun
+    const diffToMon = day === 0 ? 6 : day - 1;
+    const weekStart = new Date(now);
+    weekStart.setDate(weekStart.getDate() - diffToMon);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekReset = new Date(weekStart);
+    weekReset.setDate(weekReset.getDate() + 7);
+
+    const result = {
+      currentSession: { opus: 0, sonnet: 0, other: 0, total: 0, sessionId: null as string | null },
+      weekly: { opus: 0, sonnet: 0, other: 0, total: 0, sessions: 0 },
+      weekStart: weekStart.toISOString(),
+      weekReset: weekReset.toISOString(),
+    };
+
+    // Find current session ID from .sessions.json
+    let currentSessionId: string | null = null;
+    try {
+      const sessPath = path.join(BASE_DIR, '.sessions.json');
+      if (existsSync(sessPath)) {
+        const sessData = JSON.parse(readFileSync(sessPath, 'utf-8'));
+        const keys = Object.keys(sessData);
+        let latest = 0;
+        for (const k of keys) {
+          const ts = sessData[k]?.timestamp ? new Date(sessData[k].timestamp).getTime() : 0;
+          if (ts > latest) { latest = ts; currentSessionId = sessData[k]?.sessionId || k.split(':').pop() || null; }
+        }
+      }
+    } catch { /* ignore */ }
+    result.currentSession.sessionId = currentSessionId;
+
+    if (!existsSync(projectsDir)) return result;
+
+    try {
+      const weekStartMs = weekStart.getTime();
+      for (const proj of readdirSync(projectsDir)) {
+        const projDir = path.join(projectsDir, proj);
+        let stat;
+        try { stat = statSync(projDir); } catch { continue; }
+        if (!stat.isDirectory()) continue;
+
+        for (const f of readdirSync(projDir)) {
+          if (!f.endsWith('.jsonl')) continue;
+          const fpath = path.join(projDir, f);
+          let fstat;
+          try { fstat = statSync(fpath); } catch { continue; }
+          if (fstat.mtimeMs < weekStartMs) continue; // Skip old files
+
+          const sessionFileId = f.replace('.jsonl', '');
+          const isCurrentSession = currentSessionId && sessionFileId === currentSessionId;
+          result.weekly.sessions++;
+
+          try {
+            const content = readFileSync(fpath, 'utf-8');
+            for (const line of content.split('\n')) {
+              if (!line.trim()) continue;
+              try {
+                const d = JSON.parse(line);
+                const msg = d?.message;
+                const usage = msg?.usage;
+                if (!usage) continue;
+                const model: string = msg?.model || '';
+                const inp = (usage.input_tokens || 0) as number;
+                const out = (usage.output_tokens || 0) as number;
+                const cacheCreate = (usage.cache_creation_input_tokens || 0) as number;
+                const cacheRead = (usage.cache_read_input_tokens || 0) as number;
+                const total = inp + out + cacheCreate + cacheRead;
+
+                if (model.includes('opus')) {
+                  result.weekly.opus += total;
+                  if (isCurrentSession) result.currentSession.opus += total;
+                } else if (model.includes('sonnet')) {
+                  result.weekly.sonnet += total;
+                  if (isCurrentSession) result.currentSession.sonnet += total;
+                } else {
+                  result.weekly.other += total;
+                  if (isCurrentSession) result.currentSession.other += total;
+                }
+              } catch { /* skip bad line */ }
+            }
+          } catch { /* skip unreadable file */ }
+        }
+      }
+    } catch { /* ignore */ }
+
+    result.weekly.total = result.weekly.opus + result.weekly.sonnet + result.weekly.other;
+    result.currentSession.total = result.currentSession.opus + result.currentSession.sonnet + result.currentSession.other;
+    return result;
+  }
+
+  // ── Human-readable cron job labels ──────────────────────────────────
+  // Maps raw cron job names to user-friendly descriptions.
+  // For task-processors, tries to show the pending task title instead.
+  function humanCronLabel(jobName: string): string {
+    // Known static mappings
+    const staticLabels: Record<string, string> = {
+      'sasha-email-triage': 'Email Triage',
+      'paid-media-daily-scan': 'Daily Network Scan',
+      'paid-media-deep-audit': 'Deep Audit',
+      'morning-briefing': 'Morning Briefing',
+      'daily-memory-cleanup': 'Memory Cleanup',
+      'meeting-prep': 'Meeting Prep',
+      'weekly-review': 'Weekly Review',
+      'vault-maintenance': 'Vault Maintenance',
+      'roomvo-receipt-processor': 'Receipt Processing',
+      'olivia-marketing-intel': 'Marketing Intel Scan',
+    };
+    if (staticLabels[jobName]) return staticLabels[jobName];
+
+    // Task processors: "<agent>-task-processor" → "Task Processing"
+    if (jobName.endsWith('-task-processor')) {
+      return 'Task Processing';
+    }
+
+    // Fallback: title-case the job name, strip hyphens
+    return jobName.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  // Build a human-readable event description from a cron run entry.
+  // Uses outputPreview if available, otherwise falls back to a friendly label.
+  function humanEventDetail(
+    entry: { jobName?: string; durationMs?: number; outputPreview?: string; status?: string },
+    fileName: string,
+    agentPendingTasks?: Array<{ task: string; status: string }>,
+  ): string {
+    const jobName = entry.jobName || fileName.replace('.jsonl', '');
+    const label = humanCronLabel(jobName);
+    const dur = Math.round((entry.durationMs || 0) / 1000);
+
+    // For task processors, if there's an in-progress task, use its title
+    if (jobName.endsWith('-task-processor') && agentPendingTasks) {
+      const active = agentPendingTasks.find(t => t.status === 'in-progress');
+      if (active) {
+        const title = active.task.split('\n')[0].trim();
+        const short = title.length > 60 ? title.slice(0, 57) + '...' : title;
+        return short + ' (' + dur + 's)';
+      }
+    }
+
+    // Use outputPreview if available — extract first sentence/line
+    if (entry.outputPreview) {
+      let preview = entry.outputPreview.replace(/__NOTHING__/g, '').trim();
+      if (preview) {
+        // Strip markdown bold markers for cleaner display
+        preview = preview.replace(/\*\*/g, '');
+        const firstLine = preview.split('\n')[0].trim();
+        const short = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+        return label + ' — ' + short;
+      }
+    }
+
+    // Fallback: friendly label + duration
+    if (entry.status === 'ok') {
+      return label + ' completed (' + dur + 's)';
+    }
+    return label + ' failed (' + dur + 's)';
+  }
+
+  // ── Ops Board — aggregated agent status ──────────────────────────────
+  app.get('/api/ops-board', async (_req, res) => {
+    try {
+      const gw = await getGateway();
+      const mgr = gw.getAgentManager();
+      const all = mgr.listAll();
+
+      // Bot statuses (now includes activity context)
+      let botStatuses: Record<string, { status: string; botTag?: string; activity?: { trigger?: string; action?: string; since?: string; lastSummary?: string; lastCompletedAt?: string } }> = {};
+      try {
+        const statusPath = path.join(BASE_DIR, '.bot-status.json');
+        if (existsSync(statusPath)) {
+          botStatuses = JSON.parse(readFileSync(statusPath, 'utf-8'));
+        }
+      } catch { /* ignore */ }
+
+      // Cron run data — last run per agent-prefixed job
+      const cronRuns: Record<string, { lastRun: string; status: string; durationMs: number; jobName: string }[]> = {};
+      const runsDir = path.join(BASE_DIR, 'cron', 'runs');
+      if (existsSync(runsDir)) {
+        try {
+          const files = readdirSync(runsDir).filter(f => f.endsWith('.jsonl'));
+          for (const file of files) {
+            const jobName = file.replace('.jsonl', '');
+            try {
+              const content = readFileSync(path.join(runsDir, file), 'utf-8');
+              const lines = content.trim().split('\n').filter(Boolean);
+              const last = lines[lines.length - 1];
+              if (last) {
+                const entry = JSON.parse(last);
+                // Match agent-prefixed jobs (e.g. sasha-task-processor → sasha-petrova)
+                for (const a of all) {
+                  const prefix = a.slug.split('-')[0]; // first part of slug
+                  if (jobName.startsWith(prefix) || jobName.startsWith(a.slug)) {
+                    if (!cronRuns[a.slug]) cronRuns[a.slug] = [];
+                    cronRuns[a.slug].push({
+                      lastRun: entry.finishedAt || entry.startedAt || '',
+                      status: entry.status || 'unknown',
+                      durationMs: entry.durationMs || 0,
+                      jobName,
+                    });
+                  }
+                }
+                // Also store unmatched for the main agent
+                if (!all.some(a => {
+                  const prefix = a.slug.split('-')[0];
+                  return jobName.startsWith(prefix) || jobName.startsWith(a.slug);
+                })) {
+                  if (!cronRuns['_system']) cronRuns['_system'] = [];
+                  cronRuns['_system'].push({
+                    lastRun: entry.finishedAt || entry.startedAt || '',
+                    status: entry.status || 'unknown',
+                    durationMs: entry.durationMs || 0,
+                    jobName,
+                  });
+                }
+              }
+            } catch { /* skip */ }
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Delegation queue per agent
+      const delegations: Record<string, Array<{ id: string; task: string; status: string; from: string; updatedAt: string; priority: number }>> = {};
+      if (VAULT_DIR) {
+        const agentsDir = path.join(VAULT_DIR, 'Meta', 'Clementine', 'agents');
+        if (existsSync(agentsDir)) {
+          try {
+            for (const a of all) {
+              const tasksDir = path.join(agentsDir, a.slug, 'tasks');
+              if (existsSync(tasksDir)) {
+                const taskFiles = readdirSync(tasksDir).filter(f => f.endsWith('.json'));
+                delegations[a.slug] = [];
+                for (const tf of taskFiles) {
+                  try {
+                    const task = JSON.parse(readFileSync(path.join(tasksDir, tf), 'utf-8'));
+                    delegations[a.slug].push({
+                      id: task.id || tf.replace('.json', ''),
+                      task: task.task || '',
+                      status: task.status || 'unknown',
+                      from: task.fromAgent || '',
+                      updatedAt: task.updatedAt || task.createdAt || '',
+                      priority: task.priority ?? 0,
+                    });
+                  } catch { /* skip */ }
+                }
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Cron progress data per agent
+      const cronProgressDir = path.join(BASE_DIR, 'cron', 'progress');
+      const agentProgress: Record<string, { phase: string; detail: string; pct: number | null; updatedAt: string }> = {};
+      if (existsSync(cronProgressDir)) {
+        try {
+          const progressFiles = readdirSync(cronProgressDir).filter(f => f.endsWith('.json'));
+          for (const pf of progressFiles) {
+            try {
+              const prog = JSON.parse(readFileSync(path.join(cronProgressDir, pf), 'utf-8'));
+              const jobName = pf.replace('.json', '');
+              // Match to agent by slug prefix
+              for (const a of all) {
+                const prefix = a.slug.split('-')[0];
+                if (jobName.startsWith(prefix) || jobName.startsWith(a.slug)) {
+                  // Use the most recently updated progress file
+                  const existing = agentProgress[a.slug];
+                  if (!existing || (prog.lastRunAt && (!existing.updatedAt || prog.lastRunAt > existing.updatedAt))) {
+                    const pendingCount = (prog.pendingItems || []).length;
+                    const completedCount = (prog.completedItems || []).length;
+                    const total = pendingCount + completedCount;
+                    const pct = total > 0 ? Math.round((completedCount / total) * 100) : null;
+                    // Extract phase/detail from state object first, fall back to notes
+                    const phase = (prog.state && prog.state.phase) ? String(prog.state.phase).slice(0, 40)
+                      : prog.notes ? prog.notes.split('\n')[0].slice(0, 40) : 'Working';
+                    const detail = (prog.state && prog.state.detail) ? String(prog.state.detail).slice(0, 60)
+                      : pendingCount > 0 ? `${completedCount}/${total} done`
+                      : (prog.notes || '').split('\n')[0].slice(0, 60) || 'complete';
+                    agentProgress[a.slug] = {
+                      phase,
+                      detail,
+                      pct,
+                      updatedAt: prog.lastRunAt || '',
+                    };
+                  }
+                }
+              }
+            } catch { /* skip */ }
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Sessions — check if any session is tied to an agent
+      let sessions: Record<string, unknown> = {};
+      try {
+        const sessionsFile = path.join(BASE_DIR, '.sessions.json');
+        if (existsSync(sessionsFile)) {
+          sessions = JSON.parse(readFileSync(sessionsFile, 'utf-8'));
+        }
+      } catch { /* ignore */ }
+
+      // Build response
+      const agents = all.map(a => {
+        const bot = botStatuses[a.slug];
+        const agentCron = cronRuns[a.slug] || [];
+        const agentTasks = delegations[a.slug] || [];
+        const pendingTasks = agentTasks.filter(t => t.status === 'pending' || t.status === 'in-progress');
+        const latestCron = agentCron.sort((x, y) => y.lastRun.localeCompare(x.lastRun))[0] || null;
+
+        // Determine operational status
+        let opStatus = 'OFFLINE';
+        const botStatus = bot?.status ?? 'offline';
+        const inProgressTasks = agentTasks.filter(t => t.status === 'in-progress');
+        const queuedTasks = agentTasks.filter(t => t.status === 'pending');
+        if (botStatus === 'processing') {
+          opStatus = 'WORKING';
+        } else if (botStatus === 'online') {
+          if (inProgressTasks.length > 0) {
+            opStatus = 'WORKING';
+          } else if (queuedTasks.length > 0) {
+            opStatus = 'QUEUED';
+          } else {
+            opStatus = 'AVAILABLE';
+          }
+        } else if (botStatus === 'connecting') {
+          opStatus = 'CONNECTING';
+        } else if (botStatus === 'error') {
+          opStatus = 'ERROR';
+        }
+
+        // Short task title: first line, first sentence, or first 50 chars
+        function shortTitle(text: string): string {
+          const firstLine = text.split('\n')[0].trim();
+          // Grab first sentence or up to 50 chars
+          const sentenceMatch = firstLine.match(/^(.+?[.!?])\s/);
+          const raw = sentenceMatch ? sentenceMatch[1] : firstLine;
+          return raw.length > 50 ? raw.slice(0, 47) + '...' : raw;
+        }
+
+        // Agent progress data
+        const progress = agentProgress[a.slug] || null;
+
+        // What are they doing? — human-readable activity, never raw cron names
+        // Priority: live bot activity > in-progress tasks > progress files > queued > cron > idle
+        let activity = '';
+        const botActivity = bot?.activity as { trigger?: string; action?: string; since?: string; lastSummary?: string; lastCompletedAt?: string } | undefined;
+
+        if (botStatus === 'processing' && botActivity?.trigger) {
+          // Agent is actively processing right now — show live context
+          const action = botActivity.action || 'Processing...';
+          activity = botActivity.trigger + ' → ' + action;
+        } else if (botActivity?.lastSummary && botActivity?.lastCompletedAt) {
+          // Agent just finished something recently (within 5 min) — show what they did
+          const completedAge = Date.now() - new Date(botActivity.lastCompletedAt).getTime();
+          if (completedAge < 300000) { // 5 minutes
+            activity = botActivity.lastSummary;
+          }
+        }
+
+        // Fall through to existing sources if no live activity
+        if (!activity) {
+          if (inProgressTasks.length > 0) {
+            if (progress) {
+              activity = progress.phase + ': ' + progress.detail;
+            } else {
+              activity = shortTitle(inProgressTasks[0].task);
+            }
+          } else if (pendingTasks.length > 0) {
+            activity = 'Queued: ' + shortTitle(pendingTasks[0].task);
+          } else if (progress) {
+            // No active tasks but has progress data — show last known state
+            activity = progress.phase + ': ' + progress.detail;
+          } else if (latestCron) {
+            const ago = Math.round((Date.now() - new Date(latestCron.lastRun).getTime()) / 60000);
+            const label = humanCronLabel(latestCron.jobName);
+            activity = label + ' (' + (ago < 1 ? 'just now' : ago + 'm ago') + ')';
+          } else {
+            activity = 'IDLE';
+          }
+        }
+
+        return {
+          slug: a.slug,
+          name: a.name,
+          unit: a.unit ?? null,
+          deployed: a.deployed ?? false,
+          model: a.model || 'sonnet',
+          project: a.project || null,
+          botStatus,
+          opStatus,
+          activity,
+          progress,
+          lastCron: latestCron,
+          cronJobs: agentCron,
+          pendingTasks,
+          totalTasks: agentTasks.length,
+          channel: a.team?.channelName ? (Array.isArray(a.team.channelName) ? a.team.channelName.join(', ') : a.team.channelName) : null,
+          canMessage: a.team?.canMessage || [],
+          tier: a.tier,
+          description: a.description,
+        };
+      });
+
+      const systemCron = cronRuns['_system'] || [];
+
+      // Build event log from all cron run files (today's entries + last N)
+      const events: Array<{ time: string; type: string; agent: string; detail: string }> = [];
+      let runsToday = 0;
+      const todayPrefix = localISO().slice(0, 10);
+      if (existsSync(runsDir)) {
+        try {
+          const files = readdirSync(runsDir).filter(f => f.endsWith('.jsonl'));
+          for (const file of files) {
+            try {
+              const lines = readFileSync(path.join(runsDir, file), 'utf-8').trim().split('\n').filter(Boolean);
+              // Read last 10 entries per file for the event log
+              for (const line of lines.slice(-10)) {
+                try {
+                  const entry = JSON.parse(line);
+                  const t = entry.finishedAt || entry.startedAt || '';
+                  if (t.startsWith(todayPrefix)) runsToday++;
+                  // Match to agent display name (not slug)
+                  const jobName = entry.jobName || file.replace('.jsonl', '');
+                  let agentName = 'System';
+                  let matchedAgent: typeof agents[0] | null = null;
+                  for (const a of agents) {
+                    const prefix = a.slug.split('-')[0];
+                    if (jobName.startsWith(prefix) || jobName.startsWith(a.slug)) {
+                      agentName = a.name + (a.unit ? ' (' + a.unit + ')' : '');
+                      matchedAgent = a;
+                      break;
+                    }
+                  }
+                  // Skip noise entries — idle task processors, empty output, nothing-to-do responses
+                  const preview = entry.outputPreview ? String(entry.outputPreview).trim() : '';
+                  const isNoise = entry.status === 'ok' && (
+                    !preview ||
+                    preview === 'No action taken' ||
+                    preview === '__NOTHING__' ||
+                    /^__NOTHING__/.test(preview) ||
+                    /^No delegated tasks/i.test(preview) ||
+                    /^Nothing to execute/i.test(preview) ||
+                    /^Standing orders say hold/i.test(preview) ||
+                    /^No (?:new )?tasks/i.test(preview) ||
+                    /no output/i.test(preview)
+                  );
+                  if (!isNoise) {
+                    events.push({
+                      time: t,
+                      type: entry.status === 'ok' ? 'ok' : 'error',
+                      agent: agentName,
+                      detail: humanEventDetail(entry, file, matchedAgent?.pendingTasks),
+                    });
+                  }
+                } catch { /* skip */ }
+              }
+            } catch { /* skip */ }
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Add delegation events
+      for (const a of agents) {
+        for (const t of a.pendingTasks) {
+          events.push({
+            time: t.updatedAt || '',
+            type: t.status === 'in-progress' ? 'working' : 'queued',
+            agent: a.name,
+            detail: (t.from ? t.from + ': ' : '') + (t.task.length > 80 ? t.task.slice(0, 77) + '...' : t.task).replace(/\n/g, ' '),
+          });
+        }
+      }
+
+      // ── Activity log — real-time agent thinking/doing events ──
+      const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
+      if (existsSync(activityLogPath)) {
+        try {
+          const logContent = readFileSync(activityLogPath, 'utf-8');
+          const logLines = logContent.trim().split('\n').filter(Boolean).slice(-100); // last 100
+          const sixH = new Date(Date.now() - 6 * 3600000).toISOString();
+          for (const line of logLines) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry.ts && entry.ts >= sixH) {
+                const typeMap: Record<string, string> = {
+                  start: 'working',
+                  done: 'ok',
+                  tool: 'working',
+                  error: 'error',
+                  cron: 'ok',
+                };
+                events.push({
+                  time: entry.ts,
+                  type: typeMap[entry.type] || 'ok',
+                  agent: entry.agent + (entry.unit ? ' (' + entry.unit + ')' : ''),
+                  detail: (entry.type === 'start' ? '▶ ' : entry.type === 'done' ? '✓ ' : entry.type === 'error' ? '✖ ' : '')
+                    + (entry.trigger ? entry.trigger + ': ' : '')
+                    + (entry.detail || ''),
+                });
+              }
+            } catch { /* skip bad line */ }
+          }
+        } catch { /* ignore */ }
+      }
+
+      // ── Live activity from bot statuses (what agents are doing RIGHT NOW) ──
+      for (const a of agents) {
+        const bot = botStatuses[a.slug];
+        if (bot?.activity?.trigger && bot?.activity?.since) {
+          events.push({
+            time: bot.activity.since,
+            type: 'working',
+            agent: a.name + (a.unit ? ' (' + a.unit + ')' : ''),
+            detail: '⚡ ' + bot.activity.trigger + (bot.activity.action ? ' → ' + bot.activity.action : ''),
+          });
+        }
+      }
+
+      // Sort newest first
+      events.sort((a, b) => b.time.localeCompare(a.time));
+
+      // Deduplicate — if a "start" and "done" event exist for the same agent within 2s, keep only "done"
+      const deduped: typeof events = [];
+      const seen = new Set<string>();
+      for (const ev of events) {
+        const key = ev.agent + '|' + ev.time.slice(0, 16); // same agent, same minute
+        if (ev.type === 'working' && ev.detail.startsWith('▶ ')) {
+          // Check if there's a matching "done" event — if so, skip the "start"
+          const hasDone = events.some(e2 => e2 !== ev && e2.agent === ev.agent && e2.type === 'ok' && e2.detail.startsWith('✓ ') && Math.abs(new Date(e2.time).getTime() - new Date(ev.time).getTime()) < 300000);
+          if (hasDone) continue;
+        }
+        if (!seen.has(key + ev.detail.slice(0, 40))) {
+          seen.add(key + ev.detail.slice(0, 40));
+          deduped.push(ev);
+        }
+      }
+
+      // Filter to last 6 hours
+      const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString().slice(0, 19);
+      const recentEvents = deduped.filter(e => e.time >= sixHoursAgo);
+
+      // ── Q1 (Clementine) synthetic agent ──
+      let q1Status = 'OFFLINE';
+      let q1Activity = '';
+      let q1BotStatus = 'offline';
+      let q1Channel = 'Discord DM';
+      try {
+        const hbPath = path.join(BASE_DIR, '.heartbeat_state.json');
+        const sessPath = path.join(BASE_DIR, '.sessions.json');
+        let hbState: { timestamp?: string; details?: { tasks_pending?: number; tasks_overdue?: number; inbox_count?: number } } = {};
+        let sessData: Record<string, { exchanges?: number; timestamp?: string }> = {};
+        if (existsSync(hbPath)) hbState = JSON.parse(readFileSync(hbPath, 'utf-8'));
+        if (existsSync(sessPath)) sessData = JSON.parse(readFileSync(sessPath, 'utf-8'));
+
+        // Q1 is "online" if heartbeat was within last 45 minutes
+        const hbAge = hbState.timestamp ? (Date.now() - new Date(hbState.timestamp).getTime()) / 60000 : Infinity;
+        if (hbAge < 45) {
+          q1BotStatus = 'online';
+          q1Status = 'AVAILABLE';
+        }
+
+        // Check if there's an active conversation (exchange within last 10 min)
+        const sessKeys = Object.keys(sessData);
+        let latestExchange = 0;
+        let totalExchanges = 0;
+        for (const k of sessKeys) {
+          const s = sessData[k];
+          totalExchanges += s.exchanges || 0;
+          const ts = s.timestamp ? new Date(s.timestamp).getTime() : 0;
+          if (ts > latestExchange) latestExchange = ts;
+        }
+        const exchangeAge = latestExchange ? (Date.now() - latestExchange) / 60000 : Infinity;
+        if (exchangeAge < 10 && q1BotStatus === 'online') {
+          q1Status = 'WORKING';
+          q1Activity = 'Active session (' + totalExchanges + ' exchanges)';
+        } else if (q1BotStatus === 'online') {
+          const d = hbState.details;
+          if (d) {
+            const parts: string[] = [];
+            if (d.tasks_overdue) parts.push(d.tasks_overdue + ' overdue');
+            if (d.tasks_pending) parts.push(d.tasks_pending + ' pending');
+            if (d.inbox_count) parts.push(d.inbox_count + ' inbox');
+            q1Activity = parts.length ? 'Watching: ' + parts.join(', ') : 'Monitoring';
+          } else {
+            q1Activity = 'Monitoring';
+          }
+        }
+
+        // Count system cron runs as Q1 dispatches
+        const sysCronJobs = cronRuns['_system'] || [];
+        const allCronJobs = Object.values(cronRuns).flat();
+
+        // Q1 dispatches ALL cron jobs, so attribute total runs to it
+        const q1CronActivity = allCronJobs.sort((x, y) => y.lastRun.localeCompare(x.lastRun))[0] || null;
+        if (q1CronActivity && !q1Activity) {
+          const ago = Math.round((Date.now() - new Date(q1CronActivity.lastRun).getTime()) / 60000);
+          q1Activity = 'Last dispatch: ' + humanCronLabel(q1CronActivity.jobName) + ' (' + (ago < 1 ? 'just now' : ago + 'm ago') + ')';
+        }
+      } catch { /* ignore */ }
+
+      const q1Agent = {
+        slug: '19q1',
+        name: '19Q1 (Clementine)',
+        unit: '19Q1',
+        deployed: true,
+        model: 'opus',
+        project: null,
+        botStatus: q1BotStatus,
+        opStatus: q1Status,
+        activity: q1Activity,
+        lastCron: null,
+        cronJobs: [],
+        pendingTasks: [] as Array<{ id: string; task: string; status: string; from: string; updatedAt: string; priority: number }>,
+        totalTasks: 0,
+        channel: q1Channel,
+        canMessage: [] as string[],
+        tier: 1,
+        description: 'Primary agent — orchestrator, heartbeat monitor, cron dispatcher',
+      };
+
+      // Insert Q1 at front of agent list
+      const allAgents = [q1Agent, ...agents];
+
+      // ── Agent visibility filtering ──
+      // Deployed agents always show. Pool agents only show if they have
+      // pending/in-progress tasks OR cron activity in the last 6 hours.
+      const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+      const visibleAgents = allAgents.filter(a => {
+        // Deployed agents always visible
+        if (a.deployed) return true;
+        // Agents with pending or in-progress tasks
+        if (a.pendingTasks.length > 0) return true;
+        // Agents with cron activity in the last 6 hours
+        if (a.lastCron && a.lastCron.lastRun) {
+          const cronAge = Date.now() - new Date(a.lastCron.lastRun).getTime();
+          if (cronAge < SIX_HOURS_MS) return true;
+        }
+        // Everyone else is hidden
+        return false;
+      });
+
+      // Summary stats
+      const deployed = visibleAgents.filter(a => a.deployed);
+      const online = deployed.filter(a => a.botStatus === 'online').length;
+      const working = visibleAgents.filter(a => a.opStatus === 'WORKING').length;
+      const queued = visibleAgents.filter(a => a.opStatus === 'QUEUED').length;
+      const errors = visibleAgents.filter(a => a.opStatus === 'ERROR').length;
+
+      // Collect ALL delegated tasks from vault (not just visible agents)
+      // Include pending/in-progress always, completed only if within 48h
+      const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
+      const allPendingTasks: Array<{ agent: string; id: string; title: string; status: string; displayStatus: string; priority: number; age: string; elapsed: string; sortTime: number }> = [];
+      const allDelegationEntries = Object.entries(delegations);
+      for (const [agentSlug, tasks] of allDelegationEntries) {
+        // Resolve agent display name
+        const agentDef = all.find(a => a.slug === agentSlug);
+        const agentName = agentDef ? agentDef.name : agentSlug;
+        for (const t of tasks) {
+          const ageMs = t.updatedAt ? Date.now() - new Date(t.updatedAt).getTime() : 0;
+          // Skip completed/cancelled tasks older than 48 hours
+          if ((t.status === 'completed' || t.status === 'cancelled') && ageMs > FORTY_EIGHT_HOURS_MS) continue;
+          const firstLine = t.task.split('\n')[0].trim();
+          const sentenceMatch = firstLine.match(/^(.+?[.!?])\s/);
+          const raw = sentenceMatch ? sentenceMatch[1] : firstLine;
+          const title = raw.length > 60 ? raw.slice(0, 57) + '...' : raw;
+          const ageD = Math.floor(ageMs / 86400000);
+          const ageH = Math.floor(ageMs / 3600000);
+          const ageM = Math.floor(ageMs / 60000);
+          const age = ageD > 0 ? ageD + 'd' : ageH > 0 ? ageH + 'h' : 'now';
+          const elapsed = ageD > 0 ? ageD + 'd ' + (ageH % 24) + 'h' : ageH > 0 ? ageH + 'h ' + (ageM % 60) + 'm' : ageM > 0 ? ageM + 'm' : '<1m';
+          // Determine display status
+          let displayStatus = t.status === 'in-progress' ? 'WORKING' : t.status === 'completed' ? 'DONE' : t.status === 'cancelled' ? 'CANCELLED' : 'PENDING';
+          // Use progress phase if agent is in-progress and has progress data
+          const prog = agentProgress[agentSlug];
+          if (t.status === 'in-progress' && prog && prog.phase) {
+            displayStatus = prog.phase.slice(0, 16);
+          }
+          const sortTime = t.updatedAt ? new Date(t.updatedAt).getTime() : 0;
+          allPendingTasks.push({ agent: agentName, id: t.id, title, status: t.status, displayStatus, priority: t.priority ?? 0, age, elapsed, sortTime });
+        }
+      }
+      // Sort: pending/in-progress first, then completed/cancelled. Within each group, newest first.
+      const statusOrder: Record<string, number> = { 'in-progress': 0, 'pending': 1, 'completed': 2, 'cancelled': 3 };
+      allPendingTasks.sort((a, b) => {
+        const sa = statusOrder[a.status] ?? 1;
+        const sb = statusOrder[b.status] ?? 1;
+        if (sa !== sb) return sa - sb;
+        return b.sortTime - a.sortTime;
+      });
+
+      // Claude Code usage stats
+      const usage = computeClaudeUsage();
+
+      res.json({
+        agents: visibleAgents,
+        systemCron,
+        events: recentEvents,
+        pendingTasks: allPendingTasks,
+        summary: { deployed: deployed.length, online, working, queued, errors, runsToday, poolSize: visibleAgents.length - deployed.length },
+        usage,
+        timestamp: localISO(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
     }
   });
 
@@ -2587,9 +3342,12 @@ function getDashboardHTML(token: string): string {
   .content {
     overflow-y: auto;
     padding: 28px;
+    display: flex;
+    flex-direction: column;
   }
   .page { display: none; }
   .page.active { display: block; }
+  #page-ops-board.active { display: flex; flex: 1; min-height: 0; }
   .page-title {
     font-size: 24px;
     font-weight: 600;
@@ -3846,24 +4604,38 @@ function getDashboardHTML(token: string): string {
     align-items: center;
     gap: 10px;
     margin-bottom: 10px;
+    min-width: 0;
   }
   .session-card-icon {
     font-size: 20px;
+    flex-shrink: 0;
   }
   .session-card-name {
     font-size: 14px;
     font-weight: 600;
     flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .session-card-exchanges {
-    font-size: 28px;
-    font-weight: 700;
+    font-size: 13px;
+    font-weight: 600;
     color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-radius: 10px;
+    padding: 2px 8px;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
   .session-card-meta {
     font-size: 11px;
     color: var(--text-muted);
     margin-top: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .session-card-actions {
     margin-top: 10px;
@@ -4006,6 +4778,9 @@ function getDashboardHTML(token: string): string {
     </div>
     <div class="nav-section">
       <div class="nav-section-title">Agents</div>
+      <div class="nav-item" data-page="ops-board">
+        <span class="nav-icon">&#128225;</span> Ops Board
+      </div>
       <div class="nav-item" data-page="team">
         <span class="nav-icon">&#129302;</span> The Office
         <span class="nav-badge" id="nav-team-count">0</span>
@@ -4183,6 +4958,29 @@ function getDashboardHTML(token: string): string {
     <div class="page" id="page-metrics">
       <div class="page-title">Metrics & Analytics</div>
       <div id="metrics-content"><div class="empty-state">Loading metrics...</div></div>
+    </div>
+
+    <!-- ═══ Ops Board Page ═══ -->
+    <div class="page" id="page-ops-board" style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+      <div id="ops-board-container" style="font-family:'SF Mono',Menlo,Monaco,Consolas,monospace;font-size:12px;background:#0d1117;color:#c9d1d9;border-radius:8px;padding:16px 20px;display:flex;flex-direction:column;flex:1;overflow:hidden">
+        <!-- Header bar -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-shrink:0">
+          <div style="display:flex;align-items:center;gap:16px">
+            <div style="color:#58a6ff;font-weight:700;font-size:14px">OPS BOARD <span id="ops-board-refresh-dot" style="color:#3fb950;margin-left:6px;font-size:10px">●</span></div>
+            <div id="ops-board-stats" style="display:flex;gap:16px;align-items:baseline"></div>
+          </div>
+          <div id="ops-board-clock" style="color:#6e7681;font-size:11px"></div>
+        </div>
+        <!-- Agent table -->
+        <div id="ops-board-agents" style="margin-bottom:10px;flex-shrink:0;overflow-y:auto;max-height:50vh;width:100%">Loading...</div>
+        <!-- Pending tasks (collapsed when empty) -->
+        <div id="ops-board-pending" style="flex-shrink:0"></div>
+        <!-- Event log — fills remaining space -->
+        <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;border-top:1px solid #21262d;padding-top:8px;margin-top:4px">
+          <div style="color:#58a6ff;font-weight:700;font-size:11px;margin-bottom:6px;flex-shrink:0">ACTIVITY FEED</div>
+          <div id="ops-board-events" style="flex:1;overflow-y:auto;min-height:0"></div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══ Team Page — The Office ═══ -->
@@ -4681,7 +5479,21 @@ function apiFetch(url, opts) {
 }
 
 // ── Navigation ────────────────────────────
-let currentPage = 'overview';
+// ── Kiosk mode ──
+var isKiosk = new URLSearchParams(window.location.search).has('kiosk');
+if (isKiosk) {
+  document.querySelector('.sidebar').style.display = 'none';
+  document.querySelector('.header').style.display = 'none';
+  document.querySelector('.main-content').style.gridColumn = '1 / -1';
+  document.body.style.gridTemplateColumns = '1fr';
+}
+
+let currentPage = isKiosk ? 'ops-board' : 'overview';
+if (isKiosk) {
+  document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+  var opsPage = document.getElementById('page-ops-board');
+  if (opsPage) opsPage.classList.add('active');
+}
 var prevAgentSlugs = null;
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
@@ -4702,6 +5514,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (page === 'settings') refreshSettings();
     if (page === 'self-improve') refreshSelfImprove();
     if (page === 'team') refreshTeam();
+    if (page === 'ops-board') refreshOpsBoard();
     if (page === 'graph') refreshGraph();
   });
 });
@@ -4715,6 +5528,14 @@ async function apiPost(url) {
     else toast(d.error || 'Error', 'error');
     setTimeout(refreshAll, 1000);
   } catch(e) { toast(String(e), 'error'); }
+}
+async function restartDashboard() {
+  try {
+    toast('Restarting dashboard...', 'success');
+    await apiFetch('/api/dashboard/restart', { method: 'POST' });
+    // Wait for old process to die and new one to come up, then reload
+    setTimeout(function() { location.reload(); }, 3000);
+  } catch(e) { /* expected — connection drops when process exits */ }
 }
 async function apiJson(method, url, body) {
   try {
@@ -4886,14 +5707,15 @@ async function refreshSessions() {
       var s = d[key];
       var friendly = friendlySession(key);
       var safeKey = esc(key).replace(/'/g, '');
+      var exchanges = s.exchanges || 0;
       html += '<div class="session-card">'
         + '<div class="session-card-header">'
         + '<span class="session-card-icon">' + friendly.icon + '</span>'
         + '<span class="session-card-name">' + esc(friendly.label) + '</span>'
-        + '<span class="session-card-exchanges">' + (s.exchanges || 0) + '</span>'
+        + '<span class="session-card-exchanges">' + exchanges + (exchanges === 1 ? ' msg' : ' msgs') + '</span>'
         + '</div>'
         + '<div class="session-card-meta">Last active: ' + timeAgo(s.timestamp) + '</div>'
-        + '<div class="session-card-meta" style="font-family:monospace;font-size:10px">' + esc(key) + '</div>'
+        + '<div class="session-card-meta" title="' + esc(key) + '" style="font-family:monospace;font-size:10px;cursor:help">' + esc(key.length > 40 ? key.slice(0, 37) + '...' : key) + '</div>'
         + '<div class="session-card-actions">'
         + '<button class="btn-danger btn-sm" onclick="if(confirm(\\'Clear session ' + safeKey + '?\\'))apiPost(\\'/api/sessions/' + encodeURIComponent(key) + '/clear\\')">Clear</button>'
         + '</div></div>';
@@ -5775,16 +6597,247 @@ async function refreshActivity() {
 
 // ── Session helpers ───────────────────────
 function friendlySession(key) {
-  const parts = key.split(':');
-  const channelIcons = { discord: '&#128172;', slack: '&#128172;', telegram: '&#9992;', whatsapp: '&#128241;', dashboard: '&#127760;', webhook: '&#128279;' };
+  var parts = key.split(':');
+  var channelIcons = { discord: '&#128172;', slack: '&#128172;', telegram: '&#9992;', whatsapp: '&#128241;', dashboard: '&#127760;', webhook: '&#128279;' };
   if (parts.length >= 2) {
-    const channel = parts[0];
-    const icon = channelIcons[channel] || '&#128488;';
-    const rest = parts.slice(1).join(':');
-    const label = channel.charAt(0).toUpperCase() + channel.slice(1) + (rest ? ' — ' + rest : '');
-    return { icon, label };
+    var channel = parts[0];
+    var icon = channelIcons[channel] || '&#128488;';
+    var channelName = channel.charAt(0).toUpperCase() + channel.slice(1);
+    var label = channelName;
+    // discord:user:ID → "Discord DM"
+    if (channel === 'discord' && parts[1] === 'user') {
+      label = 'Discord DM';
+    // discord:channel:CHANID:USERID → "Discord Channel"
+    } else if (channel === 'discord' && parts[1] === 'channel') {
+      label = 'Discord Channel';
+    } else if (parts.length === 2 && parts[1]) {
+      label = channelName + ' — ' + parts[1];
+    }
+    return { icon: icon, label: label };
   }
   return { icon: '&#128488;', label: key };
+}
+
+// ── Ops Board ────────────────────────────
+async function refreshOpsBoard() {
+  try {
+    var r = await apiFetch('/api/ops-board');
+    var d = await r.json();
+    var agents = d.agents || [];
+    var summary = d.summary || {};
+    var events = d.events || [];
+    var pendingTasks = d.pendingTasks || [];
+
+    // Clock
+    var clockEl = document.getElementById('ops-board-clock');
+    if (clockEl) {
+      var now = new Date();
+      var dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      var timeStr = now.toLocaleTimeString('en-US', { hour12: false });
+      clockEl.textContent = dateStr + ' ' + timeStr;
+    }
+
+    // Flash refresh dot
+    var dot = document.getElementById('ops-board-refresh-dot');
+    if (dot) { dot.style.opacity = '1'; setTimeout(function() { dot.style.opacity = '0.3'; }, 500); }
+
+    // ── Compact stats bar (inline, not big blocks) ──
+    function fmtTokens(n) {
+      if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return String(n);
+    }
+    function statPill(val, label, color) {
+      return '<span style="color:' + color + ';font-weight:700">' + val + '</span><span style="color:#6e7681;font-size:10px;margin-right:12px"> ' + label + '</span>';
+    }
+    var statsEl = document.getElementById('ops-board-stats');
+    if (statsEl) {
+      var u = d.usage || {};
+      var wk = u.weekly || {};
+      var resetDate = u.weekReset ? new Date(u.weekReset) : null;
+      var daysLeft = resetDate ? Math.max(0, Math.ceil((resetDate.getTime() - Date.now()) / 86400000)) : 0;
+      statsEl.innerHTML =
+        statPill(summary.online || 0, 'on', '#3fb950')
+        + statPill(summary.working || 0, 'wrk', '#58a6ff')
+        + statPill(summary.queued || 0, 'que', '#d29922')
+        + statPill(summary.errors || 0, 'err', summary.errors ? '#f85149' : '#484f58')
+        + statPill(summary.runsToday || 0, 'runs', '#8b949e')
+        + '<span style="border-left:1px solid #30363d;margin:0 6px;height:12px;display:inline-block;vertical-align:middle"></span>'
+        + statPill(fmtTokens(wk.total || 0), 'wk', (wk.total || 0) > 4e8 ? '#f85149' : '#d29922')
+        + '<span style="color:#484f58;font-size:10px">' + daysLeft + 'd left</span>';
+    }
+
+    // ── Agent table ──
+    var statusColors = {
+      'AVAILABLE': '#3fb950', 'WORKING': '#58a6ff', 'QUEUED': '#d29922',
+      'CONNECTING': '#d29922', 'ERROR': '#f85149', 'OFFLINE': '#484f58'
+    };
+    var statusLabels = {
+      'AVAILABLE': 'READY', 'WORKING': 'WORKING', 'QUEUED': 'QUEUED',
+      'CONNECTING': 'CONNECTING', 'ERROR': 'ERROR', 'OFFLINE': 'OFFLINE'
+    };
+    var statusIcons = {
+      'AVAILABLE': '\u25cf', 'WORKING': '\u25b6', 'QUEUED': '\u25c6',
+      'CONNECTING': '\u25cc', 'ERROR': '\u2716', 'OFFLINE': '\u25cb'
+    };
+    var deployed = agents.filter(function(a) { return a.deployed; });
+    var activePool = agents.filter(function(a) { return !a.deployed && ((a.pendingTasks || []).length > 0 || (a.lastCron && (Date.now() - new Date(a.lastCron.lastRun).getTime()) < 6 * 3600000)); });
+    var visible = deployed.concat(activePool);
+
+    function timeAgoFromMs(ms) {
+      if (ms < 0) return 'now';
+      if (ms < 60000) return 'now';
+      var m = Math.floor(ms / 60000);
+      if (m < 60) return m + 'm ago';
+      var h = Math.floor(m / 60);
+      if (h < 24) return h + 'h ago';
+      return Math.floor(h / 24) + 'd ago';
+    }
+
+    var agentsEl = document.getElementById('ops-board-agents');
+    if (agentsEl) {
+      if (visible.length === 0) {
+        agentsEl.innerHTML = '<div style="color:#6e7681;padding:16px">No agents</div>';
+      } else {
+        var tblCss = 'width:100%;border-collapse:collapse;table-layout:auto;font-size:12px';
+        var thCss = 'text-align:left;padding:4px 8px;color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;border-bottom:1px solid #21262d;white-space:nowrap';
+        var html = '<table style="' + tblCss + '">';
+        html += '<thead><tr>'
+          + '<th style="' + thCss + ';width:90px">Status</th>'
+          + '<th style="' + thCss + ';width:55px">Unit</th>'
+          + '<th style="' + thCss + ';width:160px">Agent</th>'
+          + '<th style="' + thCss + '">Task / Activity</th>'
+          + '<th style="' + thCss + ';width:130px">Progress</th>'
+          + '<th style="' + thCss + ';width:70px">Last Run</th>'
+          + '</tr></thead><tbody>';
+
+        for (var i = 0; i < visible.length; i++) {
+          var a = visible[i];
+          var clr = statusColors[a.opStatus] || '#484f58';
+          var lbl = statusLabels[a.opStatus] || a.opStatus;
+          var ico = statusIcons[a.opStatus] || '\u25cb';
+          var unitCell = a.unit ? '<span style="color:#6e7681;font-family:monospace;font-size:11px">' + esc(a.unit) + '</span>' : '<span style="color:#484f58">—</span>';
+          var displayName = esc(a.name);
+          var rowBorder = 'border-bottom:1px solid #161b22';
+          var tdCss = 'padding:6px 8px;vertical-align:middle;' + rowBorder;
+
+          // Task / Activity content
+          var taskText = '';
+          if (a.opStatus === 'WORKING' && a.activity) {
+            taskText = '<span style="color:#58a6ff">' + esc(a.activity) + '</span>';
+          } else if (a.progress && a.progress.detail) {
+            taskText = '<span style="color:#8b949e">' + esc(a.progress.detail) + '</span>';
+          } else if (a.activity && a.activity !== 'IDLE') {
+            taskText = '<span style="color:#8b949e">' + esc(a.activity) + '</span>';
+          } else {
+            taskText = '<span style="color:#484f58">\u2014</span>';
+          }
+
+          // Progress bar inline
+          var progressCell = '';
+          if (a.progress && a.progress.pct != null) {
+            var pct = a.progress.pct;
+            var barClr = pct >= 80 ? '#3fb950' : pct >= 40 ? '#58a6ff' : '#d29922';
+            var barW = 8;
+            var filled = Math.round((pct / 100) * barW);
+            var empty = barW - filled;
+            progressCell = '<span style="font-family:monospace;font-size:11px;color:' + barClr + '">'
+              + '\u2588'.repeat(filled) + '<span style="color:#21262d">' + '\u2591'.repeat(empty) + '</span>'
+              + '</span> <span style="color:#8b949e;font-size:10px">' + pct + '%</span>';
+          }
+
+          // Last run
+          var lastRunText = '';
+          if (a.lastCron && a.lastCron.lastRun) {
+            var lastMs = Date.now() - new Date(a.lastCron.lastRun).getTime();
+            lastRunText = '<span style="color:#6e7681">' + timeAgoFromMs(lastMs) + '</span>';
+          }
+
+          html += '<tr style="background:' + (i % 2 === 0 ? '#0d1117' : '#161b22') + '">'
+            + '<td style="' + tdCss + '"><span style="color:' + clr + ';font-weight:600">' + ico + ' ' + lbl + '</span></td>'
+            + '<td style="' + tdCss + '">' + unitCell + '</td>'
+            + '<td style="' + tdCss + ';color:#c9d1d9;font-weight:600">' + displayName + '</td>'
+            + '<td style="' + tdCss + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0">' + taskText + '</td>'
+            + '<td style="' + tdCss + '">' + progressCell + '</td>'
+            + '<td style="' + tdCss + '">' + lastRunText + '</td>'
+            + '</tr>';
+        }
+        html += '</tbody></table>';
+        agentsEl.innerHTML = html;
+      }
+    }
+
+    // ── Pending tasks (compact) ──
+    var pendEl = document.getElementById('ops-board-pending');
+    if (pendEl) {
+      if (pendingTasks.length === 0) {
+        pendEl.innerHTML = '';
+      } else {
+        var statusColors2 = { 'WORKING': '#58a6ff', 'PENDING': '#d29922', 'DONE': '#3fb950', 'CANCELLED': '#6e7681' };
+        var phtml = '<div style="color:#d29922;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid #21262d;padding-top:6px">DELEGATED TASKS (' + pendingTasks.length + ')</div>';
+        for (var pi = 0; pi < pendingTasks.length; pi++) {
+          var pt = pendingTasks[pi];
+          var ds = pt.displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING');
+          var sc = statusColors2[ds] || (ds === 'DONE' ? '#3fb950' : ds === 'CANCELLED' ? '#6e7681' : ds === 'PENDING' ? '#d29922' : '#58a6ff');
+          var rowOpacity = (pt.status === 'completed' || pt.status === 'cancelled') ? 'opacity:0.6;' : '';
+          phtml += '<div style="display:flex;gap:8px;padding:2px 0;font-size:11px;align-items:baseline;' + rowOpacity + '">'
+            + '<span style="color:#c9d1d9;min-width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.agent) + '</span>'
+            + '<span style="color:' + sc + ';min-width:70px;font-weight:600;flex-shrink:0">' + esc(ds) + '</span>'
+            + '<span style="color:#484f58;min-width:44px;flex-shrink:0">' + esc(pt.elapsed || pt.age || '') + '</span>'
+            + '<span style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.title || '') + '</span>'
+            + '</div>';
+        }
+        pendEl.innerHTML = phtml;
+      }
+    }
+
+    // ── Activity feed (live agent thinking/doing) ──
+    function timeAgoShort(ts) {
+      if (!ts) return '';
+      var ms = Date.now() - new Date(ts).getTime();
+      if (ms < 0) return 'now';
+      if (ms < 60000) return 'now';
+      var m = Math.floor(ms / 60000);
+      if (m < 60) return m + 'm';
+      var h = Math.floor(m / 60);
+      if (h < 24) return h + 'h';
+      return Math.floor(h / 24) + 'd';
+    }
+    var typeColors2 = { ok: '#3fb950', error: '#f85149', working: '#58a6ff', queued: '#d29922' };
+    var typeIcons = { ok: '\u2713', error: '\u2716', working: '\u25b6', queued: '\u25c6' };
+
+    var evEl = document.getElementById('ops-board-events');
+    if (evEl) {
+      if (events.length === 0) {
+        evEl.innerHTML = '<div style="color:#6e7681;padding:8px 0">No activity</div>';
+      } else {
+        var html = '';
+        for (var ei = 0; ei < events.length; ei++) {
+          var ev = events[ei];
+          var tc = typeColors2[ev.type] || '#8b949e';
+          var ti = typeIcons[ev.type] || '\u00b7';
+          var ago = timeAgoShort(ev.time);
+          var evTime = ev.time ? new Date(ev.time) : null;
+          var evTs = evTime ? (String(evTime.getHours()).padStart(2, '0') + ':' + String(evTime.getMinutes()).padStart(2, '0')) : '';
+          // Highlight live "working" entries with a subtle pulse
+          var rowBg = ev.type === 'working' ? 'background:rgba(88,166,255,0.06)' : '';
+          html += '<div style="display:flex;gap:8px;padding:3px 6px;border-bottom:1px solid #0d1117;align-items:baseline;font-size:11px;' + rowBg + '">'
+            + '<span style="color:#484f58;min-width:34px;flex-shrink:0;font-family:monospace">' + esc(evTs) + '</span>'
+            + '<span style="color:#6e7681;min-width:26px;text-align:right;flex-shrink:0">' + esc(ago) + '</span>'
+            + '<span style="color:' + tc + ';min-width:14px;flex-shrink:0;text-align:center">' + ti + '</span>'
+            + '<span style="color:#c9d1d9;min-width:120px;max-width:160px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ev.agent) + '</span>'
+            + '<span style="color:' + (ev.type === 'working' ? '#79c0ff' : '#8b949e') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ev.detail || '') + '</span>'
+            + '</div>';
+        }
+        evEl.innerHTML = html;
+      }
+    }
+
+  } catch(e) {
+    var el = document.getElementById('ops-board-agents');
+    if (el) el.textContent = 'Error: ' + e;
+  }
 }
 
 // ── Memory ────────────────────────────────
@@ -6330,7 +7383,7 @@ async function checkVersion() {
       _restartBannerShown = true;
       var banner = document.createElement('div');
       banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999;background:var(--clementine);color:#fff;text-align:center;padding:8px 16px;font-size:13px;font-weight:600;';
-      banner.innerHTML = 'A new version is available. Restart the dashboard to apply updates: <code style="background:rgba(0,0,0,0.2);padding:2px 8px;border-radius:4px;margin-left:8px">clementine dashboard</code>';
+      banner.innerHTML = 'A new version is available. <button onclick="restartDashboard()" style="background:rgba(0,0,0,0.25);color:#fff;border:1px solid rgba(255,255,255,0.3);padding:4px 12px;border-radius:4px;margin-left:8px;cursor:pointer;font-size:13px;font-weight:600">Restart Dashboard</button>';
       document.body.appendChild(banner);
     }
     // Also handle live-reload for same-process changes (e.g. git pull without rebuild)
@@ -6354,6 +7407,7 @@ function refreshAll() {
   if (currentPage === 'metrics') refreshMetrics();
   if (currentPage === 'self-improve') refreshSelfImprove();
   if (currentPage === 'team') refreshTeam();
+  if (currentPage === 'ops-board') refreshOpsBoard();
   checkVersion();
 }
 
