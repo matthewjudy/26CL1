@@ -5781,6 +5781,11 @@ function esc(s) {
   d.textContent = String(s ?? '');
   return d.innerHTML;
 }
+function shortInc(id) {
+  if (!id) return '';
+  if (/^\\d{14}$/.test(id)) return '#' + id.slice(-4);
+  return id.slice(0, 8);
+}
 function timeAgo(iso) {
   if (!iso) return 'never';
   const ms = Date.now() - new Date(iso).getTime();
@@ -7174,6 +7179,7 @@ async function refreshOpsBoard() {
       // Header row
       var phCss = 'color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;padding:2px 0';
       phtml += '<div style="display:flex;gap:8px;' + phCss + ';border-bottom:1px solid #21262d;margin-bottom:2px">'
+        + '<span style="min-width:46px;flex-shrink:0">INC#</span>'
         + '<span style="min-width:70px;flex-shrink:0">CREATED</span>'
         + '<span style="min-width:50px;flex-shrink:0">ELAPSED</span>'
         + '<span style="min-width:120px;flex-shrink:0">AGENT</span>'
@@ -7187,10 +7193,10 @@ async function refreshOpsBoard() {
           var pt = pendingTasks[pi];
           var ds = pt.displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING');
           var sc = statusColors2[ds] || (ds === 'DONE' ? '#3fb950' : ds === 'CANCELLED' ? '#6e7681' : ds === 'PENDING' ? '#d29922' : '#58a6ff');
-          // Format created time
           var ptCreated = pt.createdAt ? new Date(pt.createdAt) : null;
           var ptCreatedStr = ptCreated ? (String(ptCreated.getMonth()+1) + '/' + String(ptCreated.getDate()) + ' ' + String(ptCreated.getHours()).padStart(2,'0') + ':' + String(ptCreated.getMinutes()).padStart(2,'0')) : '';
           phtml += '<div style="display:flex;gap:8px;padding:2px 0;font-size:11px;align-items:baseline">'
+            + '<span style="color:#58a6ff;min-width:46px;flex-shrink:0;font-family:monospace;font-size:10px">' + esc(shortInc(pt.id)) + '</span>'
             + '<span style="color:#6e7681;min-width:70px;flex-shrink:0;font-family:monospace;font-size:10px">' + esc(ptCreatedStr) + '</span>'
             + '<span style="color:#484f58;min-width:50px;flex-shrink:0">' + esc(pt.elapsed || pt.age || '') + '</span>'
             + '<span style="color:#c9d1d9;min-width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.agent) + '</span>'
@@ -7205,7 +7211,16 @@ async function refreshOpsBoard() {
     // ── Completed tasks ──
     var compEl = document.getElementById('ops-board-completed');
     if (compEl) {
+      var chCss = 'color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;padding:2px 0';
       var chtml = '<div style="color:#3fb950;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">COMPLETED TASKS (' + completedTasks.length + ')</div>';
+      chtml += '<div style="display:flex;gap:8px;' + chCss + ';border-bottom:1px solid #21262d;margin-bottom:2px">'
+        + '<span style="min-width:46px;flex-shrink:0">INC#</span>'
+        + '<span style="min-width:34px;flex-shrink:0">TIME</span>'
+        + '<span style="min-width:26px;flex-shrink:0">AGO</span>'
+        + '<span style="min-width:14px;flex-shrink:0"></span>'
+        + '<span style="min-width:120px;flex-shrink:0">AGENT</span>'
+        + '<span style="flex:1">TASK</span>'
+        + '</div>';
       if (completedTasks.length === 0) {
         chtml += '<div style="color:#6e7681;font-size:11px;padding:2px 0">No recently completed tasks</div>';
       } else {
@@ -7215,10 +7230,10 @@ async function refreshOpsBoard() {
           var ctTs = ctTime ? (String(ctTime.getHours()).padStart(2, '0') + ':' + String(ctTime.getMinutes()).padStart(2, '0')) : '';
           var ctAgo = ct.ago || '';
           chtml += '<div style="display:flex;gap:8px;padding:2px 0;font-size:11px;align-items:baseline">'
+            + '<span style="color:#58a6ff;min-width:46px;flex-shrink:0;font-family:monospace;font-size:10px">' + esc(shortInc(ct.id)) + '</span>'
             + '<span style="color:#484f58;min-width:34px;flex-shrink:0;font-family:monospace">' + esc(ctTs) + '</span>'
             + '<span style="color:#6e7681;min-width:26px;text-align:right;flex-shrink:0">' + esc(ctAgo) + '</span>'
             + '<span style="color:#3fb950;min-width:14px;flex-shrink:0;text-align:center">\u2713</span>'
-            + '<span style="color:#6e7681;min-width:36px;flex-shrink:0;font-size:10px">' + esc(ct.unit || '') + '</span>'
             + '<span style="color:#c9d1d9;min-width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.agent) + '</span>'
             + '<span style="color:#8b949e;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.title || '') + '</span>'
             + '</div>';

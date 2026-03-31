@@ -1043,6 +1043,7 @@ program
 
     function pad(s: string, w: number) { return s.length >= w ? s.slice(0, w) : s + ' '.repeat(w - s.length); }
     function rpad(s: string, w: number) { return s.length >= w ? s.slice(0, w) : ' '.repeat(w - s.length) + s; }
+    function shortInc(id: string): string { return /^\d{14}$/.test(id) ? '#' + id.slice(-4) : id.slice(0, 8); }
 
     // Progress bar using Unicode block characters
     function progressBar(pct: number | null, width: number): string {
@@ -1309,14 +1310,15 @@ program
         out += `\n  ${c.bold}${c.yellow}PENDING TASKS (${pendingTasks.length})${c.reset}\n`;
         usedRows += 2;
         const statusClr: Record<string, string> = { 'WORKING': c.blue, 'PENDING': c.yellow, 'DONE': c.green, 'CANCELLED': c.dim };
-        const ptCreatedW = 11; // "M/DD HH:MM"
+        const ptIncW = 6;
+        const ptCreatedW = 11;
         const ptElapsedW = Math.max(8, Math.floor(content * 0.07));
-        const ptAgentW = Math.max(18, Math.floor(content * 0.16));
+        const ptAgentW = Math.max(18, Math.floor(content * 0.14));
         const ptStatusW = Math.max(10, Math.floor(content * 0.08));
-        const ptDescW = Math.max(20, content - ptCreatedW - ptElapsedW - ptAgentW - ptStatusW - (gap * 4));
+        const ptDescW = Math.max(20, content - ptIncW - ptCreatedW - ptElapsedW - ptAgentW - ptStatusW - (gap * 5));
         // Header
-        out += `  ${c.dim}${pad('CREATED', ptCreatedW)}${g}${pad('ELAPSED', ptElapsedW)}${g}${pad('AGENT', ptAgentW)}${g}${pad('STATUS', ptStatusW)}${g}${pad('TASK', ptDescW)}${c.reset}\n`;
-        out += `  ${c.dim}${'\u2500'.repeat(ptCreatedW)}${g}${'\u2500'.repeat(ptElapsedW)}${g}${'\u2500'.repeat(ptAgentW)}${g}${'\u2500'.repeat(ptStatusW)}${g}${'\u2500'.repeat(ptDescW)}${c.reset}\n`;
+        out += `  ${c.dim}${pad('INC#', ptIncW)}${g}${pad('CREATED', ptCreatedW)}${g}${pad('ELAPSED', ptElapsedW)}${g}${pad('AGENT', ptAgentW)}${g}${pad('STATUS', ptStatusW)}${g}${pad('TASK', ptDescW)}${c.reset}\n`;
+        out += `  ${c.dim}${'\u2500'.repeat(ptIncW)}${g}${'\u2500'.repeat(ptCreatedW)}${g}${'\u2500'.repeat(ptElapsedW)}${g}${'\u2500'.repeat(ptAgentW)}${g}${'\u2500'.repeat(ptStatusW)}${g}${'\u2500'.repeat(ptDescW)}${c.reset}\n`;
         usedRows += 2;
         if (pendingTasks.length === 0) {
           out += `  ${c.dim}No pending tasks${c.reset}\n`;
@@ -1331,7 +1333,8 @@ program
             // Format created time
             const ptCr = (pt as any).createdAt ? new Date((pt as any).createdAt) : null;
             const ptCrStr = ptCr ? `${ptCr.getMonth()+1}/${String(ptCr.getDate()).padStart(2,' ')} ${String(ptCr.getHours()).padStart(2,'0')}:${String(ptCr.getMinutes()).padStart(2,'0')}` : '';
-            out += `  ${c.dim}${pad(ptCrStr, ptCreatedW)}${c.reset}${g}${c.dim}${pad(elapsed, ptElapsedW)}${c.reset}${g}${dimRow}${c.white}${pad(String(pt.agent), ptAgentW)}${c.reset}${g}${sc}${pad(ds, ptStatusW)}${c.reset}${g}${dimRow}${String(pt.title).slice(0, Math.max(20, ptDescW))}${dimEnd}\n`;
+            const ptInc = shortInc(String((pt as any).id || ''));
+            out += `  ${c.blue}${pad(ptInc, ptIncW)}${c.reset}${g}${c.dim}${pad(ptCrStr, ptCreatedW)}${c.reset}${g}${c.dim}${pad(elapsed, ptElapsedW)}${c.reset}${g}${dimRow}${c.white}${pad(String(pt.agent), ptAgentW)}${c.reset}${g}${sc}${pad(ds, ptStatusW)}${c.reset}${g}${dimRow}${String(pt.title).slice(0, Math.max(20, ptDescW))}${dimEnd}\n`;
             usedRows++;
           }
         }
@@ -1341,13 +1344,14 @@ program
       {
         out += `\n  ${c.bold}${c.green}COMPLETED TASKS (${completedTasks.length})${c.reset}\n`;
         usedRows += 2;
-        const ctAgentW = Math.max(20, Math.floor(content * 0.18));
-        const ctTimeW = 5; // HH:MM
+        const ctIncW = 6;
+        const ctAgentW = Math.max(18, Math.floor(content * 0.16));
+        const ctTimeW = 5;
         const ctAgoW = 5;
-        const ctDescW = Math.max(20, content - ctAgentW - ctTimeW - ctAgoW - 2 - (gap * 4));
+        const ctDescW = Math.max(20, content - ctIncW - ctAgentW - ctTimeW - ctAgoW - 2 - (gap * 5));
         // Header
-        out += `  ${c.dim}${pad('TIME', ctTimeW)}${g}${pad('AGO', ctAgoW)}${g}${pad('', 2)}${g}${pad('AGENT', ctAgentW)}${g}${pad('TASK', ctDescW)}${c.reset}\n`;
-        out += `  ${c.dim}${'\u2500'.repeat(ctTimeW)}${g}${'\u2500'.repeat(ctAgoW)}${g}${'\u2500'.repeat(2)}${g}${'\u2500'.repeat(ctAgentW)}${g}${'\u2500'.repeat(ctDescW)}${c.reset}\n`;
+        out += `  ${c.dim}${pad('INC#', ctIncW)}${g}${pad('TIME', ctTimeW)}${g}${pad('AGO', ctAgoW)}${g}${pad('', 2)}${g}${pad('AGENT', ctAgentW)}${g}${pad('TASK', ctDescW)}${c.reset}\n`;
+        out += `  ${c.dim}${'\u2500'.repeat(ctIncW)}${g}${'\u2500'.repeat(ctTimeW)}${g}${'\u2500'.repeat(ctAgoW)}${g}${'\u2500'.repeat(2)}${g}${'\u2500'.repeat(ctAgentW)}${g}${'\u2500'.repeat(ctDescW)}${c.reset}\n`;
         usedRows += 2;
         if (completedTasks.length === 0) {
           out += `  ${c.dim}No completed tasks${c.reset}\n`;
@@ -1359,7 +1363,8 @@ program
             const ctAgo = String(ct.ago || '');
             const ctTitle = String(ct.title || '').slice(0, Math.max(20, ctDescW));
             const ctUnit = ct.unit ? ` (${ct.unit})` : '';
-            out += `  ${c.green}${ctTs}${c.reset}${g}${c.dim}${pad(ctAgo, ctAgoW)}${c.reset}${g}${c.green}${c.bold}\u2713${c.reset}${g}${c.green}${pad(String(ct.agent) + ctUnit, ctAgentW)}${c.reset}${g}${c.green}${ctTitle}${c.reset}\n`;
+            const ctInc = shortInc(String(ct.id || ''));
+            out += `  ${c.blue}${pad(ctInc, ctIncW)}${c.reset}${g}${c.green}${ctTs}${c.reset}${g}${c.dim}${pad(ctAgo, ctAgoW)}${c.reset}${g}${c.green}${c.bold}\u2713${c.reset}${g}${c.green}${pad(String(ct.agent) + ctUnit, ctAgentW)}${c.reset}${g}${c.green}${ctTitle}${c.reset}\n`;
             usedRows++;
           }
         }
