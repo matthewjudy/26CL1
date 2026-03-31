@@ -1047,34 +1047,79 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
   // ── POST routes (actions) ──────────────────────────────────────
 
-  app.post('/api/cron/run/:job', (req, res) => {
+  app.post('/api/cron/run/:job', async (req, res) => {
     const jobName = req.params.job;
     try {
-      const child = spawn('node', [DIST_ENTRY, 'cron', 'run', jobName], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        cwd: BASE_DIR,
-        env: { ...process.env, CLEMENTINE_HOME: BASE_DIR },
-      });
+      // Parse CRON.md to find the job definition
+      const { parseCronJobs } = await import('../gateway/heartbeat.js');
+      const jobs = parseCronJobs();
+      const job = jobs.find(j => j.name === jobName);
+      if (!job) {
+        res.status(404).json({ error: `Cron job not found: ${jobName}` });
+        return;
+      }
 
-      // Capture stderr for error reporting
-      let stderr = '';
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString().slice(0, 500);
-      });
+      // Run through the gateway (same path as daemon) for full visibility
+      const gw = await getGateway();
 
-      child.on('error', (err) => {
-        console.error(`[cron-run] Failed to start '${jobName}': ${err}`);
-      });
+      // Resolve agent name for activity logging
+      let agentName = 'Clementine';
+      let agentUnit = '19Q1';
+      if (job.agentSlug) {
+        try {
+          const profile = gw.getAgentManager().get(job.agentSlug);
+          if (profile) { agentName = profile.name; agentUnit = profile.unit || ''; }
+        } catch { agentName = job.agentSlug; agentUnit = ''; }
+        gw.setSessionProfile(`cron:${jobName}`, job.agentSlug);
+      }
 
-      child.on('exit', (code) => {
-        if (code && code !== 0) {
-          console.error(`[cron-run] '${jobName}' exited with code ${code}: ${stderr.slice(0, 200)}`);
-        }
-      });
+      // Log start to activity feed
+      const startTime = Date.now();
+      const actLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
+      appendFileSync(actLogPath, JSON.stringify({
+        ts: new Date().toISOString(), type: 'start', agent: agentName, unit: agentUnit,
+        trigger: `cron: ${jobName}`, detail: 'Manual trigger from dashboard',
+      }) + '\n');
 
-      child.unref();
       res.json({ ok: true, message: `Triggered cron job: ${jobName}` });
+
+      // Run async (don't block the response)
+      gw.handleCronJob(
+        jobName, job.prompt, job.tier, job.maxTurns, job.model,
+        job.workDir, job.mode, job.maxHours, undefined, job.successCriteria,
+      ).then((response) => {
+        const duration = Date.now() - startTime;
+        // Log done
+        const preview = response ? response.replace(/\*\*/g, '').split('\n')[0].slice(0, 100) : 'Completed';
+        appendFileSync(actLogPath, JSON.stringify({
+          ts: new Date().toISOString(), type: 'done', agent: agentName, unit: agentUnit,
+          trigger: `cron: ${jobName}`, detail: preview, durationMs: duration,
+        }) + '\n');
+        // Write completed task if real output
+        const isNoise = !response || /^No action taken$|^__NOTHING__|^No delegated tasks/i.test(response.trim());
+        if (!isNoise) {
+          try {
+            const { nextTaskId } = require('../config.js');
+            const { AGENTS_DIR, localISO: localISOFn } = require('../config.js');
+            const agentSlug = job.agentSlug || 'clementine';
+            const completedDir = path.join(AGENTS_DIR, agentSlug, 'tasks', 'completed');
+            if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+            const taskId = nextTaskId();
+            const label = jobName.replace(/-task-processor$/, ': Tasks').replace(/-/g, ' ').replace(/\b\w/g, (ch: string) => ch.toUpperCase());
+            writeFileSync(path.join(completedDir, `${taskId}.json`), JSON.stringify({
+              id: taskId, fromAgent: 'cron', toAgent: agentSlug,
+              task: label + ': ' + preview, expectedOutput: '', status: 'completed',
+              createdAt: localISOFn(), updatedAt: localISOFn(), completedAt: localISOFn(),
+              result: preview,
+            }, null, 2));
+          } catch { /* non-fatal */ }
+        }
+      }).catch((err) => {
+        appendFileSync(actLogPath, JSON.stringify({
+          ts: new Date().toISOString(), type: 'error', agent: agentName, unit: agentUnit,
+          trigger: `cron: ${jobName}`, detail: String(err).slice(0, 120),
+        }) + '\n');
+      });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
