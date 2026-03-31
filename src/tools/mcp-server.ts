@@ -15,6 +15,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import express from 'express';
 import pino from 'pino';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
@@ -3449,8 +3451,10 @@ server.tool(
     model: z.string().optional().describe('Model tier: "haiku", "sonnet", or "opus"'),
     can_message: z.array(z.string()).optional().describe('Agent slugs this agent can message'),
     tier: z.number().optional().describe('Security tier (1 = read-only, 2 = read-write). Default: 2.'),
+    unit: z.string().optional().describe('Unit designator — manual identifier for the agent (e.g., "19W1")'),
+    deployed: z.boolean().optional().describe('Whether this agent is deployed (shown on ops board). Default: false.'),
   },
-  async ({ name, description, personality, channel_name, project, tools, model, can_message, tier }) => {
+  async ({ name, description, personality, channel_name, project, tools, model, can_message, tier, unit, deployed }) => {
     assertAgentCrudAllowed('create agents');
 
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -3465,6 +3469,8 @@ server.tool(
 
     // Build frontmatter
     const frontmatter: Record<string, unknown> = { name, description, tier: Math.min(tier ?? 2, 2) };
+    if (unit != null) frontmatter.unit = unit;
+    if (deployed != null) frontmatter.deployed = deployed;
     if (model) frontmatter.model = model;
     if (channel_name) frontmatter.channelName = channel_name;
     if (can_message?.length) frontmatter.canMessage = can_message;
@@ -3500,8 +3506,10 @@ server.tool(
     model: z.string().optional().describe('New model tier'),
     can_message: z.array(z.string()).optional().describe('New canMessage list'),
     tier: z.number().optional().describe('New security tier'),
+    unit: z.string().optional().describe('Unit designator — manual identifier for the agent (e.g., "19W1")'),
+    deployed: z.boolean().optional().describe('Toggle deployed status (shown on ops board)'),
   },
-  async ({ slug, name, description, personality, channel_name, project, tools, model, can_message, tier }) => {
+  async ({ slug, name, description, personality, channel_name, project, tools, model, can_message, tier, unit, deployed }) => {
     assertAgentCrudAllowed('update agents');
 
     const agentFile = path.join(AGENTS_DIR, slug, 'agent.md');
@@ -3517,6 +3525,8 @@ server.tool(
     if (name !== undefined) meta.name = name;
     if (description !== undefined) meta.description = description;
     if (tier !== undefined) meta.tier = Math.min(tier, 2);
+    if (unit !== undefined) meta.unit = unit;
+    if (deployed !== undefined) meta.deployed = deployed;
     if (model !== undefined) meta.model = model;
     if (channel_name !== undefined) meta.channelName = channel_name;
     if (can_message !== undefined) meta.canMessage = can_message;
@@ -3537,6 +3547,8 @@ server.tool(
       model !== undefined && 'model',
       can_message !== undefined && 'canMessage',
       tier !== undefined && 'tier',
+      unit !== undefined && 'unit',
+      deployed !== undefined && 'deployed',
     ].filter(Boolean).join(', ')}`);
   },
 );
@@ -4240,9 +4252,83 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  logger.info('MCP server connected via stdio');
+  const httpPort = process.env.MCP_HTTP_PORT ? parseInt(process.env.MCP_HTTP_PORT, 10) : 0;
+
+  if (httpPort > 0) {
+    // ── HTTP+SSE mode for remote access (e.g. over Tailscale) ──────────
+    const authToken = process.env.MCP_AUTH_TOKEN ?? '';
+    const app = express();
+    app.use(express.json());
+
+    // Optional bearer token auth
+    if (authToken) {
+      app.use((req, res, next) => {
+        if (req.path === '/health') return next(); // health check is public
+        const header = req.headers.authorization ?? '';
+        if (header !== `Bearer ${authToken}`) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+        next();
+      });
+    }
+
+    // Health check
+    app.get('/health', (_req, res) => {
+      res.json({ status: 'ok', transport: 'sse', tools: (server as any)._registeredTools?.size ?? 'unknown' });
+    });
+
+    // Track active SSE transports by session ID
+    const transports = new Map<string, SSEServerTransport>();
+
+    // SSE endpoint — client connects here to establish the event stream.
+    // The module-level `server` has all tools registered. McpServer binds 1:1
+    // with a transport, so only one SSE client at a time. New connections
+    // replace the previous one (fine for single-user Tailscale access).
+    app.get('/sse', async (req, res) => {
+      logger.info({ remoteAddr: req.ip }, 'New SSE connection');
+
+      // Close any prior SSE connection
+      for (const [id, old] of transports) {
+        logger.info({ sessionId: id }, 'Closing previous SSE session');
+        transports.delete(id);
+        try { await old.close(); } catch { /* already closed */ }
+      }
+
+      const transport = new SSEServerTransport('/messages', res);
+      transports.set(transport.sessionId, transport);
+
+      res.on('close', () => {
+        logger.info({ sessionId: transport.sessionId }, 'SSE connection closed');
+        transports.delete(transport.sessionId);
+        transport.close();
+      });
+
+      // server.connect() calls transport.start() internally — don't call start() separately
+      await server.connect(transport);
+    });
+
+    // Message endpoint — client POSTs JSON-RPC messages here
+    app.post('/messages', async (req, res) => {
+      const sessionId = req.query.sessionId as string;
+      const transport = transports.get(sessionId);
+      if (!transport) {
+        res.status(400).json({ error: 'Unknown or expired session. Connect to /sse first.' });
+        return;
+      }
+      await transport.handlePostMessage(req, res);
+    });
+
+    app.listen(httpPort, '0.0.0.0', () => {
+      logger.info({ port: httpPort, auth: authToken ? 'enabled' : 'disabled' }, 'MCP SSE server listening');
+      console.error(`MCP SSE server listening on 0.0.0.0:${httpPort} (auth: ${authToken ? 'enabled' : 'disabled'})`);
+    });
+  } else {
+    // ── Default: stdio mode ────────────────────────────────────────────
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    logger.info('MCP server connected via stdio');
+  }
 }
 
 main().catch(err => {

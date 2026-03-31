@@ -1051,7 +1051,9 @@ export class CronScheduler {
             status: 'ok',
             durationMs: finishedAt.getTime() - startedAt.getTime(),
             attempt,
-            outputPreview: response ? response.slice(0, 200) : undefined,
+            outputPreview: response
+              ? (CronScheduler.isCronNoise(response) ? 'No action taken' : response.slice(0, 200))
+              : 'No action taken',
           };
 
           if (response && !CronScheduler.isCronNoise(response)) {

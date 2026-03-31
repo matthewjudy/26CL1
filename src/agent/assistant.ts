@@ -57,6 +57,7 @@ import {
   localISO,
 } from '../config.js';
 import type { AgentProfile, OnTextCallback, OnToolActivityCallback, SessionData, VerboseLevel } from '../types.js';
+import { appendActivityLog } from '../channels/discord-agent-bot.js';
 import {
   enforceToolPermissions,
   getSecurityPrompt,
@@ -275,6 +276,62 @@ interface TraceEntry {
   type: string;
   timestamp: string;
   content: string;
+}
+
+// ── Live Activity Feed — humanized tool descriptions ────────────────
+
+function humanizeToolUse(toolName: string, input: Record<string, unknown>): string {
+  const p = (key: string) => input[key] ? String(input[key]) : '';
+
+  // File operations
+  if (toolName === 'Read') {
+    const fp = p('file_path');
+    const name = fp ? fp.split('/').pop() : '';
+    return `Reading ${name || 'file'}`;
+  }
+  if (toolName === 'Write') {
+    const fp = p('file_path');
+    const name = fp ? fp.split('/').pop() : '';
+    return `Writing ${name || 'file'}`;
+  }
+  if (toolName === 'Edit') {
+    const fp = p('file_path');
+    const name = fp ? fp.split('/').pop() : '';
+    return `Editing ${name || 'file'}`;
+  }
+  if (toolName === 'Glob') return `Searching files: ${p('pattern').slice(0, 40)}`;
+  if (toolName === 'Grep') return `Searching for: ${p('pattern').slice(0, 40)}`;
+  if (toolName === 'Bash') return `Running: ${p('command').slice(0, 50)}`;
+
+  // Web
+  if (toolName === 'WebSearch') return `Searching web: ${p('query').slice(0, 50)}`;
+  if (toolName === 'WebFetch') return `Fetching: ${p('url').slice(0, 60)}`;
+
+  // MCP tools (memory, vault, tasks, etc.)
+  if (toolName.includes('memory_search')) return `Searching memory: ${p('query').slice(0, 40)}`;
+  if (toolName.includes('memory_read')) return 'Reading memory';
+  if (toolName.includes('memory_write')) return `Writing to memory: ${p('section').slice(0, 40)}`;
+  if (toolName.includes('memory_recall')) return `Recalling: ${p('query').slice(0, 40)}`;
+  if (toolName.includes('note_create')) return `Creating note: ${p('title').slice(0, 40) || p('file_path').slice(0, 40)}`;
+  if (toolName.includes('note_take')) return `Adding to daily note`;
+  if (toolName.includes('task_add')) return `Adding task`;
+  if (toolName.includes('task_update')) return `Updating task`;
+  if (toolName.includes('task_list')) return 'Listing tasks';
+  if (toolName.includes('check_delegation')) return `Checking delegations: ${p('agent').slice(0, 20)}`;
+  if (toolName.includes('delegate_task')) return `Delegating to ${p('to_agent')}`;
+  if (toolName.includes('team_message')) return `Messaging ${p('to')}`;
+  if (toolName.includes('cron_progress')) return 'Updating progress';
+  if (toolName.includes('goal_')) return `Goal: ${toolName.split('goal_')[1] || 'update'}`;
+  if (toolName.includes('outlook_')) return `Outlook: ${toolName.split('outlook_')[1] || 'action'}`;
+  if (toolName.includes('discord_')) return `Discord: ${toolName.split('discord_')[1] || 'action'}`;
+  if (toolName.includes('browser_screenshot')) return 'Taking screenshot';
+  if (toolName.includes('analyze_image')) return 'Analyzing image';
+  if (toolName.includes('rss_fetch')) return 'Fetching RSS feed';
+  if (toolName.includes('vault_stats')) return 'Checking vault stats';
+
+  // Fallback — clean up MCP tool prefix
+  const clean = toolName.replace(/^mcp__19q1-tools__/, '').replace(/_/g, ' ');
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
 }
 
 // ── Cron Output Extraction ──────────────────────────────────────────
@@ -2105,6 +2162,7 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
       // Collect execution trace
       const trace: TraceEntry[] = [];
       const stream = query({ prompt, options: sdkOptions });
+      const cronAgentSlug = sdkOptions.env?.CLEMENTINE_TEAM_AGENT || 'clementine';
 
       for await (const message of stream) {
         if (message.type === 'assistant') {
@@ -2118,6 +2176,13 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
               if (loopCheck.verdict === 'block') {
                 logger.warn({ tool: block.name, ...loopCheck }, 'Tool loop detected — blocking');
               }
+              // Stream tool use to activity feed for real-time dashboard visibility
+              appendActivityLog({
+                agent: cronAgentSlug,
+                type: 'tool',
+                trigger: jobName,
+                detail: humanizeToolUse(block.name, (block.input ?? {}) as Record<string, unknown>),
+              });
               trace.push({
                 type: 'tool_call',
                 timestamp: localISO(),
@@ -2382,6 +2447,12 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
                 if (loopCheck.verdict === 'block') {
                   logger.warn({ tool: block.name, ...loopCheck }, 'Tool loop detected — blocking');
                 }
+                appendActivityLog({
+                  agent: sdkOptions.env?.CLEMENTINE_TEAM_AGENT || 'clementine',
+                  type: 'tool',
+                  trigger: jobName,
+                  detail: humanizeToolUse(block.name, (block.input ?? {}) as Record<string, unknown>),
+                });
               }
             }
           } else if (message.type === 'result') {
@@ -2593,6 +2664,12 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
                 logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
                 const toolLabel = block.name.replace(/^mcp__clementine-tools__/, '').replace(/_/g, ' ');
                 if (onText) onText(`\n[using ${toolLabel}...]\n`);
+                appendActivityLog({
+                  agent: sdkOptions.env?.CLEMENTINE_TEAM_AGENT || 'clementine',
+                  type: 'tool',
+                  trigger: 'team-task',
+                  detail: humanizeToolUse(block.name, (block.input ?? {}) as Record<string, unknown>),
+                });
               }
             }
           } else if (message.type === 'result') {

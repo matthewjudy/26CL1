@@ -118,6 +118,8 @@ export interface AgentProfile {
   tier: number;
   description: string;
   systemPromptBody: string;
+  unit?: string;                   // Unit designator — manual identifier for the agent (e.g., "19W1")
+  deployed?: boolean;              // Manual deploy toggle (independent of channel/token)
   model?: string;
   avatar?: string;                 // URL for agent avatar
   team?: TeamAgentConfig;          // Present if agent has a channel assignment

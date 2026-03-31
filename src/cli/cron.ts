@@ -6,7 +6,7 @@
  * Designed to be called by OS scheduler and exit.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import cron from 'node-cron';
@@ -21,6 +21,21 @@ import {
 } from '../gateway/heartbeat.js';
 
 const BASE_DIR = process.env.CLEMENTINE_HOME || path.join(os.homedir(), '.clementine');
+const ACTIVITY_LOG_PATH = path.join(BASE_DIR, '.activity-log.jsonl');
+
+/** Append a cron activity event to the shared activity log. */
+function logCronActivity(entry: {
+  agent: string;
+  type: 'cron';
+  trigger: string;
+  detail: string;
+  durationMs?: number;
+}) {
+  try {
+    const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + '\n';
+    appendFileSync(ACTIVITY_LOG_PATH, line);
+  } catch { /* non-fatal */ }
+}
 const LAST_RUN_FILE = path.join(BASE_DIR, '.cron_last_run.json');
 
 /** Exponential backoff schedule in ms: 30s, 1m, 5m, 15m, 60m */
@@ -111,11 +126,21 @@ export async function cmdCronRun(jobName: string): Promise<void> {
       status: 'ok',
       durationMs: finishedAt.getTime() - startedAt.getTime(),
       attempt: 1,
-      outputPreview: response ? response.slice(0, 200) : undefined,
+      outputPreview: response && response.trim() !== '__NOTHING__'
+        ? response.slice(0, 200)
+        : 'No action taken',
     });
 
     console.log(response || '(no output)');
-    if (response && response !== '__NOTHING__') {
+    if (response && response.trim() !== '__NOTHING__' && response.trim() !== 'No action taken') {
+      const preview = response.replace(/\*\*/g, '').split('\n')[0].trim();
+      logCronActivity({
+        agent: job.name.replace(/-task-processor$/, '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        type: 'cron',
+        trigger: `Cron: ${job.name}`,
+        detail: preview.length > 120 ? preview.slice(0, 117) + '...' : preview,
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+      });
       console.log('\n(Note: Standalone runner — output not delivered to channels. Use the daemon for channel delivery.)');
     }
   } catch (err) {
@@ -210,12 +235,24 @@ export async function cmdCronRunDue(): Promise<void> {
           status: 'ok',
           durationMs: finishedAt.getTime() - startedAt.getTime(),
           attempt,
-          outputPreview: response ? response.slice(0, 200) : undefined,
+          outputPreview: response && response.trim() !== '__NOTHING__'
+            ? response.slice(0, 200)
+            : 'No action taken',
         });
 
         if (response) {
           console.log(`[${job.name}] ${response}`);
           // Output logged to run history; daemon handles channel delivery
+          if (response.trim() !== '__NOTHING__' && response.trim() !== 'No action taken') {
+            const preview = response.replace(/\*\*/g, '').split('\n')[0].trim();
+            logCronActivity({
+              agent: job.name.replace(/-task-processor$/, '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+              type: 'cron',
+              trigger: `Cron: ${job.name}`,
+              detail: preview.length > 120 ? preview.slice(0, 117) + '...' : preview,
+              durationMs: finishedAt.getTime() - startedAt.getTime(),
+            });
+          }
         }
         succeeded = true;
         break;

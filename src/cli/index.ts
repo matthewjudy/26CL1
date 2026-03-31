@@ -36,6 +36,7 @@ import { runSetup } from './setup.js';
 import { cmdCronList, cmdCronRun, cmdCronRunDue, cmdCronRuns, cmdCronAdd, cmdCronTest, cmdHeartbeat } from './cron.js';
 import { cmdDashboard } from './dashboard.js';
 import { cmdChat } from './chat.js';
+import { cmdAgentChat } from './agent-chat.js';
 import { localISO } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -811,11 +812,517 @@ program
   .description('Launch local command center')
   .option('-p, --port <n>', 'Port (default 3030)', '3030')
   .option('-H, --host <addr>', 'Bind address (default 127.0.0.1, use 0.0.0.0 for network access)')
-  .action((opts: { port?: string; host?: string }) => {
+  .option('--restart', 'Restart the dashboard process')
+  .option('--stop', 'Stop the dashboard process')
+  .option('--install', 'Install dashboard as a persistent macOS LaunchAgent')
+  .option('--uninstall', 'Remove dashboard LaunchAgent')
+  .action((opts: { port?: string; host?: string; restart?: boolean; stop?: boolean; install?: boolean; uninstall?: boolean }) => {
+    const dashLabel = `com.${getAssistantName().toLowerCase()}.dashboard`;
+    const dashPlistPath = path.join(process.env.HOME ?? '', 'Library', 'LaunchAgents', `${dashLabel}.plist`);
+
+    if (opts.uninstall) {
+      if (existsSync(dashPlistPath)) {
+        try { execSync(`launchctl unload "${dashPlistPath}"`, { stdio: 'ignore' }); } catch { /* not loaded */ }
+        unlinkSync(dashPlistPath);
+        console.log(`  Uninstalled dashboard LaunchAgent: ${dashLabel}`);
+      } else {
+        console.log('  Dashboard LaunchAgent not installed.');
+      }
+      return;
+    }
+
+    if (opts.install) {
+      const plistDir = path.dirname(dashPlistPath);
+      if (!existsSync(plistDir)) mkdirSync(plistDir, { recursive: true });
+
+      // Unload existing if present
+      if (existsSync(dashPlistPath)) {
+        try { execSync(`launchctl unload "${dashPlistPath}"`, { stdio: 'ignore' }); } catch { /* not loaded */ }
+      }
+
+      const nodePath = process.execPath;
+      const cliEntry = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
+      const logDir = path.join(BASE_DIR, 'logs');
+      if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+
+      const host = opts.host ?? '0.0.0.0';
+      const port = opts.port ?? '3030';
+      const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${dashLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${nodePath}</string>
+    <string>${cliEntry}</string>
+    <string>dashboard</string>
+    <string>-H</string>
+    <string>${host}</string>
+    <string>-p</string>
+    <string>${port}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${BASE_DIR}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>${path.join(logDir, 'dashboard.log')}</string>
+  <key>StandardErrorPath</key>
+  <string>${path.join(logDir, 'dashboard-error.log')}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${buildLaunchdPath()}</string>
+    <key>CLEMENTINE_HOME</key>
+    <string>${BASE_DIR}</string>
+  </dict>
+</dict>
+</plist>`;
+
+      writeFileSync(dashPlistPath, plist);
+      try {
+        execSync(`launchctl load "${dashPlistPath}"`);
+        console.log(`  Installed dashboard LaunchAgent: ${dashLabel}`);
+        console.log(`  Plist: ${dashPlistPath}`);
+        console.log(`  Logs:  ${logDir}/dashboard.log`);
+        console.log(`  Dashboard will auto-start on login and restart on crash.`);
+      } catch (err) {
+        console.error(`  Failed to load LaunchAgent: ${err}`);
+      }
+      return;
+    }
+
+    if (opts.stop || opts.restart) {
+      // Kill existing dashboard process(es)
+      try {
+        const name = getAssistantName().toLowerCase();
+        const dashPids = execSync(`pgrep -f '${name}.*dashboard' || true`, { encoding: 'utf-8' }).trim();
+        if (dashPids) {
+          let killed = 0;
+          for (const dp of dashPids.split('\n').filter(Boolean)) {
+            const dpid = parseInt(dp, 10);
+            if (!isNaN(dpid) && dpid !== process.pid) {
+              try { process.kill(dpid, 'SIGTERM'); killed++; } catch { /* ignore */ }
+            }
+          }
+          if (killed) console.log(`  Stopped dashboard (${killed} process${killed > 1 ? 'es' : ''}).`);
+        } else {
+          console.log('  No dashboard process found.');
+        }
+      } catch { console.log('  No dashboard process found.'); }
+
+      if (opts.stop) return;
+      // For --restart, brief pause then re-launch
+      setTimeout(() => {
+        cmdDashboard(opts).catch((err: unknown) => {
+          console.error('Dashboard error:', err);
+          process.exit(1);
+        });
+      }, 500);
+      return;
+    }
     cmdDashboard(opts).catch((err: unknown) => {
       console.error('Dashboard error:', err);
       process.exit(1);
     });
+  });
+
+program
+  .command('ops')
+  .description('Live ops board in the terminal')
+  .option('-n, --no-watch', 'Print once and exit (no auto-refresh)')
+  .option('--no-tmux', 'Run directly without tmux (will not survive session resets)')
+  .option('--detach', 'Start ops board in background tmux session without attaching')
+  .option('--kill', 'Stop the persistent ops board tmux session')
+  .action(async (opts: { watch?: boolean; tmux?: boolean; detach?: boolean; kill?: boolean }) => {
+    const TMUX_SESSION = 'clementine-ops';
+
+    // --kill: tear down the persistent tmux session
+    if (opts.kill) {
+      try {
+        execSync(`tmux kill-session -t ${TMUX_SESSION} 2>/dev/null`, { stdio: 'pipe' });
+        console.log(`  Stopped persistent ops board (tmux session: ${TMUX_SESSION}).`);
+      } catch {
+        console.log(`  No persistent ops board running.`);
+      }
+      return;
+    }
+
+    // tmux persistence: if not already inside the ops tmux session, delegate to it
+    if (opts.tmux !== false && opts.watch !== false && !process.env.CLEMENTINE_OPS_INNER) {
+      // Check if tmux is available
+      try {
+        execSync('which tmux', { stdio: 'pipe' });
+      } catch {
+        // No tmux — fall through to direct rendering
+        console.log('  tmux not found — running directly (will not survive session resets).');
+        // fall through
+        opts.tmux = false;
+      }
+
+      if (opts.tmux !== false) {
+        // Check if the tmux session already exists with ops running
+        let sessionExists = false;
+        try {
+          execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null`, { stdio: 'pipe' });
+          sessionExists = true;
+        } catch { /* no session */ }
+
+        if (opts.detach) {
+          if (sessionExists) {
+            console.log(`  Ops board already running in tmux session '${TMUX_SESSION}'.`);
+            console.log(`  Attach with: clementine ops`);
+          } else {
+            const nodeExec = process.execPath;
+            const cliScript = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
+            execSync(
+              `tmux new-session -d -s ${TMUX_SESSION} "CLEMENTINE_OPS_INNER=1 ${nodeExec} ${cliScript} ops"`,
+              { stdio: 'pipe' },
+            );
+            console.log(`  Started ops board in background tmux session '${TMUX_SESSION}'.`);
+            console.log(`  Attach with: clementine ops`);
+          }
+          return;
+        }
+
+        if (sessionExists) {
+          // Attach to existing session
+          const attachCmd = process.env.TMUX
+            ? `tmux switch-client -t ${TMUX_SESSION}`   // already in tmux
+            : `tmux attach-session -t ${TMUX_SESSION}`;
+          try {
+            execSync(attachCmd, { stdio: 'inherit' });
+          } catch { /* user detached or session ended */ }
+          return;
+        }
+
+        // No existing session — create one and attach (or switch)
+        const nodeExec = process.execPath;
+        const cliScript = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
+        if (process.env.TMUX) {
+          // Inside tmux already — create detached, then switch
+          execSync(
+            `tmux new-session -d -s ${TMUX_SESSION} "CLEMENTINE_OPS_INNER=1 ${nodeExec} ${cliScript} ops"`,
+            { stdio: 'pipe' },
+          );
+          try {
+            execSync(`tmux switch-client -t ${TMUX_SESSION}`, { stdio: 'inherit' });
+          } catch { /* user detached */ }
+        } else {
+          execSync(
+            `tmux new-session -s ${TMUX_SESSION} "CLEMENTINE_OPS_INNER=1 ${nodeExec} ${cliScript} ops"`,
+            { stdio: 'inherit' },
+          );
+        }
+        return;
+      }
+    }
+    const BASE = process.env.CLEMENTINE_HOME || `${process.env.HOME}/.clementine`;
+    const tokenPath = `${BASE}/.dashboard-token`;
+    const statusPath = `${BASE}/.bot-status.json`;
+    const hbPath = `${BASE}/.heartbeat_state.json`;
+    const sessPath = `${BASE}/.sessions.json`;
+    const runsDir = `${BASE}/cron/runs`;
+
+    // ANSI helpers
+    const c = {
+      reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
+      green: '\x1b[32m', blue: '\x1b[34m', yellow: '\x1b[33m', red: '\x1b[31m',
+      cyan: '\x1b[36m', gray: '\x1b[90m', white: '\x1b[97m',
+      bgRed: '\x1b[41m', bgGreen: '\x1b[42m', bgYellow: '\x1b[43m', bgBlue: '\x1b[44m',
+      clear: '\x1b[2J\x1b[H',
+    };
+
+    function pad(s: string, w: number) { return s.length >= w ? s.slice(0, w) : s + ' '.repeat(w - s.length); }
+    function rpad(s: string, w: number) { return s.length >= w ? s.slice(0, w) : ' '.repeat(w - s.length) + s; }
+
+    // Progress bar using Unicode block characters
+    function progressBar(pct: number | null, width: number): string {
+      if (pct == null || width < 6) return '';
+      const barW = width - 5; // space for " XX%"
+      const filled = Math.round((pct / 100) * barW);
+      const empty = barW - filled;
+      const barClr = pct >= 80 ? c.green : pct >= 40 ? c.blue : c.yellow;
+      return `${barClr}${'█'.repeat(filled)}${c.gray}${'░'.repeat(empty)}${c.reset} ${c.dim}${rpad(String(pct), 3)}%${c.reset}`;
+    }
+
+    async function render() {
+      // Detect terminal dimensions
+      const cols = process.stdout.columns || 120;
+      const rows = process.stdout.rows || 40;
+
+      // Try dashboard API first, fall back to file reads
+      let data: Record<string, unknown> | null = null;
+      if (existsSync(tokenPath)) {
+        try {
+          const token = readFileSync(tokenPath, 'utf-8').trim();
+          const resp = await fetch(`http://127.0.0.1:3030/api/ops-board`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (resp.ok) data = await resp.json() as Record<string, unknown>;
+        } catch { /* dashboard not running, fall back */ }
+      }
+
+      if (!data) {
+        // Minimal file-based fallback
+        let botStatuses: Record<string, { status: string }> = {};
+        try { if (existsSync(statusPath)) botStatuses = JSON.parse(readFileSync(statusPath, 'utf-8')); } catch {}
+        let hbState: { timestamp?: string; details?: Record<string, number> } = {};
+        try { if (existsSync(hbPath)) hbState = JSON.parse(readFileSync(hbPath, 'utf-8')); } catch {}
+        let sessions: Record<string, { exchanges?: number; timestamp?: string }> = {};
+        try { if (existsSync(sessPath)) sessions = JSON.parse(readFileSync(sessPath, 'utf-8')); } catch {}
+
+        const agents: Record<string, unknown>[] = [];
+        // Q1
+        const hbAge = hbState.timestamp ? (Date.now() - new Date(hbState.timestamp).getTime()) / 60000 : Infinity;
+        const sessKeys = Object.keys(sessions);
+        let latestExch = 0; let totalExch = 0;
+        for (const k of sessKeys) {
+          totalExch += sessions[k].exchanges || 0;
+          const ts = sessions[k].timestamp ? new Date(sessions[k].timestamp!).getTime() : 0;
+          if (ts > latestExch) latestExch = ts;
+        }
+        const exchAge = latestExch ? (Date.now() - latestExch) / 60000 : Infinity;
+        let q1Status = 'OFFLINE'; let q1Activity = '';
+        if (hbAge < 45) {
+          q1Status = exchAge < 10 ? 'WORKING' : 'AVAILABLE';
+          q1Activity = exchAge < 10 ? `Active session (${totalExch} exchanges)` : 'Monitoring';
+        }
+        agents.push({ name: 'Clementine', unit: '19Q1', opStatus: q1Status, model: 'opus', channel: 'Discord DM', activity: q1Activity, deployed: true });
+
+        for (const [slug, bot] of Object.entries(botStatuses)) {
+          agents.push({ name: slug, opStatus: bot.status === 'online' ? 'AVAILABLE' : 'OFFLINE', model: 'sonnet', channel: 'general', activity: '' });
+        }
+
+        // Events from cron runs
+        const events: { time: string; type: string; agent: string; detail: string }[] = [];
+        let runsToday = 0;
+        const today = new Date().toISOString().slice(0, 10);
+        if (existsSync(runsDir)) {
+          for (const file of require('fs').readdirSync(runsDir).filter((f: string) => f.endsWith('.jsonl'))) {
+            try {
+              const lines = readFileSync(`${runsDir}/${file}`, 'utf-8').trim().split('\n').filter(Boolean);
+              for (const line of lines.slice(-5)) {
+                const entry = JSON.parse(line);
+                const t = entry.finishedAt || entry.startedAt || '';
+                if (t.startsWith(today)) runsToday++;
+                // Skip noise entries — idle task processors, empty output, nothing-to-do responses
+                const rawPreview = entry.outputPreview ? String(entry.outputPreview).trim() : '';
+                const isNoise = entry.status === 'ok' && (
+                  !rawPreview ||
+                  rawPreview === 'No action taken' ||
+                  rawPreview === '__NOTHING__' ||
+                  /^__NOTHING__/.test(rawPreview) ||
+                  /^No delegated tasks/i.test(rawPreview) ||
+                  /^Nothing to execute/i.test(rawPreview) ||
+                  /^Standing orders say hold/i.test(rawPreview) ||
+                  /^No (?:new )?tasks/i.test(rawPreview) ||
+                  /no output/i.test(rawPreview)
+                );
+                if (isNoise) continue;
+                const jn = file.replace('.jsonl', '');
+                // Human-readable label instead of raw cron name
+                const cronLabel = jn.replace(/-task-processor$/, ': Tasks').replace(/-/g, ' ').replace(/\b\w/g, (ch: string) => ch.toUpperCase());
+                const dur = Math.round((entry.durationMs || 0) / 1000);
+                const preview = rawPreview ? ' — ' + rawPreview.replace(/\*\*/g, '').split('\n')[0].slice(0, 50) : '';
+                events.push({ time: t, type: entry.status === 'ok' ? 'ok' : 'error', agent: cronLabel, detail: cronLabel + (preview || ' completed') + ' (' + dur + 's)' });
+              }
+            } catch {}
+          }
+        }
+        events.sort((a, b) => b.time.localeCompare(a.time));
+        const sixH = new Date(Date.now() - 6 * 3600000).toISOString().slice(0, 19);
+        data = {
+          agents,
+          events: events.filter(e => e.time >= sixH),
+          pendingTasks: [],
+          summary: { online: agents.filter((a: Record<string, unknown>) => a.opStatus !== 'OFFLINE').length, working: agents.filter((a: Record<string, unknown>) => a.opStatus === 'WORKING').length, queued: 0, errors: 0, runsToday, deployed: agents.length, poolSize: 0 },
+        };
+      }
+
+      const agents = (data.agents || []) as Array<Record<string, any>>;
+      const summary = (data.summary || {}) as Record<string, number>;
+      const events = (data.events || []) as Array<Record<string, string>>;
+      const pendingTasks = (data.pendingTasks || []) as Array<Record<string, unknown>>;
+      const deployed = agents.filter(a => a.deployed);
+      const activePool = agents.filter((a: Record<string, unknown>) => !a.deployed && (((a as any).pendingTasks || []).length > 0 || ((a as any).lastCron && (Date.now() - new Date((a as any).lastCron.lastRun).getTime()) < 6 * 3600000)));
+      const visible = [...deployed, ...activePool];
+
+      // ── Responsive column widths — scale with terminal ──
+      const usable = cols - 4; // 2 char indent each side
+      const gap = Math.max(2, Math.min(5, Math.floor(usable / 50))); // gap scales: 2 at 100, 3 at 150, 4 at 200+
+      const g = ' '.repeat(gap);
+      const totalGaps = gap * 5; // 5 gaps between 6 columns
+      const content = usable - totalGaps;
+      // Proportional: STATUS 8%, UNIT 5%, AGENT 17%, TASK 48%, PROGRESS 14%, LAST 8%
+      const statusW = Math.max(10, Math.floor(content * 0.08));
+      const unitW = Math.max(5, Math.floor(content * 0.05));
+      const nameW = Math.max(16, Math.floor(content * 0.17));
+      const progressW = Math.max(12, Math.floor(content * 0.14));
+      const lastW = Math.max(5, Math.floor(content * 0.08));
+      const activityW = Math.max(20, content - statusW - unitW - nameW - progressW - lastW);
+
+      // Render
+      let out = c.clear;
+      let usedRows = 0;
+
+      // Header — single line, full width
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      const timeStr = now.toLocaleTimeString('en-US', { hour12: false });
+
+      // Stats bar — compact, on same line as header
+      const sb = (val: number, label: string, color: string) => `${color}${c.bold}${val}${c.reset}${c.dim}${label}${c.reset}`;
+      const fmtT = (n: number) => n >= 1e9 ? (n / 1e9).toFixed(1) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(n);
+      const u = (data as any).usage || {};
+      const cs2 = u.currentSession || {};
+      const wk = u.weekly || {};
+      const resetDate = u.weekReset ? new Date(u.weekReset) : null;
+      const daysLeft = resetDate ? Math.max(0, Math.ceil((resetDate.getTime() - Date.now()) / 86400000)) : 0;
+      const resetStr = resetDate ? `${resetDate.getMonth() + 1}/${resetDate.getDate()}` : '—';
+
+      out += `  ${c.bold}${c.blue}OPS BOARD${c.reset}  ${c.dim}${dateStr} ${timeStr}${c.reset}`;
+      // Right-align usage stats
+      const usageStr = `${c.dim}SESSION ${c.reset}${c.blue}${c.bold}${fmtT(cs2.total || 0)}${c.reset}  ${c.dim}WEEKLY ${c.reset}${(wk.total || 0) > 4e8 ? c.red : c.yellow}${c.bold}${fmtT(wk.total || 0)}${c.reset}  ${c.dim}resets ${resetStr} (${daysLeft}d)${c.reset}`;
+      out += `  ${usageStr}\n`;
+      usedRows++;
+
+      // Compact stats line
+      const errClr = (summary.errors || 0) > 0 ? c.red : c.gray;
+      out += `  ${sb(summary.online || 0, ' on', c.green)} ${sb(summary.working || 0, ' wrk', c.blue)} ${sb(summary.queued || 0, ' que', c.yellow)} ${sb(summary.errors || 0, ' err', errClr)} ${sb(summary.runsToday || 0, ' runs', c.white)} ${c.dim}│${c.reset} ${sb(summary.deployed || 0, ' deployed', c.gray)} ${sb(summary.poolSize || 0, ' pool', c.gray)}\n`;
+      usedRows++;
+
+      // Separator
+      out += `  ${c.dim}${'─'.repeat(usable)}${c.reset}\n`;
+      usedRows++;
+
+      // ── Agent table — responsive columns ──
+      const statusStyle: Record<string, { sym: string; clr: string }> = {
+        'AVAILABLE':  { sym: '● READY', clr: c.green },
+        'WORKING':    { sym: '▶ WORK', clr: c.blue },
+        'QUEUED':     { sym: '◆ QUEUE', clr: c.yellow },
+        'CONNECTING': { sym: '◌ CONN', clr: c.yellow },
+        'ERROR':      { sym: '✖ ERROR', clr: c.red },
+        'OFFLINE':    { sym: '○ OFF', clr: c.gray },
+      };
+
+      // Helper: time ago from a timestamp
+      function timeAgoShort(ts: string | undefined): string {
+        if (!ts) return '';
+        const ms = Date.now() - new Date(ts).getTime();
+        if (ms < 0 || ms < 60000) return 'now';
+        const m = Math.floor(ms / 60000);
+        if (m < 60) return m + 'm';
+        const h = Math.floor(m / 60);
+        if (h < 24) return h + 'h';
+        return Math.floor(h / 24) + 'd';
+      }
+
+      // Header row: STATUS | UNIT | AGENT | TASK / ACTIVITY | PROGRESS | LAST
+      let hdr = `  ${c.dim}${pad('STATUS', statusW)}${g}${pad('UNIT', unitW)}${g}${pad('AGENT', nameW)}${g}${pad('TASK / ACTIVITY', activityW)}${g}${pad('PROGRESS', progressW)}${g}${pad('LAST', lastW)}${c.reset}`;
+      out += hdr + '\n';
+      out += `  ${c.dim}${'─'.repeat(statusW)}${g}${'─'.repeat(unitW)}${g}${'─'.repeat(nameW)}${g}${'─'.repeat(activityW)}${g}${'─'.repeat(progressW)}${g}${'─'.repeat(lastW)}${c.reset}\n`;
+      usedRows += 2;
+
+      for (const a of visible) {
+        const st = statusStyle[a.opStatus] || statusStyle['OFFLINE'];
+        const unitStr = a.unit != null ? a.unit : '—';
+        const displayName = a.name;
+
+        // Task / Activity text
+        let taskText = '—';
+        if (a.opStatus === 'WORKING' && a.activity) {
+          taskText = a.activity;
+        } else if (a.progress && a.progress.detail) {
+          taskText = a.progress.detail;
+        } else if (a.activity && a.activity !== 'IDLE') {
+          taskText = a.activity;
+        }
+        const actClr = a.opStatus === 'WORKING' ? c.blue : a.opStatus === 'QUEUED' ? c.yellow : c.gray;
+
+        // Progress bar
+        let progStr = '';
+        if (a.progress && a.progress.pct != null) {
+          progStr = progressBar(a.progress.pct, progressW);
+        } else {
+          progStr = pad('', progressW);
+        }
+
+        // Last run
+        const lastCron = a.lastCron;
+        const lastStr = lastCron && lastCron.lastRun ? timeAgoShort(lastCron.lastRun) : '';
+
+        let row = `  ${st.clr}${pad(st.sym, statusW)}${c.reset}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${g}${c.white}${pad(displayName, nameW)}${c.reset}${g}${actClr}${pad(taskText.slice(0, activityW), activityW)}${c.reset}${g}${progStr}${g}${c.dim}${pad(lastStr, lastW)}${c.reset}`;
+        out += row + '\n';
+        usedRows++;
+      }
+
+      // ── Pending tasks — only if there are any ──
+      if (pendingTasks.length > 0) {
+        out += `\n  ${c.bold}${c.yellow}DELEGATED TASKS (${pendingTasks.length})${c.reset}\n`;
+        usedRows += 2;
+        const statusClr: Record<string, string> = { 'WORKING': c.blue, 'PENDING': c.yellow, 'DONE': c.green, 'CANCELLED': c.dim };
+        const ptAgentW = Math.max(20, Math.floor(content * 0.20));
+        const ptStatusW = Math.max(10, Math.floor(content * 0.10));
+        const ptElapsedW = Math.max(8, Math.floor(content * 0.08));
+        const ptDescW = Math.max(20, content - ptAgentW - ptStatusW - ptElapsedW - (gap * 3));
+        for (const pt of pendingTasks) {
+          const ds = String((pt as any).displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING'));
+          const sc = statusClr[ds] || (ds === 'DONE' ? c.green : ds === 'CANCELLED' ? c.dim : ds === 'PENDING' ? c.yellow : c.blue);
+          const elapsed = String((pt as any).elapsed || pt.age || '');
+          const dimRow = (pt.status === 'completed' || pt.status === 'cancelled') ? c.dim : '';
+          const dimEnd = dimRow ? c.reset : '';
+          out += `  ${dimRow}${c.white}${pad(String(pt.agent), ptAgentW)}${c.reset}${g}${sc}${pad(ds, ptStatusW)}${c.reset}${g}${c.dim}${pad(elapsed, ptElapsedW)}${c.reset}${g}${dimRow}${String(pt.title).slice(0, Math.max(20, ptDescW))}${dimEnd}\n`;
+          usedRows++;
+        }
+      }
+
+      // ── Activity feed — fill remaining terminal rows ──
+      out += `\n  ${c.dim}${'─'.repeat(usable)}${c.reset}\n`;
+      out += `  ${c.bold}${c.blue}ACTIVITY FEED${c.reset}\n`;
+      usedRows += 3;
+
+      const footerRows = 1; // footer line
+      const availableEventRows = Math.max(3, rows - usedRows - footerRows);
+
+      if (events.length === 0) {
+        out += `  ${c.dim}No activity${c.reset}\n`;
+      } else {
+        const typeClr: Record<string, string> = { ok: c.green, error: c.red, working: c.blue, queued: c.yellow };
+        const typeIcon: Record<string, string> = { ok: '✓', error: '✖', working: '▶', queued: '◆' };
+        const agentW = Math.max(18, Math.floor(content * 0.18));
+        const detailW = Math.max(20, content - 5 - 6 - 4 - agentW - (gap * 3));
+        for (const ev of events.slice(0, availableEventRows)) {
+          const evT = ev.time ? new Date(ev.time) : null;
+          const ts = evT ? `${String(evT.getHours()).padStart(2, '0')}:${String(evT.getMinutes()).padStart(2, '0')}` : '     ';
+          const ms = evT ? Date.now() - evT.getTime() : 0;
+          let ago = '';
+          if (ms < 60000) ago = 'now';
+          else if (ms < 3600000) ago = Math.floor(ms / 60000) + 'm';
+          else ago = Math.floor(ms / 3600000) + 'h';
+          const tc = typeClr[ev.type] || c.gray;
+          const ti = typeIcon[ev.type] || '·';
+          // Highlight live working entries
+          const detailClr = ev.type === 'working' ? c.blue : c.gray;
+          out += `  ${c.dim}${ts}${c.reset}${g}${c.gray}${pad(ago, 4)}${c.reset}${g}${tc}${c.bold}${pad(ti, 2)}${c.reset}${g}${c.white}${pad(ev.agent, agentW)}${c.reset}${g}${detailClr}${(ev.detail || '').slice(0, Math.max(20, detailW))}${c.reset}\n`;
+        }
+      }
+
+      out += `${c.dim}  ${pad('', usable)}${c.reset}\n`;
+      out += `${c.dim}  Refreshing every 10s · ${cols}x${rows} · Ctrl+C to exit${c.reset}`;
+      process.stdout.write(out);
+    }
+
+    await render();
+    if (opts.watch !== false) {
+      setInterval(render, 10000);
+    }
   });
 
 program
@@ -827,6 +1334,19 @@ program
   .action((opts: { model?: string; project?: string; profile?: string }) => {
     cmdChat(opts).catch((err: unknown) => {
       console.error('Chat error:', err);
+      process.exit(1);
+    });
+  });
+
+program
+  .command('agent-chat')
+  .description('Interactive chat session with a team agent')
+  .argument('[slug]', 'Agent slug (supports fuzzy matching, e.g. "olivia" matches "olivia-pope")')
+  .option('-m, --model <tier>', 'Model tier override (haiku, sonnet, opus)')
+  .option('-l, --list', 'List available agents')
+  .action((slug: string | undefined, opts: { model?: string; list?: boolean }) => {
+    cmdAgentChat(slug ?? '', opts).catch((err: unknown) => {
+      console.error('Agent chat error:', err);
       process.exit(1);
     });
   });

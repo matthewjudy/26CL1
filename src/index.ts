@@ -576,6 +576,28 @@ async function asyncMain(): Promise<void> {
   cronScheduler.start();
   const timerInterval = startTimerChecker(dispatcher, gateway);
 
+  // ── Daemon status file — real-time Q1 status for the dashboard ──
+  const daemonStartedAt = new Date().toISOString();
+  const daemonStatusPath = path.join(config.BASE_DIR, '.daemon-status.json');
+  const writeDaemonStatus = () => {
+    try {
+      const runningJobs = cronScheduler.getRunningJobs();
+      const status = {
+        pid: process.pid,
+        startedAt: daemonStartedAt,
+        updatedAt: new Date().toISOString(),
+        uptime: Math.round(process.uptime()),
+        status: runningJobs.length > 0 ? 'working' : 'online',
+        runningJobs,
+        channels: activeChannels,
+      };
+      writeFileSync(daemonStatusPath, JSON.stringify(status, null, 2));
+    } catch { /* non-fatal */ }
+  };
+  writeDaemonStatus();
+  cronScheduler.onStatusChange(writeDaemonStatus);
+  const daemonStatusInterval = setInterval(writeDaemonStatus, 30_000);
+
   // Deliver pending team messages every 15s (picks up MCP-written messages)
   const teamDeliveryInterval = setInterval(() => {
     try { gateway.getTeamBus().deliverPending(); } catch { /* non-fatal */ }

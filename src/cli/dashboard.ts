@@ -17,6 +17,8 @@ import {
   statSync,
   readdirSync,
   mkdirSync,
+  renameSync,
+  appendFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -2346,7 +2348,32 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                 delegations[a.slug] = [];
                 for (const tf of taskFiles) {
                   try {
-                    const task = JSON.parse(readFileSync(path.join(tasksDir, tf), 'utf-8'));
+                    const taskPath = path.join(tasksDir, tf);
+                    const task = JSON.parse(readFileSync(taskPath, 'utf-8'));
+                    // Auto-archive completed/cancelled tasks to completed/ subfolder
+                    if (task.status === 'completed' || task.status === 'complete' || task.status === 'cancelled') {
+                      try {
+                        const completedDir = path.join(tasksDir, 'completed');
+                        if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+                        renameSync(taskPath, path.join(completedDir, tf));
+                        // Write completion event to activity feed
+                        const firstLine = (task.task || '').split('\n')[0].trim();
+                        const title = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+                        const resultSnippet = task.result ? (' — ' + (task.result.length > 120 ? task.result.slice(0, 117) + '...' : task.result)) : '';
+                        const activityEntry = {
+                          ts: new Date().toISOString(),
+                          type: task.status === 'cancelled' ? 'error' : 'done',
+                          agent: a.name,
+                          unit: a.unit || '',
+                          trigger: 'delegation',
+                          detail: (task.status === 'cancelled' ? '✖ Cancelled: ' : '✓ Completed: ') + title + resultSnippet,
+                        };
+                        const logPath = path.join(BASE_DIR, '.activity-log.jsonl');
+                        appendFileSync(logPath, JSON.stringify(activityEntry) + '\n');
+                        console.log(`[dashboard] Auto-archived ${task.status} task ${task.id} for ${a.slug}`);
+                      } catch { /* archive failed, still skip display */ }
+                      continue;
+                    }
                     delegations[a.slug].push({
                       id: task.id || tf.replace('.json', ''),
                       task: task.task || '',
@@ -2380,13 +2407,15 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                   // Use the most recently updated progress file
                   const existing = agentProgress[a.slug];
                   if (!existing || (prog.lastRunAt && (!existing.updatedAt || prog.lastRunAt > existing.updatedAt))) {
-                    const pendingCount = (prog.pendingItems || []).length;
-                    const completedCount = (prog.completedItems || []).length;
-                    const total = pendingCount + completedCount;
-                    const pct = total > 0 ? Math.round((completedCount / total) * 100) : null;
                     // Extract phase/detail from state object first, fall back to notes
                     const phase = (prog.state && prog.state.phase) ? String(prog.state.phase).slice(0, 40)
                       : prog.notes ? prog.notes.split('\n')[0].slice(0, 40) : 'Working';
+                    // Only compute progress bar when agent is actively working (not idle/complete)
+                    const isIdle = phase.toLowerCase() === 'idle' || phase.toLowerCase() === 'complete' || phase.toLowerCase() === 'waiting';
+                    const pendingCount = isIdle ? 0 : (prog.pendingItems || []).length;
+                    const completedCount = isIdle ? 0 : (prog.completedItems || []).length;
+                    const total = pendingCount + completedCount;
+                    const pct = (!isIdle && total > 0) ? Math.round((completedCount / total) * 100) : null;
                     const detail = (prog.state && prog.state.detail) ? String(prog.state.detail).slice(0, 60)
                       : pendingCount > 0 ? `${completedCount}/${total} done`
                       : (prog.notes || '').split('\n')[0].slice(0, 60) || 'complete';
@@ -2618,13 +2647,17 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       }
 
       // ── Live activity from bot statuses (what agents are doing RIGHT NOW) ──
+      const liveAgents = new Set<string>(); // track agents with live ⚡ entries
       for (const a of agents) {
         const bot = botStatuses[a.slug];
-        if (bot?.activity?.trigger && bot?.activity?.since) {
+        // Only show live activity if the agent is actively processing (not stale)
+        if (bot?.status === 'processing' && bot?.activity?.trigger && bot?.activity?.since) {
+          const agentLabel = a.name + (a.unit ? ' (' + a.unit + ')' : '');
+          liveAgents.add(agentLabel);
           events.push({
             time: bot.activity.since,
             type: 'working',
-            agent: a.name + (a.unit ? ' (' + a.unit + ')' : ''),
+            agent: agentLabel,
             detail: '⚡ ' + bot.activity.trigger + (bot.activity.action ? ' → ' + bot.activity.action : ''),
           });
         }
@@ -2633,15 +2666,27 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       // Sort newest first
       events.sort((a, b) => b.time.localeCompare(a.time));
 
-      // Deduplicate — if a "start" and "done" event exist for the same agent within 2s, keep only "done"
+      // Build a set of agents that have "done" events, keyed by agent name
+      const agentDoneSet = new Set<string>();
+      for (const ev of events) {
+        if (ev.type === 'ok' && ev.detail.startsWith('✓ ')) {
+          agentDoneSet.add(ev.agent);
+        }
+      }
+
+      // Deduplicate:
+      // 1. Remove "▶ start" entries if the same agent has ANY "done" entry (no time window)
+      // 2. Remove "▶ start" entries if the same agent has a live "⚡" entry (live supersedes logged start)
+      // 3. Standard key-based dedup for everything else
       const deduped: typeof events = [];
       const seen = new Set<string>();
       for (const ev of events) {
         const key = ev.agent + '|' + ev.time.slice(0, 16); // same agent, same minute
         if (ev.type === 'working' && ev.detail.startsWith('▶ ')) {
-          // Check if there's a matching "done" event — if so, skip the "start"
-          const hasDone = events.some(e2 => e2 !== ev && e2.agent === ev.agent && e2.type === 'ok' && e2.detail.startsWith('✓ ') && Math.abs(new Date(e2.time).getTime() - new Date(ev.time).getTime()) < 300000);
-          if (hasDone) continue;
+          // Skip start entries if there's a matching done for this agent
+          if (agentDoneSet.has(ev.agent)) continue;
+          // Skip start entries if there's a live ⚡ entry for this agent
+          if (liveAgents.has(ev.agent)) continue;
         }
         if (!seen.has(key + ev.detail.slice(0, 40))) {
           seen.add(key + ev.detail.slice(0, 40));
@@ -2653,27 +2698,35 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString().slice(0, 19);
       const recentEvents = deduped.filter(e => e.time >= sixHoursAgo);
 
-      // ── Q1 (Clementine) synthetic agent ──
-      let q1Status = 'OFFLINE';
+      // ── Q1 (Clementine) synthetic agent — real-time status from daemon ──
+      let q1Status = 'AVAILABLE';
       let q1Activity = '';
-      let q1BotStatus = 'offline';
+      let q1BotStatus = 'online';
       let q1Channel = 'Discord DM';
       try {
+        const daemonPath = path.join(BASE_DIR, '.daemon-status.json');
         const hbPath = path.join(BASE_DIR, '.heartbeat_state.json');
         const sessPath = path.join(BASE_DIR, '.sessions.json');
+        let daemonState: { pid?: number; startedAt?: string; updatedAt?: string; uptime?: number; status?: string; runningJobs?: string[]; channels?: string[] } = {};
         let hbState: { timestamp?: string; details?: { tasks_pending?: number; tasks_overdue?: number; inbox_count?: number } } = {};
         let sessData: Record<string, { exchanges?: number; timestamp?: string }> = {};
+        if (existsSync(daemonPath)) daemonState = JSON.parse(readFileSync(daemonPath, 'utf-8'));
         if (existsSync(hbPath)) hbState = JSON.parse(readFileSync(hbPath, 'utf-8'));
         if (existsSync(sessPath)) sessData = JSON.parse(readFileSync(sessPath, 'utf-8'));
 
-        // Q1 is "online" if heartbeat was within last 45 minutes
-        const hbAge = hbState.timestamp ? (Date.now() - new Date(hbState.timestamp).getTime()) / 60000 : Infinity;
-        if (hbAge < 45) {
+        // Daemon status is the primary source (updated on every cron state change + every 30s)
+        const daemonAge = daemonState.updatedAt ? (Date.now() - new Date(daemonState.updatedAt).getTime()) / 1000 : Infinity;
+        if (daemonAge < 120) {
           q1BotStatus = 'online';
-          q1Status = 'AVAILABLE';
+          const runningJobs = daemonState.runningJobs || [];
+          if (runningJobs.length > 0) {
+            q1Status = 'WORKING';
+            const jobLabels = runningJobs.map(j => humanCronLabel(j));
+            q1Activity = 'Dispatching: ' + jobLabels.join(', ');
+          }
         }
 
-        // Check if there's an active conversation (exchange within last 10 min)
+        // Active conversation takes priority
         const sessKeys = Object.keys(sessData);
         let latestExchange = 0;
         let totalExchanges = 0;
@@ -2684,10 +2737,11 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
           if (ts > latestExchange) latestExchange = ts;
         }
         const exchangeAge = latestExchange ? (Date.now() - latestExchange) / 60000 : Infinity;
-        if (exchangeAge < 10 && q1BotStatus === 'online') {
+        if (exchangeAge < 10) {
           q1Status = 'WORKING';
           q1Activity = 'Active session (' + totalExchanges + ' exchanges)';
-        } else if (q1BotStatus === 'online') {
+        } else if (q1Status === 'AVAILABLE' && !q1Activity) {
+          // Show heartbeat watchlist or uptime when idle
           const d = hbState.details;
           if (d) {
             const parts: string[] = [];
@@ -2696,19 +2750,19 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
             if (d.inbox_count) parts.push(d.inbox_count + ' inbox');
             q1Activity = parts.length ? 'Watching: ' + parts.join(', ') : 'Monitoring';
           } else {
-            q1Activity = 'Monitoring';
+            const upMin = daemonState.uptime ? Math.round(daemonState.uptime / 60) : 0;
+            q1Activity = upMin > 0 ? 'Online — uptime ' + (upMin >= 60 ? Math.floor(upMin / 60) + 'h ' + (upMin % 60) + 'm' : upMin + 'm') : 'Monitoring';
           }
         }
 
-        // Count system cron runs as Q1 dispatches
-        const sysCronJobs = cronRuns['_system'] || [];
-        const allCronJobs = Object.values(cronRuns).flat();
-
-        // Q1 dispatches ALL cron jobs, so attribute total runs to it
-        const q1CronActivity = allCronJobs.sort((x, y) => y.lastRun.localeCompare(x.lastRun))[0] || null;
-        if (q1CronActivity && !q1Activity) {
-          const ago = Math.round((Date.now() - new Date(q1CronActivity.lastRun).getTime()) / 60000);
-          q1Activity = 'Last dispatch: ' + humanCronLabel(q1CronActivity.jobName) + ' (' + (ago < 1 ? 'just now' : ago + 'm ago') + ')';
+        // Fall back to last cron dispatch if still no activity
+        if (!q1Activity) {
+          const allCronJobs = Object.values(cronRuns).flat();
+          const q1CronActivity = allCronJobs.sort((x, y) => y.lastRun.localeCompare(x.lastRun))[0] || null;
+          if (q1CronActivity) {
+            const ago = Math.round((Date.now() - new Date(q1CronActivity.lastRun).getTime()) / 60000);
+            q1Activity = 'Last dispatch: ' + humanCronLabel(q1CronActivity.jobName) + ' (' + (ago < 1 ? 'just now' : ago + 'm ago') + ')';
+          }
         }
       } catch { /* ignore */ }
 
@@ -2760,9 +2814,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       const queued = visibleAgents.filter(a => a.opStatus === 'QUEUED').length;
       const errors = visibleAgents.filter(a => a.opStatus === 'ERROR').length;
 
-      // Collect ALL delegated tasks from vault (not just visible agents)
-      // Include pending/in-progress always, completed only if within 48h
-      const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
+      // Collect active delegated tasks from vault (pending/in-progress only — completed are auto-archived)
       const allPendingTasks: Array<{ agent: string; id: string; title: string; status: string; displayStatus: string; priority: number; age: string; elapsed: string; sortTime: number }> = [];
       const allDelegationEntries = Object.entries(delegations);
       for (const [agentSlug, tasks] of allDelegationEntries) {
@@ -2770,9 +2822,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         const agentDef = all.find(a => a.slug === agentSlug);
         const agentName = agentDef ? agentDef.name : agentSlug;
         for (const t of tasks) {
+          // Skip completed/cancelled tasks (should already be archived, but defensive)
+          if (t.status === 'completed' || t.status === 'complete' || t.status === 'cancelled') continue;
           const ageMs = t.updatedAt ? Date.now() - new Date(t.updatedAt).getTime() : 0;
-          // Skip completed/cancelled tasks older than 48 hours
-          if ((t.status === 'completed' || t.status === 'cancelled') && ageMs > FORTY_EIGHT_HOURS_MS) continue;
           const firstLine = t.task.split('\n')[0].trim();
           const sentenceMatch = firstLine.match(/^(.+?[.!?])\s/);
           const raw = sentenceMatch ? sentenceMatch[1] : firstLine;
@@ -2802,6 +2854,49 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         return b.sortTime - a.sortTime;
       });
 
+      // Completed tasks — scan agents/*/tasks/completed/*.json
+      const completedTasks: Array<{ agent: string; unit: string; id: string; title: string; status: string; result: string; completedAt: string; ago: string }> = [];
+      const agentsDir2 = path.join(SYSTEM_DIR, 'agents');
+      if (existsSync(agentsDir2)) {
+        for (const a of all) {
+          const completedDir = path.join(agentsDir2, a.slug, 'tasks', 'completed');
+          if (!existsSync(completedDir)) continue;
+          try {
+            const cFiles = readdirSync(completedDir).filter(f => f.endsWith('.json'));
+            for (const cf of cFiles) {
+              try {
+                const ct = JSON.parse(readFileSync(path.join(completedDir, cf), 'utf-8'));
+                const firstLine = (ct.task || '').split('\n')[0].trim();
+                const title = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+                const result = ct.result ? (ct.result.length > 120 ? ct.result.slice(0, 117) + '...' : ct.result) : '';
+                const completedAt = ct.completedAt || ct.updatedAt || '';
+                const ageMs = completedAt ? Date.now() - new Date(completedAt).getTime() : 0;
+                const ageD = Math.floor(ageMs / 86400000);
+                const ageH = Math.floor(ageMs / 3600000);
+                const ageM = Math.floor(ageMs / 60000);
+                const ago = ageD > 0 ? ageD + 'd' : ageH > 0 ? ageH + 'h' : ageM > 0 ? ageM + 'm' : 'now';
+                completedTasks.push({
+                  agent: a.name,
+                  unit: a.unit || '',
+                  id: ct.id || cf.replace('.json', ''),
+                  title,
+                  status: ct.status || 'completed',
+                  result,
+                  completedAt,
+                  ago,
+                });
+              } catch { /* skip */ }
+            }
+          } catch { /* skip */ }
+        }
+      }
+      completedTasks.sort((a, b) => {
+        const ta = a.completedAt ? new Date(a.completedAt).getTime() : 0;
+        const tb = b.completedAt ? new Date(b.completedAt).getTime() : 0;
+        return tb - ta;
+      });
+      const recentCompleted = completedTasks.slice(0, 10);
+
       // Claude Code usage stats
       const usage = computeClaudeUsage();
 
@@ -2810,6 +2905,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         systemCron,
         events: recentEvents,
         pendingTasks: allPendingTasks,
+        completedTasks: recentCompleted,
         summary: { deployed: deployed.length, online, working, queued, errors, runsToday, poolSize: visibleAgents.length - deployed.length },
         usage,
         timestamp: localISO(),
@@ -3390,6 +3486,25 @@ function getDashboardHTML(token: string): string {
   .page { display: none; }
   .page.active { display: block; }
   #page-ops-board.active { display: flex; flex: 1; min-height: 0; }
+
+  /* ── Fullscreen mode (ops board) ────────── */
+  .layout.fullscreen-mode {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+  .layout.fullscreen-mode > header,
+  .layout.fullscreen-mode > .sidebar {
+    display: none !important;
+  }
+  .layout.fullscreen-mode > .content {
+    grid-column: 1 / -1;
+    grid-row: 1 / -1;
+    padding: 0;
+  }
+  .layout.fullscreen-mode #ops-board-container {
+    border-radius: 0;
+    padding: 20px 24px;
+  }
   .page-title {
     font-size: 24px;
     font-weight: 600;
@@ -5019,8 +5134,10 @@ function getDashboardHTML(token: string): string {
         </div>
         <!-- Agent table -->
         <div id="ops-board-agents" style="margin-bottom:10px;flex-shrink:0;overflow-y:auto;max-height:50vh;width:100%">Loading...</div>
-        <!-- Pending tasks (collapsed when empty) -->
+        <!-- Pending tasks (always visible) -->
         <div id="ops-board-pending" style="flex-shrink:0"></div>
+        <!-- Completed tasks -->
+        <div id="ops-board-completed" style="flex-shrink:0;max-height:25vh;overflow-y:auto"></div>
         <!-- Event log — fills remaining space -->
         <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;border-top:1px solid #21262d;padding-top:8px;margin-top:4px">
           <div style="color:#58a6ff;font-weight:700;font-size:11px;margin-bottom:6px;flex-shrink:0">ACTIVITY FEED</div>
@@ -5546,42 +5663,58 @@ function apiFetch(url, opts) {
 // ── Navigation ────────────────────────────
 // ── Kiosk mode ──
 var isKiosk = new URLSearchParams(window.location.search).has('kiosk');
-if (isKiosk) {
-  document.querySelector('.sidebar').style.display = 'none';
-  document.querySelector('.header').style.display = 'none';
-  document.querySelector('.main-content').style.gridColumn = '1 / -1';
-  document.body.style.gridTemplateColumns = '1fr';
-}
 
 let currentPage = isKiosk ? 'ops-board' : 'overview';
 if (isKiosk) {
   document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
   var opsPage = document.getElementById('page-ops-board');
   if (opsPage) opsPage.classList.add('active');
+  document.querySelector('.layout').classList.add('fullscreen-mode');
 }
 var prevAgentSlugs = null;
+function enterFullscreen() {
+  document.querySelector('.layout').classList.add('fullscreen-mode');
+}
+function exitFullscreen() {
+  document.querySelector('.layout').classList.remove('fullscreen-mode');
+}
+function showPage(page) {
+  currentPage = page;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  var navEl = document.querySelector('.nav-item[data-page="' + page + '"]');
+  if (navEl) navEl.classList.add('active');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  var el = document.getElementById('page-' + page);
+  if (el) el.classList.add('active');
+  // Toggle fullscreen for ops-board
+  if (page === 'ops-board') { enterFullscreen(); }
+  else { exitFullscreen(); }
+  // Refresh relevant data
+  if (page === 'projects') refreshProjects();
+  if (page === 'logs') refreshLogs();
+  if (page === 'memory') refreshMemory();
+  if (page === 'metrics') refreshMetrics();
+  if (page === 'chat') { loadProfiles(); document.getElementById('chat-input').focus(); }
+  if (page === 'settings') refreshSettings();
+  if (page === 'self-improve') refreshSelfImprove();
+  if (page === 'team') refreshTeam();
+  if (page === 'ops-board') refreshOpsBoard();
+  if (page === 'graph') refreshGraph();
+}
+
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     const page = item.dataset.page;
     if (!page) return;
-    currentPage = page;
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    item.classList.add('active');
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    const el = document.getElementById('page-' + page);
-    if (el) el.classList.add('active');
-    // Refresh relevant data
-    if (page === 'projects') refreshProjects();
-    if (page === 'logs') refreshLogs();
-    if (page === 'memory') refreshMemory();
-    if (page === 'metrics') refreshMetrics();
-    if (page === 'chat') { loadProfiles(); document.getElementById('chat-input').focus(); }
-    if (page === 'settings') refreshSettings();
-    if (page === 'self-improve') refreshSelfImprove();
-    if (page === 'team') refreshTeam();
-    if (page === 'ops-board') refreshOpsBoard();
-    if (page === 'graph') refreshGraph();
+    showPage(page);
   });
+});
+
+// Escape exits fullscreen ops-board back to overview
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.querySelector('.layout').classList.contains('fullscreen-mode')) {
+    showPage('overview');
+  }
 });
 
 // ── API helpers ───────────────────────────
@@ -6692,6 +6825,7 @@ async function refreshOpsBoard() {
     var summary = d.summary || {};
     var events = d.events || [];
     var pendingTasks = d.pendingTasks || [];
+    var completedTasks = d.completedTasks || [];
 
     // Clock
     var clockEl = document.getElementById('ops-board-clock');
@@ -6833,28 +6967,52 @@ async function refreshOpsBoard() {
       }
     }
 
-    // ── Pending tasks (compact) ──
+    // ── Pending tasks (always visible) ──
     var pendEl = document.getElementById('ops-board-pending');
     if (pendEl) {
+      var statusColors2 = { 'WORKING': '#58a6ff', 'PENDING': '#d29922', 'DONE': '#3fb950', 'CANCELLED': '#6e7681' };
+      var phtml = '<div style="color:#d29922;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">PENDING TASKS (' + pendingTasks.length + ')</div>';
       if (pendingTasks.length === 0) {
-        pendEl.innerHTML = '';
+        phtml += '<div style="color:#6e7681;font-size:11px;padding:2px 0">No pending tasks</div>';
       } else {
-        var statusColors2 = { 'WORKING': '#58a6ff', 'PENDING': '#d29922', 'DONE': '#3fb950', 'CANCELLED': '#6e7681' };
-        var phtml = '<div style="color:#d29922;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid #21262d;padding-top:6px">DELEGATED TASKS (' + pendingTasks.length + ')</div>';
         for (var pi = 0; pi < pendingTasks.length; pi++) {
           var pt = pendingTasks[pi];
           var ds = pt.displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING');
           var sc = statusColors2[ds] || (ds === 'DONE' ? '#3fb950' : ds === 'CANCELLED' ? '#6e7681' : ds === 'PENDING' ? '#d29922' : '#58a6ff');
-          var rowOpacity = (pt.status === 'completed' || pt.status === 'cancelled') ? 'opacity:0.6;' : '';
-          phtml += '<div style="display:flex;gap:8px;padding:2px 0;font-size:11px;align-items:baseline;' + rowOpacity + '">'
+          phtml += '<div style="display:flex;gap:8px;padding:2px 0;font-size:11px;align-items:baseline">'
             + '<span style="color:#c9d1d9;min-width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.agent) + '</span>'
             + '<span style="color:' + sc + ';min-width:70px;font-weight:600;flex-shrink:0">' + esc(ds) + '</span>'
             + '<span style="color:#484f58;min-width:44px;flex-shrink:0">' + esc(pt.elapsed || pt.age || '') + '</span>'
             + '<span style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.title || '') + '</span>'
             + '</div>';
         }
-        pendEl.innerHTML = phtml;
       }
+      pendEl.innerHTML = phtml;
+    }
+
+    // ── Completed tasks ──
+    var compEl = document.getElementById('ops-board-completed');
+    if (compEl) {
+      var chtml = '<div style="color:#3fb950;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">COMPLETED TASKS (' + completedTasks.length + ')</div>';
+      if (completedTasks.length === 0) {
+        chtml += '<div style="color:#6e7681;font-size:11px;padding:2px 0">No recently completed tasks</div>';
+      } else {
+        for (var ci = 0; ci < completedTasks.length; ci++) {
+          var ct = completedTasks[ci];
+          var ctTime = ct.completedAt ? new Date(ct.completedAt) : null;
+          var ctTs = ctTime ? (String(ctTime.getHours()).padStart(2, '0') + ':' + String(ctTime.getMinutes()).padStart(2, '0')) : '';
+          var ctAgo = ct.ago || '';
+          chtml += '<div style="display:flex;gap:8px;padding:2px 0;font-size:11px;align-items:baseline">'
+            + '<span style="color:#484f58;min-width:34px;flex-shrink:0;font-family:monospace">' + esc(ctTs) + '</span>'
+            + '<span style="color:#6e7681;min-width:26px;text-align:right;flex-shrink:0">' + esc(ctAgo) + '</span>'
+            + '<span style="color:#3fb950;min-width:14px;flex-shrink:0;text-align:center">\u2713</span>'
+            + '<span style="color:#6e7681;min-width:36px;flex-shrink:0;font-size:10px">' + esc(ct.unit || '') + '</span>'
+            + '<span style="color:#c9d1d9;min-width:120px;max-width:140px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.agent) + '</span>'
+            + '<span style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.title || '') + '</span>'
+            + '</div>';
+        }
+      }
+      compEl.innerHTML = chtml;
     }
 
     // ── Activity feed (live agent thinking/doing) ──
@@ -6886,7 +7044,9 @@ async function refreshOpsBoard() {
           var evTime = ev.time ? new Date(ev.time) : null;
           var evTs = evTime ? (String(evTime.getHours()).padStart(2, '0') + ':' + String(evTime.getMinutes()).padStart(2, '0')) : '';
           // Highlight live "working" entries with a subtle pulse
-          var rowBg = ev.type === 'working' ? 'background:rgba(88,166,255,0.06)' : '';
+          var isCompletion = ev.detail && (ev.detail.indexOf('\u2713 Completed') === 0 || ev.detail.indexOf('\u2713 Completed') === 0);
+          var rowBg = isCompletion ? 'background:rgba(46,160,67,0.12);border-left:3px solid #3fb950;padding-left:3px'
+            : ev.type === 'working' ? 'background:rgba(88,166,255,0.06)' : '';
           html += '<div style="display:flex;gap:8px;padding:3px 6px;border-bottom:1px solid #0d1117;align-items:baseline;font-size:11px;' + rowBg + '">'
             + '<span style="color:#484f58;min-width:34px;flex-shrink:0;font-family:monospace">' + esc(evTs) + '</span>'
             + '<span style="color:#6e7681;min-width:26px;text-align:right;flex-shrink:0">' + esc(ago) + '</span>'

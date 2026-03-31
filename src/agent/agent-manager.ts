@@ -54,6 +54,8 @@ export interface AgentCreateConfig {
   description: string;
   personality?: string;            // System prompt body
   tier?: number;
+  unit?: string;                   // Unit designator — manual identifier (e.g., "19W1")
+  deployed?: boolean;              // Manual deploy toggle
   model?: string;
   avatar?: string;
   channelName?: string | string[];  // Single channel name or array of channel names
@@ -205,6 +207,8 @@ export class AgentManager {
       tier,
       description: String(meta.description ?? ''),
       systemPromptBody: content.trim(),
+      unit: meta.unit != null ? String(meta.unit) : undefined,
+      deployed: meta.deployed === true || meta.deployed === 'true' ? true : meta.deployed === false || meta.deployed === 'false' ? false : undefined,
       model: meta.model ? String(meta.model) : undefined,
       avatar: meta.avatar ? String(meta.avatar) : undefined,
       team,
@@ -285,6 +289,8 @@ export class AgentManager {
       description: config.description,
       tier: Math.min(config.tier ?? 2, 2),
     };
+    if (config.unit != null) frontmatter.unit = config.unit;
+    if (config.deployed != null) frontmatter.deployed = config.deployed;
     if (config.model) frontmatter.model = config.model;
     if (config.avatar) frontmatter.avatar = config.avatar;
     if (config.channelName) frontmatter.channelName = config.channelName;
@@ -333,6 +339,8 @@ export class AgentManager {
     if (changes.name !== undefined) meta.name = changes.name;
     if (changes.description !== undefined) meta.description = changes.description;
     if (changes.tier !== undefined) meta.tier = Math.min(changes.tier, 2);
+    if (changes.unit !== undefined) meta.unit = changes.unit;
+    if (changes.deployed !== undefined) meta.deployed = changes.deployed;
     if (changes.model !== undefined) meta.model = changes.model;
     if (changes.avatar !== undefined) meta.avatar = changes.avatar;
     if (changes.channelName !== undefined) meta.channelName = changes.channelName;

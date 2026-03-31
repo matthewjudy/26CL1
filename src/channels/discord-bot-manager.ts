@@ -11,7 +11,7 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
 import type { Gateway } from '../gateway/router.js';
-import { AgentBotClient, type AgentBotStatus } from './discord-agent-bot.js';
+import { AgentBotClient, type AgentBotStatus, type AgentActivity } from './discord-agent-bot.js';
 
 const logger = pino({ name: 'clementine.bot-manager' });
 
@@ -28,6 +28,7 @@ export interface BotStatus {
   avatarUrl?: string;
   channelIds: string[];
   error?: string;
+  activity?: AgentActivity;
 }
 
 export class BotManager {
@@ -140,6 +141,7 @@ export class BotManager {
         avatarUrl: s.avatarUrl,
         channelIds: bot.getChannelIds(),
         error: s.error,
+        activity: s.activity,
       });
     }
     return result;
