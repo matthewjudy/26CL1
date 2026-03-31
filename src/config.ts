@@ -340,7 +340,7 @@ export const STAGING_DIR = path.join(BASE_DIR, 'staging');
 // Format: YYYYMMDD00XXXX (e.g., 20260331000001)
 // Short form: #XXXX (last 4 digits)
 
-const TASK_COUNTER_FILE = path.join(BASE_DIR, '.task-counter.json');
+const TASK_COUNTER_FILE = path.join(SYSTEM_DIR, '.task-counter.json');
 
 export function nextTaskId(): string {
   const now = new Date();

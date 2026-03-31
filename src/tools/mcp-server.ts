@@ -1431,7 +1431,21 @@ server.tool(
     writeFileSync(dailyPath, body, 'utf-8');
     const rel = path.relative(VAULT_DIR, dailyPath);
     await incrementalSync(rel);
-    return textResult(`Noted in ${path.basename(dailyPath)} > Log`);
+
+    // Create completed task record with INC#
+    const callerSlug = process.env.CLEMENTINE_TEAM_AGENT || 'clementine';
+    const taskId = nextTaskId();
+    const completedDir = path.join(DELEGATIONS_BASE, callerSlug, 'tasks', 'completed');
+    if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+    writeFileSync(path.join(completedDir, `${taskId}.json`), JSON.stringify({
+      id: taskId, fromAgent: 'note', toAgent: callerSlug,
+      task: text.length > 200 ? text.slice(0, 197) + '...' : text,
+      expectedOutput: '', status: 'completed',
+      createdAt: localISO(), updatedAt: localISO(), completedAt: localISO(),
+      result: text.length > 200 ? text.slice(0, 197) + '...' : text,
+    }, null, 2));
+
+    return textResult(`Noted in ${path.basename(dailyPath)} > Log (${shortTaskId(taskId)})`);
   },
 );
 
