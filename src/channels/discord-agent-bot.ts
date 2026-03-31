@@ -32,11 +32,13 @@ import {
   type Interaction,
   type Message,
 } from 'discord.js';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import pino from 'pino';
 import type { AgentProfile } from '../types.js';
 import type { Gateway } from '../gateway/router.js';
 import { chunkText, DiscordStreamingMessage, friendlyToolName, sanitizeResponse } from './discord-utils.js';
-import { MODELS } from '../config.js';
+import { MODELS, SUPPRESS_AGENT_STARTUP_DM } from '../config.js';
 
 const logger = pino({ name: 'clementine.agent-bot' });
 
@@ -71,7 +73,53 @@ export interface AgentBotConfig {
   channelIds?: string[];
 }
 
-export type AgentBotStatus = 'offline' | 'connecting' | 'online' | 'error';
+export type AgentBotStatus = 'offline' | 'connecting' | 'online' | 'processing' | 'error';
+
+/** Activity context — what the agent is currently doing or just did. */
+export interface AgentActivity {
+  /** What triggered the current work (e.g. "DM from Matthew", "Team msg from Sasha") */
+  trigger?: string;
+  /** Short description of current action (e.g. "Reading vault files...", "Drafting email...") */
+  action?: string;
+  /** When this activity started */
+  since?: string;
+  /** Last completed activity summary */
+  lastSummary?: string;
+  /** When last activity completed */
+  lastCompletedAt?: string;
+}
+
+// ── Activity log helper ─────────────────────────────────────────────
+const ACTIVITY_LOG_PATH = path.join(
+  process.env.CLEMENTINE_HOME || path.join(process.env.HOME || '', '.clementine'),
+  '.activity-log.jsonl',
+);
+
+/** Append a single activity event to the shared log file.
+ *  Keeps the file to ~500 lines max by truncating on write when it exceeds 600. */
+export function appendActivityLog(entry: {
+  agent: string;
+  unit?: string;
+  type: 'start' | 'done' | 'tool' | 'error' | 'cron';
+  trigger?: string;
+  detail?: string;
+  durationMs?: number;
+}) {
+  try {
+    const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + '\n';
+    appendFileSync(ACTIVITY_LOG_PATH, line);
+    // Trim if too long (check periodically, not every write)
+    if (Math.random() < 0.05) { // 5% chance each write → amortized
+      try {
+        const content = readFileSync(ACTIVITY_LOG_PATH, 'utf-8');
+        const lines = content.trim().split('\n');
+        if (lines.length > 600) {
+          writeFileSync(ACTIVITY_LOG_PATH, lines.slice(-500).join('\n') + '\n');
+        }
+      } catch { /* ignore */ }
+    }
+  } catch { /* non-fatal */ }
+}
 
 export class AgentBotClient {
   private client: Client;
@@ -79,6 +127,8 @@ export class AgentBotClient {
   private gateway: Gateway;
   private status: AgentBotStatus = 'offline';
   private errorMessage?: string;
+  /** Current activity context for dashboard display. */
+  private activity: AgentActivity = {};
   /** Resolved channel IDs (set on ready, after auto-discovery). */
   private resolvedChannelIds: string[] = [];
 
@@ -180,12 +230,13 @@ export class AgentBotClient {
     logger.info({ slug: this.config.slug }, 'Agent bot stopped');
   }
 
-  getStatus(): { status: AgentBotStatus; botTag?: string; avatarUrl?: string; error?: string } {
+  getStatus(): { status: AgentBotStatus; botTag?: string; avatarUrl?: string; error?: string; activity?: AgentActivity } {
     return {
       status: this.status,
       botTag: this.client.user?.tag,
       avatarUrl: this.client.user?.displayAvatarURL({ size: 128, extension: 'png' }),
       error: this.errorMessage,
+      activity: this.activity,
     };
   }
 
@@ -255,6 +306,10 @@ export class AgentBotClient {
   /** Send a startup status embed to the owner's DMs. */
   private async sendStartupStatus(): Promise<void> {
     if (!this.config.ownerId) return;
+    if (SUPPRESS_AGENT_STARTUP_DM) {
+      logger.info({ slug: this.config.slug }, 'Startup DM suppressed (SUPPRESS_AGENT_STARTUP_DM=true)');
+      return;
+    }
 
     try {
       const owner = await this.client.users.fetch(this.config.ownerId, { force: true });
@@ -338,6 +393,23 @@ export class AgentBotClient {
     const streamer = new DiscordStreamingMessage(channel);
     await streamer.start();
 
+    const prevStatus = this.status;
+    this.status = 'processing';
+    const triggerLabel = `Team msg from ${fromName}`;
+    const msgPreview = content.length > 80 ? content.slice(0, 77) + '...' : content;
+    this.activity = {
+      trigger: triggerLabel,
+      action: msgPreview,
+      since: new Date().toISOString(),
+    };
+    const startTime = Date.now();
+    appendActivityLog({
+      agent: this.config.profile.name,
+      unit: this.config.profile.unit,
+      type: 'start',
+      trigger: triggerLabel,
+      detail: msgPreview,
+    });
     try {
       const response = await this.gateway.handleTeamTask(
         fromName,
@@ -350,12 +422,38 @@ export class AgentBotClient {
       );
       await streamer.finalize(response);
       logger.info({ slug: this.config.slug, from: fromSlug }, 'Processed team message');
+      const cleanResp = response.replace(/\*\*/g, '').replace(/```[\s\S]*?```/g, '[code]');
+      const summaryLine2 = cleanResp.split('\n').map(l => l.trim()).find(l => l.length > 0) || 'Completed';
+      const shortSummary = summaryLine2.length > 120 ? summaryLine2.slice(0, 117) + '...' : summaryLine2;
+      this.activity.lastSummary = shortSummary;
+      this.activity.lastCompletedAt = new Date().toISOString();
+      appendActivityLog({
+        agent: this.config.profile.name,
+        unit: this.config.profile.unit,
+        type: 'done',
+        trigger: triggerLabel,
+        detail: shortSummary,
+        durationMs: Date.now() - startTime,
+      });
       return response;
     } catch (err) {
       logger.error({ err, slug: this.config.slug }, 'Failed to process team message');
       const errMsg = `Something went wrong processing a team message: ${sanitizeResponse(String(err))}`;
       await streamer.finalize(errMsg);
+      appendActivityLog({
+        agent: this.config.profile.name,
+        unit: this.config.profile.unit,
+        type: 'error',
+        trigger: triggerLabel,
+        detail: String(err).slice(0, 120),
+        durationMs: Date.now() - startTime,
+      });
       return errMsg;
+    } finally {
+      this.status = prevStatus === 'processing' ? 'online' : prevStatus;
+      this.activity.trigger = undefined;
+      this.activity.action = undefined;
+      this.activity.since = undefined;
     }
   }
 
@@ -758,6 +856,27 @@ export class AgentBotClient {
     const streamer = new DiscordStreamingMessage(message.channel);
     await streamer.start();
 
+    const prevStatus = this.status;
+    this.status = 'processing';
+    const triggerLabel = isDm
+      ? `DM from ${message.author.displayName || message.author.username}`
+      : isTeamChatChannel
+        ? `Team chat in #${(message.channel as any).name || 'channel'}`
+        : `Channel msg from ${message.author.displayName || message.author.username}`;
+    const msgPreview = text.length > 80 ? text.slice(0, 77) + '...' : text;
+    this.activity = {
+      trigger: triggerLabel,
+      action: msgPreview,
+      since: new Date().toISOString(),
+    };
+    const startTime = Date.now();
+    appendActivityLog({
+      agent: this.config.profile.name,
+      unit: this.config.profile.unit,
+      type: 'start',
+      trigger: triggerLabel,
+      detail: msgPreview,
+    });
     try {
       const response = await this.gateway.handleMessage(
         sessionKey,
@@ -768,13 +887,44 @@ export class AgentBotClient {
         undefined, // model
         undefined, // maxTurns
         async (toolName: string, toolInput: Record<string, unknown>) => {
-          streamer.setToolStatus(friendlyToolName(toolName, toolInput));
+          const friendly = friendlyToolName(toolName, toolInput);
+          streamer.setToolStatus(friendly);
+          // Update live activity with current tool
+          this.activity.action = friendly;
         },
       );
       await streamer.finalize(response);
+      // Log completion — find the first non-empty line as summary
+      const cleanResponse = response.replace(/\*\*/g, '').replace(/```[\s\S]*?```/g, '[code]');
+      const summaryLine = cleanResponse.split('\n').map(l => l.trim()).find(l => l.length > 0) || 'Completed';
+      const shortSummary = summaryLine.length > 120 ? summaryLine.slice(0, 117) + '...' : summaryLine;
+      this.activity.lastSummary = shortSummary;
+      this.activity.lastCompletedAt = new Date().toISOString();
+      appendActivityLog({
+        agent: this.config.profile.name,
+        unit: this.config.profile.unit,
+        type: 'done',
+        trigger: triggerLabel,
+        detail: shortSummary,
+        durationMs: Date.now() - startTime,
+      });
     } catch (err) {
       logger.error({ err, slug: this.config.slug }, 'Agent bot message handling error');
       await streamer.finalize(`Something went wrong: ${sanitizeResponse(String(err))}`);
+      appendActivityLog({
+        agent: this.config.profile.name,
+        unit: this.config.profile.unit,
+        type: 'error',
+        trigger: triggerLabel,
+        detail: String(err).slice(0, 120),
+        durationMs: Date.now() - startTime,
+      });
+    } finally {
+      this.status = prevStatus === 'processing' ? 'online' : prevStatus;
+      // Clear live activity but keep last summary
+      this.activity.trigger = undefined;
+      this.activity.action = undefined;
+      this.activity.since = undefined;
     }
   }
 }

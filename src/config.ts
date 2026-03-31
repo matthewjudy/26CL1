@@ -201,10 +201,10 @@ export const ALLOW_ALL_USERS = getEnv('ALLOW_ALL_USERS', 'false').toLowerCase() 
 
 // ── Heartbeat ────────────────────────────────────────────────────────
 
-export const HEARTBEAT_INTERVAL_MINUTES = 30;
-export const HEARTBEAT_ACTIVE_START = 8;
-export const HEARTBEAT_ACTIVE_END = 22;
-export const HEARTBEAT_MAX_TURNS = 5;
+export const HEARTBEAT_INTERVAL_MINUTES = parseInt(getEnv('HEARTBEAT_INTERVAL_MINUTES', '30'), 10);
+export const HEARTBEAT_ACTIVE_START = parseInt(getEnv('HEARTBEAT_ACTIVE_START', '8'), 10);
+export const HEARTBEAT_ACTIVE_END = parseInt(getEnv('HEARTBEAT_ACTIVE_END', '22'), 10);
+export const HEARTBEAT_MAX_TURNS = parseInt(getEnv('HEARTBEAT_MAX_TURNS', '5'), 10);
 
 // ── Unleashed mode ──────────────────────────────────────────────────
 
@@ -221,6 +221,11 @@ export const WORKSPACE_DIRS: string[] = getEnv('WORKSPACE_DIRS')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+
+// ── Agent bot behavior ──────────────────────────────────────────────
+
+/** Suppress the "X is online" DM embed that each agent bot sends on startup. */
+export const SUPPRESS_AGENT_STARTUP_DM = getEnv('SUPPRESS_AGENT_STARTUP_DM', 'false').toLowerCase() === 'true';
 
 // ── Channel availability flags ───────────────────────────────────────
 
