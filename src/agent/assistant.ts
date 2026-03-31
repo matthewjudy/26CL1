@@ -569,6 +569,12 @@ export class PersonalAssistant {
     }
   }
 
+  /** Touch the session timestamp and persist — call during long queries so the dashboard sees activity. */
+  touchSession(sessionKey: string): void {
+    this.sessionTimestamps.set(sessionKey, new Date());
+    this.saveSessions();
+  }
+
   private saveSessions(): void {
     try {
       const data: Record<string, SessionData> = {};

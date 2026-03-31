@@ -6,9 +6,12 @@
  */
 
 import type { Message } from 'discord.js';
+import pino from 'pino';
+
+const logger = pino({ name: 'clementine.discord-utils' });
 
 export const STREAM_EDIT_INTERVAL = 400;
-export const THINKING_INDICATOR = '\u2728 *thinking...*';
+export const THINKING_INDICATOR = '*thinking...*';
 export const DISCORD_MSG_LIMIT = 2000;
 
 // ── Credential sanitisation ───────────────────────────────────────────
@@ -73,15 +76,15 @@ export async function sendChunked(
 // ── Human-friendly tool names ──────────────────────────────────────────
 
 const TOOL_LABELS: Record<string, string> = {
-  Read: '\ud83d\udcd6 Reading',
-  Write: '\ud83d\udcdd Writing',
-  Edit: '\u270f\ufe0f Editing',
-  Bash: '\u2699\ufe0f Running command',
-  Grep: '\ud83d\udd0d Searching',
-  Glob: '\ud83d\udcc2 Finding files',
-  Agent: '\ud83e\udd16 Delegating',
-  WebSearch: '\ud83c\udf10 Web search',
-  WebFetch: '\ud83c\udf10 Fetching',
+  Read: 'Reading',
+  Write: 'Writing',
+  Edit: 'Editing',
+  Bash: 'Running command',
+  Grep: 'Searching',
+  Glob: 'Finding files',
+  Agent: 'Delegating',
+  WebSearch: 'Web search',
+  WebFetch: 'Fetching',
 };
 
 export function friendlyToolName(name: string, input?: Record<string, unknown>): string {
@@ -104,7 +107,7 @@ export function friendlyToolName(name: string, input?: Record<string, unknown>):
   }
   // MCP tools: strip prefix (e.g., "mcp__clementine__memory_search" → "memory_search")
   const short = name.includes('__') ? name.split('__').pop()! : name;
-  return `\ud83d\udd27 ${short.replace(/_/g, ' ')}`;
+  return short.replace(/_/g, ' ');
 }
 
 export class DiscordStreamingMessage {
@@ -134,8 +137,8 @@ export class DiscordStreamingMessage {
     this.lastEdit = Date.now();
     // Periodic refresh keeps elapsed time display current during long silent stretches
     this.progressTimer = setInterval(() => {
-      if (!this.isFinal && this.toolCallCount > 3) this.flush().catch(() => {});
-    }, 30_000);
+      if (!this.isFinal && this.toolCallCount > 0) this.flush().catch(() => {});
+    }, 15_000);
   }
 
   /** Update the tool activity status line shown during streaming. */
@@ -207,9 +210,9 @@ export class DiscordStreamingMessage {
   private async flush(): Promise<void> {
     if (!this.message || this.isFinal) return;
 
-    // Enhanced status when tools have been running 60s+ with no text output
+    // Enhanced status when tools have been running 30s+ with no text output
     const silenceDuration = Date.now() - (this.lastTextTime || this.startTime);
-    const showProgress = this.toolCallCount > 3 && silenceDuration > 60_000;
+    const showProgress = this.toolCallCount > 0 && silenceDuration > 30_000;
 
     // Skip flush if nothing changed — but always allow when showing progress (elapsed time updates)
     if (!showProgress) {
@@ -221,9 +224,9 @@ export class DiscordStreamingMessage {
     if (showProgress) {
       const elapsed = this.formatElapsed(Date.now() - this.startTime);
       const current = this.toolStatus ? ` \u2014 ${this.toolStatus}` : '';
-      statusLine = `\n\n*\ud83d\udd27 Working... (${this.toolCallCount} steps, ${elapsed})${current}*`;
+      statusLine = `\n\n*Working... (${this.toolCallCount} steps, ${elapsed})${current}*`;
     } else {
-      statusLine = this.toolStatus ? `\n\n*${this.toolStatus}*` : '\n\n\u270d\ufe0f *typing...*';
+      statusLine = this.toolStatus ? `\n\n*${this.toolStatus}*` : '\n\n*typing...*';
     }
 
     if (display.length > 1900) {
@@ -235,17 +238,17 @@ export class DiscordStreamingMessage {
       if (showProgress) {
         const elapsed = this.formatElapsed(Date.now() - this.startTime);
         const current = this.toolStatus ? ` \u2014 ${this.toolStatus}` : '';
-        display = `\u2728 *Working... (${this.toolCallCount} steps, ${elapsed})${current}*`;
+        display = `*Working... (${this.toolCallCount} steps, ${elapsed})${current}*`;
       } else {
-        display = this.toolStatus ? `\u2728 *${this.toolStatus}*` : THINKING_INDICATOR;
+        display = this.toolStatus ? `*${this.toolStatus}*` : THINKING_INDICATOR;
       }
     }
     try {
       await this.message.edit(display);
       this.lastFlushedText = this.pendingText;
       this.lastEdit = Date.now();
-    } catch {
-      // Discord rate limit or message deleted — ignore
+    } catch (err) {
+      logger.warn({ err }, 'Discord streaming flush failed (rate limit or message deleted)');
     }
   }
 }

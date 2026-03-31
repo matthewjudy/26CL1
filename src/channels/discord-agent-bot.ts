@@ -104,6 +104,7 @@ export function appendActivityLog(entry: {
   trigger?: string;
   detail?: string;
   durationMs?: number;
+  toolName?: string;
 }) {
   try {
     const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + '\n';
@@ -898,6 +899,7 @@ export class AgentBotClient {
             type: 'tool',
             trigger: triggerLabel,
             detail: friendly,
+            toolName,
           });
         },
       );

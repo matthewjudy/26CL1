@@ -397,6 +397,7 @@ export class SlackAgentBotClient {
             type: 'tool',
             trigger: 'Slack msg',
             detail: friendly,
+            toolName,
           });
         },
       );

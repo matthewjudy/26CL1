@@ -1034,7 +1034,9 @@ program
     const c = {
       reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
       green: '\x1b[32m', blue: '\x1b[34m', yellow: '\x1b[33m', red: '\x1b[31m',
-      cyan: '\x1b[36m', gray: '\x1b[90m', white: '\x1b[97m',
+      cyan: '\x1b[36m', magenta: '\x1b[35m', gray: '\x1b[90m', white: '\x1b[97m',
+      brightGreen: '\x1b[92m', brightYellow: '\x1b[93m', brightCyan: '\x1b[96m',
+      orange: '\x1b[38;5;208m', purple: '\x1b[38;5;141m',
       bgRed: '\x1b[41m', bgGreen: '\x1b[42m', bgYellow: '\x1b[43m', bgBlue: '\x1b[44m',
       clear: '\x1b[2J\x1b[H',
     };
@@ -1100,8 +1102,8 @@ program
           agents.push({ name: slug, opStatus: bot.status === 'online' ? 'AVAILABLE' : 'OFFLINE', model: 'sonnet', channel: 'general', activity: '' });
         }
 
-        // Events from cron runs
-        const events: { time: string; type: string; agent: string; detail: string }[] = [];
+        // Events from cron runs + activity log
+        const events: { time: string; type: string; agent: string; detail: string; toolName?: string }[] = [];
         let runsToday = 0;
         const today = new Date().toISOString().slice(0, 10);
         if (existsSync(runsDir)) {
@@ -1136,6 +1138,31 @@ program
             } catch {}
           }
         }
+        // Activity log — real-time agent tool steps
+        const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
+        if (existsSync(activityLogPath)) {
+          try {
+            const logContent = readFileSync(activityLogPath, 'utf-8');
+            const logLines = logContent.trim().split('\n').filter(Boolean).slice(-100);
+            const sixHCutoff = new Date(Date.now() - 6 * 3600000).toISOString();
+            const typeMap: Record<string, string> = { start: 'working', done: 'ok', tool: 'tool', error: 'error', cron: 'ok' };
+            for (const line of logLines) {
+              try {
+                const entry = JSON.parse(line);
+                if (entry.ts && entry.ts >= sixHCutoff) {
+                  events.push({
+                    time: entry.ts,
+                    type: typeMap[entry.type] || 'ok',
+                    agent: entry.agent + (entry.unit ? ' (' + entry.unit + ')' : ''),
+                    detail: (entry.type === 'start' ? '▶ ' : entry.type === 'done' ? '✓ ' : entry.type === 'error' ? '✖ ' : entry.type === 'tool' ? '  · ' : '')
+                      + (entry.type === 'tool' ? (entry.detail || '') : (entry.trigger ? entry.trigger + ': ' : '') + (entry.detail || '')),
+                    ...(entry.toolName ? { toolName: entry.toolName } : {}),
+                  });
+                }
+              } catch { /* skip */ }
+            }
+          } catch { /* ignore */ }
+        }
         events.sort((a, b) => b.time.localeCompare(a.time));
         const sixH = new Date(Date.now() - 6 * 3600000).toISOString().slice(0, 19);
         data = {
@@ -1150,6 +1177,7 @@ program
       const summary = (data.summary || {}) as Record<string, number>;
       const events = (data.events || []) as Array<Record<string, string>>;
       const pendingTasks = (data.pendingTasks || []) as Array<Record<string, unknown>>;
+      const completedTasks = (data.completedTasks || []) as Array<Record<string, any>>;
       const deployed = agents.filter(a => a.deployed);
       const activePool = agents.filter((a: Record<string, unknown>) => !a.deployed && (((a as any).pendingTasks || []).length > 0 || ((a as any).lastCron && (Date.now() - new Date((a as any).lastCron.lastRun).getTime()) < 6 * 3600000)));
       const visible = [...deployed, ...activePool];
@@ -1263,41 +1291,100 @@ program
         usedRows++;
       }
 
-      // ── Pending tasks — only if there are any ──
-      if (pendingTasks.length > 0) {
-        out += `\n  ${c.bold}${c.yellow}DELEGATED TASKS (${pendingTasks.length})${c.reset}\n`;
+      // ── Pending tasks — always visible ──
+      {
+        out += `\n  ${c.bold}${c.yellow}PENDING TASKS (${pendingTasks.length})${c.reset}\n`;
         usedRows += 2;
         const statusClr: Record<string, string> = { 'WORKING': c.blue, 'PENDING': c.yellow, 'DONE': c.green, 'CANCELLED': c.dim };
         const ptAgentW = Math.max(20, Math.floor(content * 0.20));
         const ptStatusW = Math.max(10, Math.floor(content * 0.10));
         const ptElapsedW = Math.max(8, Math.floor(content * 0.08));
         const ptDescW = Math.max(20, content - ptAgentW - ptStatusW - ptElapsedW - (gap * 3));
-        for (const pt of pendingTasks) {
-          const ds = String((pt as any).displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING'));
-          const sc = statusClr[ds] || (ds === 'DONE' ? c.green : ds === 'CANCELLED' ? c.dim : ds === 'PENDING' ? c.yellow : c.blue);
-          const elapsed = String((pt as any).elapsed || pt.age || '');
-          const dimRow = (pt.status === 'completed' || pt.status === 'cancelled') ? c.dim : '';
-          const dimEnd = dimRow ? c.reset : '';
-          out += `  ${dimRow}${c.white}${pad(String(pt.agent), ptAgentW)}${c.reset}${g}${sc}${pad(ds, ptStatusW)}${c.reset}${g}${c.dim}${pad(elapsed, ptElapsedW)}${c.reset}${g}${dimRow}${String(pt.title).slice(0, Math.max(20, ptDescW))}${dimEnd}\n`;
+        // Header
+        out += `  ${c.dim}${pad('AGENT', ptAgentW)}${g}${pad('STATUS', ptStatusW)}${g}${pad('ELAPSED', ptElapsedW)}${g}${pad('TASK', ptDescW)}${c.reset}\n`;
+        out += `  ${c.dim}${'\u2500'.repeat(ptAgentW)}${g}${'\u2500'.repeat(ptStatusW)}${g}${'\u2500'.repeat(ptElapsedW)}${g}${'\u2500'.repeat(ptDescW)}${c.reset}\n`;
+        usedRows += 2;
+        if (pendingTasks.length === 0) {
+          out += `  ${c.dim}No pending tasks${c.reset}\n`;
           usedRows++;
+        } else {
+          for (const pt of pendingTasks) {
+            const ds = String((pt as any).displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING'));
+            const sc = statusClr[ds] || (ds === 'DONE' ? c.green : ds === 'CANCELLED' ? c.dim : ds === 'PENDING' ? c.yellow : c.blue);
+            const elapsed = String((pt as any).elapsed || pt.age || '');
+            const dimRow = (pt.status === 'completed' || pt.status === 'cancelled') ? c.dim : '';
+            const dimEnd = dimRow ? c.reset : '';
+            out += `  ${dimRow}${c.white}${pad(String(pt.agent), ptAgentW)}${c.reset}${g}${sc}${pad(ds, ptStatusW)}${c.reset}${g}${c.dim}${pad(elapsed, ptElapsedW)}${c.reset}${g}${dimRow}${String(pt.title).slice(0, Math.max(20, ptDescW))}${dimEnd}\n`;
+            usedRows++;
+          }
+        }
+      }
+
+      // ── Completed tasks — always visible ──
+      {
+        out += `\n  ${c.bold}${c.green}COMPLETED TASKS (${completedTasks.length})${c.reset}\n`;
+        usedRows += 2;
+        const ctAgentW = Math.max(20, Math.floor(content * 0.18));
+        const ctTimeW = 5; // HH:MM
+        const ctAgoW = 5;
+        const ctDescW = Math.max(20, content - ctAgentW - ctTimeW - ctAgoW - 2 - (gap * 4));
+        // Header
+        out += `  ${c.dim}${pad('TIME', ctTimeW)}${g}${pad('AGO', ctAgoW)}${g}${pad('', 2)}${g}${pad('AGENT', ctAgentW)}${g}${pad('TASK', ctDescW)}${c.reset}\n`;
+        out += `  ${c.dim}${'\u2500'.repeat(ctTimeW)}${g}${'\u2500'.repeat(ctAgoW)}${g}${'\u2500'.repeat(2)}${g}${'\u2500'.repeat(ctAgentW)}${g}${'\u2500'.repeat(ctDescW)}${c.reset}\n`;
+        usedRows += 2;
+        if (completedTasks.length === 0) {
+          out += `  ${c.dim}No completed tasks${c.reset}\n`;
+          usedRows++;
+        } else {
+          for (const ct of completedTasks) {
+            const ctTime = ct.completedAt ? new Date(ct.completedAt) : null;
+            const ctTs = ctTime ? `${String(ctTime.getHours()).padStart(2, '0')}:${String(ctTime.getMinutes()).padStart(2, '0')}` : '     ';
+            const ctAgo = String(ct.ago || '');
+            const ctTitle = String(ct.title || '').slice(0, Math.max(20, ctDescW));
+            const ctUnit = ct.unit ? ` (${ct.unit})` : '';
+            out += `  ${c.green}${ctTs}${c.reset}${g}${c.dim}${pad(ctAgo, ctAgoW)}${c.reset}${g}${c.green}${c.bold}\u2713${c.reset}${g}${c.green}${pad(String(ct.agent) + ctUnit, ctAgentW)}${c.reset}${g}${c.green}${ctTitle}${c.reset}\n`;
+            usedRows++;
+          }
         }
       }
 
       // ── Activity feed — fill remaining terminal rows ──
-      out += `\n  ${c.dim}${'─'.repeat(usable)}${c.reset}\n`;
+      out += `\n  ${c.dim}${'\u2500'.repeat(usable)}${c.reset}\n`;
       out += `  ${c.bold}${c.blue}ACTIVITY FEED${c.reset}\n`;
       usedRows += 3;
 
       const footerRows = 1; // footer line
       const availableEventRows = Math.max(3, rows - usedRows - footerRows);
 
+      // Activity feed column widths
+      const afTimeW = 5;
+      const afAgoW = 4;
+      const afIconW = 2;
+      const afAgentW = Math.max(18, Math.floor(content * 0.18));
+      const afDetailW = Math.max(20, content - afTimeW - afAgoW - afIconW - afAgentW - (gap * 3));
+
+      // Header
+      out += `  ${c.dim}${pad('TIME', afTimeW)}${g}${pad('AGO', afAgoW)}${g}${pad('', afIconW)}${g}${pad('AGENT', afAgentW)}${g}${pad('DETAIL', afDetailW)}${c.reset}\n`;
+      out += `  ${c.dim}${'\u2500'.repeat(afTimeW)}${g}${'\u2500'.repeat(afAgoW)}${g}${'\u2500'.repeat(afIconW)}${g}${'\u2500'.repeat(afAgentW)}${g}${'\u2500'.repeat(afDetailW)}${c.reset}\n`;
+      usedRows += 2;
+
       if (events.length === 0) {
         out += `  ${c.dim}No activity${c.reset}\n`;
       } else {
-        const typeClr: Record<string, string> = { ok: c.green, error: c.red, working: c.blue, queued: c.yellow };
-        const typeIcon: Record<string, string> = { ok: '✓', error: '✖', working: '▶', queued: '◆' };
-        const agentW = Math.max(18, Math.floor(content * 0.18));
-        const detailW = Math.max(20, content - 5 - 6 - 4 - agentW - (gap * 3));
+        const typeClr: Record<string, string> = { ok: c.green, error: c.red, working: c.blue, queued: c.yellow, tool: c.cyan };
+        const typeIcon: Record<string, string> = { ok: '✓', error: '✖', working: '▶', queued: '◆', tool: '‣' };
+        // Per-tool-type colors for the CLI
+        const toolClr: Record<string, string> = {
+          Read: c.blue,           // reading/inspecting
+          Write: c.purple,        // creating files
+          Edit: c.orange,         // modifying files
+          Bash: c.gray,           // shell commands
+          Grep: c.green,          // searching content
+          Glob: c.brightGreen,    // finding files
+          Agent: c.yellow,        // delegating
+          WebSearch: c.cyan,      // web search
+          WebFetch: c.cyan,       // web fetch
+        };
         for (const ev of events.slice(0, availableEventRows)) {
           const evT = ev.time ? new Date(ev.time) : null;
           const ts = evT ? `${String(evT.getHours()).padStart(2, '0')}:${String(evT.getMinutes()).padStart(2, '0')}` : '     ';
@@ -1306,11 +1393,17 @@ program
           if (ms < 60000) ago = 'now';
           else if (ms < 3600000) ago = Math.floor(ms / 60000) + 'm';
           else ago = Math.floor(ms / 3600000) + 'h';
-          const tc = typeClr[ev.type] || c.gray;
+          // Completion detection — only actual task completions get full green
+          const isCompletion = ev.type === 'ok' && ev.detail && (ev.detail.startsWith('\u2713 Completed:') || ev.detail.startsWith('\u2713 Cancelled:') || ev.detail.startsWith('\u2716 Cancelled:'));
+          // Use tool-specific color when available
+          const evToolClr = ev.type === 'tool' && (ev as any).toolName ? (toolClr[(ev as any).toolName] || c.cyan) : null;
+          const tc = isCompletion ? c.green : evToolClr || (ev.type === 'ok' ? c.dim : typeClr[ev.type]) || c.gray;
           const ti = typeIcon[ev.type] || '·';
-          // Highlight live working entries
-          const detailClr = ev.type === 'working' ? c.blue : c.gray;
-          out += `  ${c.dim}${ts}${c.reset}${g}${c.gray}${pad(ago, 4)}${c.reset}${g}${tc}${c.bold}${pad(ti, 2)}${c.reset}${g}${c.white}${pad(ev.agent, agentW)}${c.reset}${g}${detailClr}${(ev.detail || '').slice(0, Math.max(20, detailW))}${c.reset}\n`;
+          const detailClr = isCompletion ? c.green : evToolClr || (ev.type === 'working' ? c.blue : c.gray);
+          const agentClr = isCompletion ? c.green : ev.type === 'tool' ? c.gray : c.white;
+          const tsClr = isCompletion ? c.green : c.dim;
+          const agoClr = isCompletion ? c.green : c.gray;
+          out += `  ${tsClr}${pad(ts, afTimeW)}${c.reset}${g}${agoClr}${pad(ago, afAgoW)}${c.reset}${g}${tc}${c.bold}${pad(ti, afIconW)}${c.reset}${g}${agentClr}${pad(ev.agent, afAgentW)}${c.reset}${g}${detailClr}${(ev.detail || '').slice(0, Math.max(20, afDetailW))}${c.reset}\n`;
         }
       }
 

@@ -68,15 +68,15 @@ export class SlackStreamingMessage {
   async start(): Promise<void> {
     const result = await this.client.chat.postMessage({
       channel: this.channel,
-      text: ':sparkles: _thinking..._',
+      text: '_thinking..._',
       thread_ts: this.threadTs,
     });
     this.ts = result.ts ?? null;
     this.lastEdit = Date.now();
     // Periodic refresh keeps elapsed time display current during long silent stretches
     this.progressTimer = setInterval(() => {
-      if (!this.isFinal && this.toolCallCount > 3) this.flush().catch(() => {});
-    }, 30_000);
+      if (!this.isFinal && this.toolCallCount > 0) this.flush().catch(() => {});
+    }, 15_000);
   }
 
   /** Update the tool activity status line shown during streaming. */
@@ -150,9 +150,9 @@ export class SlackStreamingMessage {
   private async flush(): Promise<void> {
     if (!this.ts || this.isFinal) return;
 
-    // Enhanced status when tools have been running 60s+ with no text output
+    // Enhanced status when tools have been running 30s+ with no text output
     const silenceDuration = Date.now() - (this.lastTextTime || this.startTime);
-    const showProgress = this.toolCallCount > 3 && silenceDuration > 60_000;
+    const showProgress = this.toolCallCount > 0 && silenceDuration > 30_000;
 
     // Skip flush if nothing changed — but always allow when showing progress (elapsed time updates)
     if (!showProgress) {
@@ -163,10 +163,10 @@ export class SlackStreamingMessage {
     let statusLine: string;
     if (showProgress) {
       const elapsed = this.formatElapsed(Date.now() - this.startTime);
-      const current = this.toolStatus ? ` \u2014 ${this.toolStatus}` : '';
-      statusLine = `\n\n_:wrench: Working... (${this.toolCallCount} steps, ${elapsed})${current}_`;
+      const current = this.toolStatus ? ` — ${this.toolStatus}` : '';
+      statusLine = `\n\n_Working... (${this.toolCallCount} steps, ${elapsed})${current}_`;
     } else {
-      statusLine = this.toolStatus ? `\n\n_${this.toolStatus}_` : '\n\n:writing_hand: _typing..._';
+      statusLine = this.toolStatus ? `\n\n_${this.toolStatus}_` : '\n\n_typing..._';
     }
 
     if (display.length > SLACK_MSG_LIMIT) {
@@ -177,10 +177,10 @@ export class SlackStreamingMessage {
       // No text yet — show tool status or progress as the main content
       if (showProgress) {
         const elapsed = this.formatElapsed(Date.now() - this.startTime);
-        const current = this.toolStatus ? ` \u2014 ${this.toolStatus}` : '';
-        display = `:sparkles: _Working... (${this.toolCallCount} steps, ${elapsed})${current}_`;
+        const current = this.toolStatus ? ` — ${this.toolStatus}` : '';
+        display = `_Working... (${this.toolCallCount} steps, ${elapsed})${current}_`;
       } else {
-        display = this.toolStatus ? `:sparkles: _${this.toolStatus}_` : ':sparkles: _thinking..._';
+        display = this.toolStatus ? `_${this.toolStatus}_` : '_thinking..._';
       }
     }
     try {

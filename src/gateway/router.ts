@@ -469,6 +469,7 @@ export class Gateway {
           logger.warn({ sessionKey }, `Chat idle timeout after ${CHAT_TIMEOUT_MS / 1000}s — aborting`);
         }, CHAT_TIMEOUT_MS);
 
+        let lastSessionTouch = 0;
         const resetIdleTimer = () => {
           clearTimeout(chatTimer);
           if (Date.now() - chatStarted >= CHAT_MAX_WALL_MS) {
@@ -480,6 +481,12 @@ export class Gateway {
             chatAc.abort();
             logger.warn({ sessionKey }, `Chat idle timeout after ${CHAT_TIMEOUT_MS / 1000}s — aborting`);
           }, CHAT_TIMEOUT_MS);
+          // Touch session timestamp every 30s so dashboard sees Q1 as active
+          const now = Date.now();
+          if (now - lastSessionTouch > 30_000) {
+            lastSessionTouch = now;
+            try { this.assistant.touchSession(effectiveSessionKey); } catch { /* non-fatal */ }
+          }
         };
 
         // Wrap callbacks to reset idle timer on agent activity

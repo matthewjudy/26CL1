@@ -1139,6 +1139,19 @@ export async function startDiscord(
     const streamer = new DiscordStreamingMessage(message.channel);
     await streamer.start();
 
+    const triggerLabel = isDm
+      ? `DM from ${message.author.displayName || message.author.username}`
+      : `Channel msg from ${message.author.displayName || message.author.username}`;
+    const msgPreview = text.length > 80 ? text.slice(0, 77) + '...' : text;
+    const startTime = Date.now();
+    appendActivityLog({
+      agent: 'Clementine',
+      unit: '19Q1',
+      type: 'start',
+      trigger: triggerLabel,
+      detail: msgPreview,
+    });
+
     try {
       const response = await gateway.handleMessage(
         sessionKey,
@@ -1153,14 +1166,27 @@ export async function startDiscord(
             agent: 'Clementine',
             unit: '19Q1',
             type: 'tool',
-            trigger: 'DM from ' + (message.author.displayName || message.author.username),
+            trigger: triggerLabel,
             detail: friendly,
+            toolName,
           });
           return Promise.resolve();
         },
       );
       await streamer.finalize(response);
       updatePresence(sessionKey);
+
+      const cleanResponse = response.replace(/\*\*/g, '').replace(/```[\s\S]*?```/g, '[code]');
+      const summaryLine = cleanResponse.split('\n').map((l: string) => l.trim()).find((l: string) => l.length > 0) || 'Completed';
+      const shortSummary = summaryLine.length > 120 ? summaryLine.slice(0, 117) + '...' : summaryLine;
+      appendActivityLog({
+        agent: 'Clementine',
+        unit: '19Q1',
+        type: 'done',
+        trigger: triggerLabel,
+        detail: shortSummary,
+        durationMs: Date.now() - startTime,
+      });
 
       // Track bot message for feedback reactions
       if (streamer.messageId) {
@@ -1173,6 +1199,14 @@ export async function startDiscord(
     } catch (err) {
       logger.error({ err }, 'Error processing Discord message');
       await streamer.finalize(`Something went wrong: ${err}`);
+      appendActivityLog({
+        agent: 'Clementine',
+        unit: '19Q1',
+        type: 'error',
+        trigger: triggerLabel,
+        detail: String(err).slice(0, 120),
+        durationMs: Date.now() - startTime,
+      });
     }
     } catch (err) {
       logger.error({ err }, 'Unhandled error in Discord message handler');
