@@ -3159,6 +3159,25 @@ function getDashboardHTML(token: string): string {
     --radius: 10px;
     --radius-sm: 5px;
   }
+  :root[data-theme="dark"] {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-card: rgba(22, 27, 34, 0.95);
+    --bg-hover: #1c2333;
+    --bg-input: #1c2333;
+    --border: #30363d;
+    --border-light: #3d444d;
+    --text-primary: #e6edf3;
+    --text-secondary: #9ba4b0;
+    --text-muted: #6b7280;
+    --accent: #58a6ff;
+    --accent-glow: rgba(88, 166, 255, 0.12);
+    --clementine-glow: rgba(255, 140, 33, 0.15);
+    --clementine-bg: rgba(255, 140, 33, 0.12);
+    --green-bg: rgba(46, 160, 67, 0.18);
+    --red-bg: rgba(229, 83, 75, 0.18);
+    --yellow-bg: rgba(212, 167, 44, 0.18);
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
@@ -3249,6 +3268,29 @@ function getDashboardHTML(token: string): string {
     display: flex;
     align-items: center;
     gap: 16px;
+  }
+  .theme-toggle {
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    padding: 6px 10px;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--text-secondary);
+    transition: background 0.2s, border-color 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .theme-toggle:hover {
+    background: var(--bg-input);
+    border-color: var(--border-light);
+  }
+  .theme-toggle .theme-label {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
   }
   .status-pill {
     display: flex;
@@ -4724,6 +4766,10 @@ function getDashboardHTML(token: string): string {
       <span class="header-activity" id="header-activity"></span>
     </div>
     <div class="header-right">
+      <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light mode">
+        <span id="theme-icon">&#9788;</span>
+        <span class="theme-label" id="theme-label">Light</span>
+      </button>
       <div class="status-pill" id="header-status">
         <div class="pulse-dot"></div>
         <span>Loading...</span>
@@ -5421,6 +5467,25 @@ function getDashboardHTML(token: string): string {
 <div class="toast-container" id="toasts"></div>
 
 <script>
+// ── Theme toggle (dark/light) ──
+(function() {
+  var saved = localStorage.getItem('dashboard-theme') || 'light';
+  document.documentElement.setAttribute('data-theme', saved);
+  updateThemeUI(saved);
+})();
+function updateThemeUI(theme) {
+  var icon = document.getElementById('theme-icon');
+  var label = document.getElementById('theme-label');
+  if (icon) icon.innerHTML = theme === 'dark' ? '&#9790;' : '&#9788;';
+  if (label) label.textContent = theme === 'dark' ? 'Dark' : 'Light';
+}
+function toggleTheme() {
+  var current = document.documentElement.getAttribute('data-theme') || 'light';
+  var next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('dashboard-theme', next);
+  updateThemeUI(next);
+}
 // ── Block-letter wordmark (matches terminal banner) ──
 (function() {
   var FONT = {
