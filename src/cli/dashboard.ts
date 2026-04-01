@@ -25,6 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
 import cron from 'node-cron';
+import { CronExpressionParser } from 'cron-parser';
 import type { Gateway } from '../gateway/router.js';
 import { localISO } from '../config.js';
 import { getMorningBriefHTML, ensureBriefDirs, briefPaths, MORNING_BRIEF_PROMPT } from './morning-brief.js';
@@ -48,6 +49,7 @@ function dashEnv(key: string, fallback: string): string {
 const VAULT_DIR = dashEnv('VAULT_PATH', '') || path.join(BASE_DIR, 'vault');
 const SYSTEM_DIR = path.join(VAULT_DIR, dashEnv('VAULT_SYSTEM_DIR', 'Meta/Clementine'));
 const CRON_FILE = path.join(SYSTEM_DIR, 'CRON.md');
+const DAILY_NOTES_DIR = path.join(VAULT_DIR, dashEnv('VAULT_DAILY_DIR', 'Daily'));
 const MEMORY_DB_PATH = path.join(BASE_DIR, '.memory.db');
 const PROJECTS_META_FILE = path.join(BASE_DIR, 'projects.json');
 
@@ -2310,6 +2312,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
   function computeClaudeUsage(): {
     currentSession: { opus: number; sonnet: number; other: number; total: number; sessionId: string | null };
     weekly: { opus: number; sonnet: number; other: number; total: number; sessions: number };
+    perAgent: Record<string, number>;
     weekStart: string;
     weekReset: string;
   } {
@@ -2347,7 +2350,24 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     } catch { /* ignore */ }
     result.currentSession.sessionId = currentSessionId;
 
-    if (!existsSync(projectsDir)) return result;
+    // Build sessionId -> agent mapping for per-agent token tracking
+    const sessionToAgent: Record<string, string> = {};
+    try {
+      const sessPath2 = path.join(BASE_DIR, '.sessions.json');
+      if (existsSync(sessPath2)) {
+        const sessData2 = JSON.parse(readFileSync(sessPath2, 'utf-8'));
+        for (const [key, val] of Object.entries(sessData2) as [string, any][]) {
+          const match = key.match(/:agent:([^:]+):/);
+          if (match && val?.sessionId) {
+            sessionToAgent[val.sessionId] = match[1];
+          }
+        }
+      }
+    } catch {}
+
+    const perAgent: Record<string, number> = {};
+
+    if (!existsSync(projectsDir)) return { ...result, perAgent };
 
     try {
       const weekStartMs = weekStart.getTime();
@@ -2394,6 +2414,12 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                   result.weekly.other += total;
                   if (isCurrentSession) result.currentSession.other += total;
                 }
+
+                // Per-agent token tracking
+                const agentName = sessionToAgent[sessionFileId];
+                if (agentName) {
+                  perAgent[agentName] = (perAgent[agentName] || 0) + total;
+                }
               } catch { /* skip bad line */ }
             }
           } catch { /* skip unreadable file */ }
@@ -2403,7 +2429,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
     result.weekly.total = result.weekly.opus + result.weekly.sonnet + result.weekly.other;
     result.currentSession.total = result.currentSession.opus + result.currentSession.sonnet + result.currentSession.other;
-    return result;
+    return { ...result, perAgent };
   }
 
   // ── Human-readable cron job labels ──────────────────────────────────
@@ -2432,6 +2458,47 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
     // Fallback: title-case the job name, strip hyphens
     return jobName.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function computeUpcomingCron(): Array<{ name: string; label: string; nextAt: string; inMinutes: number }> {
+    const results: Array<{ name: string; label: string; nextAt: Date }> = [];
+    if (existsSync(CRON_FILE)) {
+      try {
+        const parsed = matter(readFileSync(CRON_FILE, 'utf-8'));
+        const tz = dashEnv('TZ', '') || Intl.DateTimeFormat().resolvedOptions().timeZone;
+        for (const job of (parsed.data.jobs ?? []) as any[]) {
+          if (job.enabled === false || !job.schedule) continue;
+          try {
+            const interval = CronExpressionParser.parse(job.schedule, { tz });
+            const next = interval.next().toDate();
+            results.push({ name: job.name, label: humanCronLabel(job.name), nextAt: next });
+          } catch { /* invalid schedule */ }
+        }
+      } catch { /* parse error */ }
+    }
+    results.sort((a, b) => a.nextAt.getTime() - b.nextAt.getTime());
+    return results.slice(0, 5).map(r => ({
+      name: r.name,
+      label: r.label,
+      nextAt: r.nextAt.toISOString(),
+      inMinutes: Math.max(0, Math.round((r.nextAt.getTime() - Date.now()) / 60000)),
+    }));
+  }
+
+  function readDailyKpis(): { firstProposals: string | null; salesLanded: string | null; salesInstalled: string | null } {
+    try {
+      const today = localISO().slice(0, 10);
+      const notePath = path.join(DAILY_NOTES_DIR, `${today}.md`);
+      if (!existsSync(notePath)) return { firstProposals: null, salesLanded: null, salesInstalled: null };
+      const parsed = matter(readFileSync(notePath, 'utf-8'));
+      return {
+        firstProposals: parsed.data['first-proposals'] ? String(parsed.data['first-proposals']) : null,
+        salesLanded: parsed.data['sales-landed'] ? String(parsed.data['sales-landed']) : null,
+        salesInstalled: parsed.data['sales-installed'] ? String(parsed.data['sales-installed']) : null,
+      };
+    } catch {
+      return { firstProposals: null, salesLanded: null, salesInstalled: null };
+    }
   }
 
   // Build a human-readable event description from a cron run entry.
@@ -3204,6 +3271,17 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
       // Completed tasks — scan agents/*/tasks/completed/*.json
       const completedTasks: Array<{ agent: string; unit: string; id: string; title: string; status: string; result: string; completedAt: string; ago: string }> = [];
+      const agentVelocity: Record<string, { today: number; week: number }> = {};
+      const todayStr = localISO().slice(0, 10);
+      // Compute Monday of this week for velocity tracking
+      const velNow = new Date();
+      const velDay = velNow.getDay(); // 0=Sun
+      const velDiffToMon = velDay === 0 ? 6 : velDay - 1;
+      const velMonday = new Date(velNow);
+      velMonday.setDate(velMonday.getDate() - velDiffToMon);
+      velMonday.setHours(0, 0, 0, 0);
+      const mondayStr = velMonday.toISOString().slice(0, 10);
+
       const agentsDir2 = path.join(SYSTEM_DIR, 'agents');
       // Include Q1 (clementine) in the scan — it's not in the agent manager's `all` list
       const allWithQ1 = [...all, { slug: 'clementine', name: 'Clementine', unit: '19Q1' }];
@@ -3235,6 +3313,14 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                   completedAt,
                   ago,
                 });
+
+                // Agent velocity tracking
+                if (completedAt) {
+                  const cDate = completedAt.slice(0, 10);
+                  if (!agentVelocity[a.slug]) agentVelocity[a.slug] = { today: 0, week: 0 };
+                  if (cDate === todayStr) agentVelocity[a.slug].today++;
+                  if (cDate >= mondayStr) agentVelocity[a.slug].week++;
+                }
               } catch { /* skip */ }
             }
           } catch { /* skip */ }
@@ -3250,6 +3336,12 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       // Claude Code usage stats
       const usage = computeClaudeUsage();
 
+      // Upcoming cron jobs
+      const upcomingCron = computeUpcomingCron();
+
+      // Daily KPIs from daily note
+      const dailyKpis = readDailyKpis();
+
       res.json({
         agents: visibleAgents,
         systemCron,
@@ -3258,6 +3350,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         completedTasks: recentCompleted,
         summary: { deployed: deployed.length, online, working, queued, errors, runsToday, poolSize: visibleAgents.length - deployed.length },
         usage,
+        agentVelocity,
+        upcomingCron,
+        dailyKpis,
         timestamp: localISO(),
       });
     } catch (err) {

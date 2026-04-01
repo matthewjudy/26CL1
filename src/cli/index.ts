@@ -1192,6 +1192,10 @@ program
       const events = (data.events || []) as Array<Record<string, string>>;
       const pendingTasks = (data.pendingTasks || []) as Array<Record<string, unknown>>;
       const completedTasks = (data.completedTasks || []) as Array<Record<string, any>>;
+      const agentVelocity = (data as any).agentVelocity || {};
+      const upcomingCron = (data as any).upcomingCron || [];
+      const dailyKpis = (data as any).dailyKpis || {};
+      const perAgentTokens = ((data as any).usage?.perAgent || {}) as Record<string, number>;
       const deployed = agents.filter(a => a.deployed);
       const activePool = agents.filter((a: Record<string, unknown>) => !a.deployed && (((a as any).pendingTasks || []).length > 0 || ((a as any).lastCron && (Date.now() - new Date((a as any).lastCron.lastRun).getTime()) < 6 * 3600000)));
       const visible = [...deployed, ...activePool];
@@ -1208,7 +1212,13 @@ program
       const nameW = Math.max(16, Math.floor(content * 0.17));
       const progressW = Math.max(12, Math.floor(content * 0.14));
       const lastW = Math.max(5, Math.floor(content * 0.08));
-      const activityW = Math.max(20, content - statusW - unitW - nameW - progressW - lastW);
+      // Extended columns for wide terminals
+      const showExtended = usable >= 140;
+      const todayW = showExtended ? 5 : 0;
+      const weekW = showExtended ? 5 : 0;
+      const tokensW = showExtended ? 7 : 0;
+      const extendedW = todayW + weekW + tokensW + (showExtended ? gap * 3 : 0);
+      const activityW = Math.max(20, content - statusW - unitW - nameW - progressW - lastW - extendedW);
 
       // Render
       let out = c.clear;
@@ -1229,7 +1239,13 @@ program
       const daysLeft = resetDate ? Math.max(0, Math.ceil((resetDate.getTime() - Date.now()) / 86400000)) : 0;
       const resetStr = resetDate ? `${resetDate.getMonth() + 1}/${resetDate.getDate()}` : '—';
 
+      // Format KPI values
+      const fpVal = dailyKpis.firstProposals ? Math.round(parseInt(dailyKpis.firstProposals) / 1000) + 'K' : '--';
+      const landedVal = dailyKpis.salesLanded ? '$' + Math.round(parseInt(dailyKpis.salesLanded) / 1e6) + 'M' : '--';
+      const installedVal = dailyKpis.salesInstalled ? '$' + Math.round(parseInt(dailyKpis.salesInstalled) / 1e6) + 'M' : '--';
+
       out += `  ${c.bold}${c.blue}OPS BOARD${c.reset}  ${c.dim}${dateStr} ${timeStr}${c.reset}`;
+      out += `  ${c.dim}FP ${c.reset}${c.green}${fpVal}${c.reset}  ${c.dim}LANDED ${c.reset}${c.green}${landedVal}${c.reset}  ${c.dim}INSTALLED ${c.reset}${c.green}${installedVal}${c.reset}`;
       // Right-align usage stats
       const usageStr = `${c.dim}SESSION ${c.reset}${c.blue}${c.bold}${fmtT(cs2.total || 0)}${c.reset}  ${c.dim}WEEKLY ${c.reset}${(wk.total || 0) > 4e8 ? c.red : c.yellow}${c.bold}${fmtT(wk.total || 0)}${c.reset}  ${c.dim}resets ${resetStr} (${daysLeft}d)${c.reset}`;
       out += `  ${usageStr}\n`;
@@ -1239,6 +1255,17 @@ program
       const errClr = (summary.errors || 0) > 0 ? c.red : c.gray;
       out += `  ${sb(summary.online || 0, ' on', c.green)} ${sb(summary.working || 0, ' wrk', c.blue)} ${sb(summary.queued || 0, ' que', c.yellow)} ${sb(summary.errors || 0, ' err', errClr)} ${sb(summary.runsToday || 0, ' runs', c.white)} ${c.dim}│${c.reset} ${sb(summary.deployed || 0, ' deployed', c.gray)} ${sb(summary.poolSize || 0, ' pool', c.gray)}\n`;
       usedRows++;
+
+      // Next cron countdown
+      if (upcomingCron.length > 0) {
+        const cronItems = upcomingCron.slice(0, 4).map((cr: any) => {
+          const mins = cr.inMinutes || 0;
+          const timeStr = mins < 60 ? mins + 'm' : Math.floor(mins / 60) + 'h' + (mins % 60 ? (mins % 60) + 'm' : '');
+          return `${c.yellow}${cr.label}${c.reset} ${c.white}${timeStr}${c.reset}`;
+        }).join(`${c.dim} | ${c.reset}`);
+        out += `  ${c.dim}NEXT${c.reset}  ${cronItems}\n`;
+        usedRows++;
+      }
 
       // Separator
       out += `  ${c.dim}${'─'.repeat(usable)}${c.reset}\n`;
@@ -1266,10 +1293,10 @@ program
         return Math.floor(h / 24) + 'd';
       }
 
-      // Header row: STATUS | UNIT | AGENT | TASK / ACTIVITY | PROGRESS | LAST
-      let hdr = `  ${c.dim}${pad('STATUS', statusW)}${g}${pad('UNIT', unitW)}${g}${pad('AGENT', nameW)}${g}${pad('TASK / ACTIVITY', activityW)}${g}${pad('PROGRESS', progressW)}${g}${pad('LAST', lastW)}${c.reset}`;
+      // Header row: STATUS | UNIT | AGENT | TASK / ACTIVITY | [TODAY | WEEK | TOKENS |] PROGRESS | LAST
+      let hdr = `  ${c.dim}${pad('STATUS', statusW)}${g}${pad('UNIT', unitW)}${g}${pad('AGENT', nameW)}${g}${pad('TASK / ACTIVITY', activityW)}${g}${showExtended ? `${pad('TODAY', todayW)}${g}${pad('WEEK', weekW)}${g}${pad('TOKENS', tokensW)}${g}` : ''}${pad('PROGRESS', progressW)}${g}${pad('LAST', lastW)}${c.reset}`;
       out += hdr + '\n';
-      out += `  ${c.dim}${'─'.repeat(statusW)}${g}${'─'.repeat(unitW)}${g}${'─'.repeat(nameW)}${g}${'─'.repeat(activityW)}${g}${'─'.repeat(progressW)}${g}${'─'.repeat(lastW)}${c.reset}\n`;
+      out += `  ${c.dim}${'─'.repeat(statusW)}${g}${'─'.repeat(unitW)}${g}${'─'.repeat(nameW)}${g}${'─'.repeat(activityW)}${g}${showExtended ? `${'─'.repeat(todayW)}${g}${'─'.repeat(weekW)}${g}${'─'.repeat(tokensW)}${g}` : ''}${'─'.repeat(progressW)}${g}${'─'.repeat(lastW)}${c.reset}\n`;
       usedRows += 2;
 
       for (const a of visible) {
@@ -1301,7 +1328,18 @@ program
         const lastStr = lastCron && lastCron.lastRun ? timeAgoShort(lastCron.lastRun) : '';
 
         const safeTaskText = taskText.replace(/\n/g, ' ').replace(/\s+/g, ' ');
-        let row = `  ${st.clr}${pad(st.sym, statusW)}${c.reset}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${g}${c.white}${pad(displayName, nameW)}${c.reset}${g}${actClr}${pad(safeTaskText.slice(0, activityW), activityW)}${c.reset}${g}${progStr}${g}${c.dim}${pad(lastStr, lastW)}${c.reset}`;
+
+        // Extended columns: velocity and token usage
+        const vel = agentVelocity[a.slug] || { today: 0, week: 0 };
+        const agentTokens = perAgentTokens[a.slug] || 0;
+        const todayStr = vel.today > 0 ? String(vel.today) : '-';
+        const weekStr = vel.week > 0 ? String(vel.week) : '-';
+        const tokenStr = agentTokens > 0 ? fmtT(agentTokens) : '-';
+        const todayClr = vel.today > 0 ? c.green : c.dim;
+        const weekClr = vel.week > 0 ? c.green : c.dim;
+        const tokenClr = agentTokens > 5e7 ? c.red : agentTokens > 1e7 ? c.yellow : c.dim;
+
+        let row = `  ${st.clr}${pad(st.sym, statusW)}${c.reset}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${g}${c.white}${pad(displayName, nameW)}${c.reset}${g}${actClr}${pad(safeTaskText.slice(0, activityW), activityW)}${c.reset}${g}${showExtended ? `${todayClr}${pad(todayStr, todayW)}${c.reset}${g}${weekClr}${pad(weekStr, weekW)}${c.reset}${g}${tokenClr}${pad(tokenStr, tokensW)}${c.reset}${g}` : ''}${progStr}${g}${c.dim}${pad(lastStr, lastW)}${c.reset}`;
         out += row + '\n';
         usedRows++;
       }

@@ -1905,49 +1905,56 @@ server.tool(
 
 server.tool(
   'outlook_create_event',
-  'Create a new calendar event in Outlook. Times should be in Eastern Time (America/New_York). Returns the created event details.',
+  'Create a calendar event on Matthew\'s Outlook calendar and send invites to attendees. Default meeting location is Zoom (Matthew\'s vanity URL). Set is_teams=true for Teams meetings instead.',
   {
     subject: z.string().describe('Event title/subject'),
-    start: z.string().describe('Start date-time in ISO 8601 format, Eastern Time (e.g., "2026-04-02T14:00:00")'),
-    end: z.string().describe('End date-time in ISO 8601 format, Eastern Time (e.g., "2026-04-02T15:00:00")'),
-    location: z.string().optional().describe('Location name (optional)'),
+    start: z.string().describe('Start date-time in ISO 8601 format (e.g., "2026-04-02T14:00:00")'),
+    end: z.string().describe('End date-time in ISO 8601 format (e.g., "2026-04-02T15:00:00")'),
+    timezone: z.string().optional().default('Eastern Standard Time').describe('Timezone for start/end (default: Eastern Standard Time)'),
+    attendees: z.array(z.string()).describe('Email addresses of attendees'),
+    location: z.string().optional().default('http://www.floorcoveringsinternational.com/mj-meeting').describe('Meeting location (default: Matthew\'s Zoom vanity URL)'),
     body: z.string().optional().describe('Event description/notes in plain text (optional)'),
-    attendees: z.array(z.string()).optional().describe('Array of attendee email addresses (optional)'),
-    is_all_day: z.boolean().optional().default(false).describe('Whether this is an all-day event'),
-    is_online_meeting: z.boolean().optional().default(false).describe('Whether to create a Teams meeting link'),
+    is_teams: z.boolean().optional().default(false).describe('If true, create as Teams meeting instead of Zoom. Default is false (Zoom).'),
   },
-  async ({ subject, start, end, location, body, attendees, is_all_day, is_online_meeting }) => {
+  async ({ subject, start, end, timezone, attendees, location, body, is_teams }) => {
     const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const FONT_STYLE = 'font-family:Aptos,Calibri,sans-serif;font-size:11pt';
 
     const event: Record<string, unknown> = {
       subject,
-      start: { dateTime: start, timeZone: 'Eastern Standard Time' },
-      end: { dateTime: end, timeZone: 'Eastern Standard Time' },
-      isAllDay: is_all_day,
+      start: { dateTime: start, timeZone: timezone },
+      end: { dateTime: end, timeZone: timezone },
     };
 
-    if (location) {
-      event.location = { displayName: location };
-    }
+    // Attendees
+    event.attendees = attendees.map((email: string) => ({
+      emailAddress: { address: email },
+      type: 'required',
+    }));
 
-    if (body) {
-      const FONT_STYLE = 'font-family:Aptos,Calibri,sans-serif;font-size:11pt';
-      const htmlBody = body.split('\n').map((l: string) =>
-        l.trim() ? `<p style="${FONT_STYLE}">${l}</p>` : `<p style="${FONT_STYLE}"><br></p>`
-      ).join('\n');
-      event.body = { contentType: 'HTML', content: htmlBody };
-    }
-
-    if (attendees && attendees.length > 0) {
-      event.attendees = attendees.map((email: string) => ({
-        emailAddress: { address: email },
-        type: 'required',
-      }));
-    }
-
-    if (is_online_meeting) {
+    if (is_teams) {
+      // Teams meeting — Graph creates the join link automatically
       event.isOnlineMeeting = true;
       event.onlineMeetingProvider = 'teamsForBusiness';
+      if (body) {
+        const htmlBody = body.split('\n').map((l: string) =>
+          l.trim() ? `<p style="${FONT_STYLE}">${l}</p>` : `<p style="${FONT_STYLE}"><br></p>`
+        ).join('\n');
+        event.body = { contentType: 'HTML', content: htmlBody };
+      }
+    } else {
+      // Zoom (default) — put location in displayName and add clickable link to body
+      event.isOnlineMeeting = false;
+      event.location = { displayName: location };
+      const zoomLink = `<p style="${FONT_STYLE}"><a href="${location}">${location}</a></p>`;
+      if (body) {
+        const htmlBody = body.split('\n').map((l: string) =>
+          l.trim() ? `<p style="${FONT_STYLE}">${l}</p>` : `<p style="${FONT_STYLE}"><br></p>`
+        ).join('\n');
+        event.body = { contentType: 'HTML', content: htmlBody + '\n' + zoomLink };
+      } else {
+        event.body = { contentType: 'HTML', content: zoomLink };
+      }
     }
 
     const created = await graphPost(`/users/${userEmail}/events`, event);
@@ -1961,6 +1968,7 @@ server.tool(
       parts.push(`Attendees: ${names}`);
     }
     if (created.onlineMeeting?.joinUrl) parts.push(`Teams link: ${created.onlineMeeting.joinUrl}`);
+    if (created.webLink) parts.push(`Web link: ${created.webLink}`);
     parts.push(`ID: ${created.id?.slice(0, 20)}...`);
 
     return textResult(parts.join('\n'));
