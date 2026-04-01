@@ -1300,7 +1300,8 @@ program
         const lastCron = a.lastCron;
         const lastStr = lastCron && lastCron.lastRun ? timeAgoShort(lastCron.lastRun) : '';
 
-        let row = `  ${st.clr}${pad(st.sym, statusW)}${c.reset}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${g}${c.white}${pad(displayName, nameW)}${c.reset}${g}${actClr}${pad(taskText.slice(0, activityW), activityW)}${c.reset}${g}${progStr}${g}${c.dim}${pad(lastStr, lastW)}${c.reset}`;
+        const safeTaskText = taskText.replace(/\n/g, ' ').replace(/\s+/g, ' ');
+        let row = `  ${st.clr}${pad(st.sym, statusW)}${c.reset}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${g}${c.white}${pad(displayName, nameW)}${c.reset}${g}${actClr}${pad(safeTaskText.slice(0, activityW), activityW)}${c.reset}${g}${progStr}${g}${c.dim}${pad(lastStr, lastW)}${c.reset}`;
         out += row + '\n';
         usedRows++;
       }
@@ -1425,7 +1426,7 @@ program
           const agentClr = isCompletion ? c.green : ev.type === 'tool' ? c.gray : c.white;
           const tsClr = isCompletion ? c.green : c.dim;
           const agoClr = isCompletion ? c.green : c.gray;
-          out += `  ${tsClr}${pad(ts, afTimeW)}${c.reset}${g}${agoClr}${pad(ago, afAgoW)}${c.reset}${g}${tc}${c.bold}${pad(ti, afIconW)}${c.reset}${g}${agentClr}${pad(ev.agent, afAgentW)}${c.reset}${g}${detailClr}${(ev.detail || '').slice(0, Math.max(20, afDetailW))}${c.reset}\n`;
+          out += `  ${tsClr}${pad(ts, afTimeW)}${c.reset}${g}${agoClr}${pad(ago, afAgoW)}${c.reset}${g}${tc}${c.bold}${pad(ti, afIconW)}${c.reset}${g}${agentClr}${pad(ev.agent, afAgentW)}${c.reset}${g}${detailClr}${(ev.detail || '').replace(/\n/g, ' ').replace(/\s+/g, ' ').slice(0, Math.max(20, afDetailW))}${c.reset}\n`;
         }
       }
 
@@ -1682,11 +1683,13 @@ program
 
 program
   .command('chat')
-  .description('Interactive REPL chat session')
+  .description('Interactive chat with Q1 — full MCP tools, named sessions, streaming')
   .option('-m, --model <tier>', 'Model tier (haiku, sonnet, opus)')
+  .option('-n, --name <session-name>', 'Name this session (enables resume)')
+  .option('-l, --list', 'List named sessions')
   .option('--project <name>', 'Set active project context')
   .option('--profile <slug>', 'Set agent profile')
-  .action((opts: { model?: string; project?: string; profile?: string }) => {
+  .action((opts: { model?: string; project?: string; profile?: string; name?: string; list?: boolean }) => {
     cmdChat(opts).catch((err: unknown) => {
       console.error('Chat error:', err);
       process.exit(1);

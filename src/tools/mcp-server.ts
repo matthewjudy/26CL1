@@ -2088,6 +2088,151 @@ server.tool(
   },
 );
 
+// ── Microsoft Teams ─────────────────────────────────────────────────────
+
+server.tool(
+  'teams_list_chats',
+  'List recent Microsoft Teams chats (1:1 and group chats). Returns chat ID, topic, type, and last updated time.',
+  {
+    count: z.number().optional().default(20).describe('Number of chats to fetch (max 50)'),
+  },
+  async ({ count }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const limit = Math.min(count, 50);
+    const data = await graphGet(
+      `/users/${userEmail}/chats?$top=${limit}&$expand=members($select=displayName,email)&$orderby=lastUpdatedDateTime desc&$select=id,topic,chatType,lastUpdatedDateTime,createdDateTime`
+    );
+    const chats = (data.value ?? []).map((c: any) => {
+      const members = (c.members ?? []).map((m: any) => m.displayName || m.email || 'unknown');
+      return {
+        id: c.id,
+        topic: c.topic || members.filter((n: string) => n !== 'unknown').join(', ') || '(unnamed)',
+        type: c.chatType ?? 'unknown',
+        members,
+        lastUpdated: c.lastUpdatedDateTime,
+      };
+    });
+    return externalResult(JSON.stringify(chats, null, 2));
+  },
+);
+
+server.tool(
+  'teams_read_chat',
+  'Read recent messages from a specific Teams chat. Use teams_list_chats first to get the chat ID.',
+  {
+    chatId: z.string().describe('The chat ID (from teams_list_chats)'),
+    count: z.number().optional().default(20).describe('Number of messages to fetch (max 50)'),
+  },
+  async ({ chatId, count }) => {
+    const limit = Math.min(count, 50);
+    const data = await graphGet(
+      `/chats/${chatId}/messages?$top=${limit}&$orderby=createdDateTime desc&$select=id,from,body,createdDateTime,messageType,attachments,importance`
+    );
+    const messages = (data.value ?? [])
+      .filter((m: any) => m.messageType === 'message')
+      .map((m: any) => {
+        const bodyText = (m.body?.content ?? '').replace(/<[^>]*>/g, '').trim();
+        return {
+          id: m.id,
+          from: m.from?.user?.displayName ?? m.from?.application?.displayName ?? 'unknown',
+          body: bodyText.slice(0, 2000),
+          date: m.createdDateTime,
+          importance: m.importance !== 'normal' ? m.importance : undefined,
+          attachments: (m.attachments ?? []).length > 0
+            ? (m.attachments as any[]).map(a => a.name || a.contentType).join(', ')
+            : undefined,
+        };
+      });
+    return externalResult(JSON.stringify(messages, null, 2));
+  },
+);
+
+server.tool(
+  'teams_search_messages',
+  'Search Teams messages across all chats by keyword. Searches message body content.',
+  {
+    query: z.string().describe('Search query (keywords, names, topics)'),
+    count: z.number().optional().default(15).describe('Max results (max 25)'),
+  },
+  async ({ query, count }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const limit = Math.min(count, 25);
+    // Use the Graph search API for Teams messages
+    const data = await graphPost('/search/query', {
+      requests: [{
+        entityTypes: ['chatMessage'],
+        query: { queryString: query },
+        from: 0,
+        size: limit,
+      }],
+    });
+    const hits = data.value?.[0]?.hitsContainers?.[0]?.hits ?? [];
+    const results = hits.map((hit: any) => {
+      const resource = hit.resource ?? {};
+      const bodyText = (resource.body?.content ?? resource.summary ?? '').replace(/<[^>]*>/g, '').trim();
+      return {
+        chatId: resource.chatId ?? null,
+        channelId: resource.channelIdentity?.channelId ?? null,
+        teamId: resource.channelIdentity?.teamId ?? null,
+        from: resource.from?.user?.displayName ?? resource.from?.emailAddress?.name ?? 'unknown',
+        body: bodyText.slice(0, 500),
+        date: resource.createdDateTime,
+        summary: hit.summary ? hit.summary.replace(/<[^>]*>/g, '').trim().slice(0, 200) : undefined,
+      };
+    });
+    return externalResult(JSON.stringify(results, null, 2));
+  },
+);
+
+server.tool(
+  'teams_list_channels',
+  'List channels in a Teams team. Use this to find channel IDs for reading channel messages.',
+  {
+    teamId: z.string().describe('The team ID (from teams_search_messages or teams_list_teams)'),
+  },
+  async ({ teamId }) => {
+    const data = await graphGet(
+      `/teams/${teamId}/channels?$select=id,displayName,description,membershipType`
+    );
+    const channels = (data.value ?? []).map((ch: any) => ({
+      id: ch.id,
+      name: ch.displayName ?? '(unnamed)',
+      description: ch.description || null,
+      type: ch.membershipType ?? 'standard',
+    }));
+    return externalResult(JSON.stringify(channels, null, 2));
+  },
+);
+
+server.tool(
+  'teams_read_channel',
+  'Read recent messages from a Teams channel.',
+  {
+    teamId: z.string().describe('The team ID'),
+    channelId: z.string().describe('The channel ID (from teams_list_channels)'),
+    count: z.number().optional().default(20).describe('Number of messages to fetch (max 50)'),
+  },
+  async ({ teamId, channelId, count }) => {
+    const limit = Math.min(count, 50);
+    const data = await graphGet(
+      `/teams/${teamId}/channels/${channelId}/messages?$top=${limit}&$select=id,from,body,createdDateTime,messageType,importance`
+    );
+    const messages = (data.value ?? [])
+      .filter((m: any) => m.messageType === 'message')
+      .map((m: any) => {
+        const bodyText = (m.body?.content ?? '').replace(/<[^>]*>/g, '').trim();
+        return {
+          id: m.id,
+          from: m.from?.user?.displayName ?? m.from?.application?.displayName ?? 'unknown',
+          body: bodyText.slice(0, 2000),
+          date: m.createdDateTime,
+          importance: m.importance !== 'normal' ? m.importance : undefined,
+        };
+      });
+    return externalResult(JSON.stringify(messages, null, 2));
+  },
+);
+
 // ── Workspace Tools ─────────────────────────────────────────────────────
 
 /** Common developer directories to auto-scan (relative to home). */

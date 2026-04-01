@@ -2,17 +2,22 @@
  * Clementine CLI — Interactive REPL chat session.
  *
  * Usage: clementine chat [--model sonnet] [--project myapp] [--profile researcher]
+ *        clementine chat --name "project-review"  (named session, resumable)
+ *        clementine chat --list                   (list active named sessions)
  *
  * Lazy-initializes a gateway instance and streams responses to stdout.
- * Bang commands: !model, !project, !clear, !help, !q, !d prefixes.
+ * Bang commands: !model, !project, !clear, !name, !sessions, !help, !q, !d prefixes.
  */
 
 import readline from 'node:readline';
 import os from 'node:os';
 import path from 'node:path';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import type { Gateway } from '../gateway/router.js';
 
 const BASE_DIR = process.env.CLEMENTINE_HOME || path.join(os.homedir(), '.clementine');
+const ACTIVITY_LOG = path.join(BASE_DIR, '.activity-log.jsonl');
+const SESSIONS_FILE = path.join(BASE_DIR, '.sessions.json');
 
 // ── ANSI helpers ─────────────────────────────────────────────────────
 
@@ -21,6 +26,7 @@ const DIM = '\x1b[0;90m';
 const CYAN = '\x1b[0;36m';
 const GREEN = '\x1b[0;32m';
 const YELLOW = '\x1b[1;33m';
+const BLUE = '\x1b[0;34m';
 const RESET = '\x1b[0m';
 
 /** Simple ANSI markdown renderer for terminal output. */
@@ -37,6 +43,48 @@ function renderMarkdown(text: string): string {
     });
 }
 
+/** Sanitize a session name into a stable key fragment. */
+function sanitizeName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+}
+
+/** Write an entry to the activity log for ops board visibility. */
+function logActivity(entry: Record<string, unknown>): void {
+  try {
+    appendFileSync(ACTIVITY_LOG, JSON.stringify({
+      ts: new Date().toISOString(),
+      agent: 'Clementine',
+      unit: '19Q1',
+      ...entry,
+    }) + '\n');
+  } catch { /* non-fatal */ }
+}
+
+/** List named CLI chat sessions from the sessions file. */
+function listNamedSessions(): Array<{ name: string; key: string; exchanges: number; timestamp: string }> {
+  if (!existsSync(SESSIONS_FILE)) return [];
+  try {
+    const data = JSON.parse(readFileSync(SESSIONS_FILE, 'utf-8'));
+    const results: Array<{ name: string; key: string; exchanges: number; timestamp: string }> = [];
+    for (const [key, entry] of Object.entries(data) as [string, { exchanges?: number; timestamp?: string }][]) {
+      if (key.startsWith('cli:chat:')) {
+        const name = key.slice('cli:chat:'.length);
+        results.push({
+          name,
+          key,
+          exchanges: entry.exchanges ?? 0,
+          timestamp: entry.timestamp ?? '',
+        });
+      }
+    }
+    // Sort by most recent first
+    results.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    return results;
+  } catch {
+    return [];
+  }
+}
+
 // ── Lazy gateway init ────────────────────────────────────────────────
 
 let gatewayInstance: Gateway | null = null;
@@ -46,6 +94,23 @@ async function getGateway(): Promise<Gateway> {
 
   process.env.CLEMENTINE_HOME = BASE_DIR;
   delete process.env['CLAUDECODE'];
+
+  // Redirect pino (and all other stdout JSON logs) to the log file
+  // so they don't pollute the interactive REPL output.
+  const logFile = path.join(BASE_DIR, 'logs', 'cli-chat.log');
+  const { createWriteStream, mkdirSync: mkdirSyncFs } = await import('node:fs');
+  mkdirSyncFs(path.dirname(logFile), { recursive: true });
+  const logStream = createWriteStream(logFile, { flags: 'a' });
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array, ...args: unknown[]): boolean => {
+    const str = typeof chunk === 'string' ? chunk : chunk.toString();
+    // Detect pino JSON log lines and redirect them to the log file
+    if (str.startsWith('{"level":')) {
+      logStream.write(chunk as string, ...(args as []));
+      return true;
+    }
+    return originalStdoutWrite(chunk, ...(args as []));
+  }) as typeof process.stdout.write;
 
   const { PersonalAssistant } = await import('../agent/assistant.js');
   const assistant = new PersonalAssistant();
@@ -64,10 +129,46 @@ export async function cmdChat(opts: {
   model?: string;
   project?: string;
   profile?: string;
+  name?: string;
+  list?: boolean;
 }): Promise<void> {
-  const sessionKey = `cli:repl:${process.pid}`;
+  // List mode: show named sessions
+  if (opts.list) {
+    const sessions = listNamedSessions();
+    if (sessions.length === 0) {
+      console.log(`${DIM}No named sessions.${RESET}`);
+    } else {
+      console.log(`${BOLD}Named sessions:${RESET}\n`);
+      for (const s of sessions) {
+        const age = s.timestamp ? timeAgo(s.timestamp) : '?';
+        console.log(`  ${CYAN}${s.name}${RESET}  ${DIM}${s.exchanges} exchanges, last active ${age}${RESET}`);
+      }
+      console.log(`\n${DIM}Resume with: clementine chat --name <session-name>${RESET}`);
+    }
+    return;
+  }
 
-  console.log(`${CYAN}${BOLD}Clementine Chat${RESET} ${DIM}(Ctrl+C to exit)${RESET}`);
+  // Build session key
+  let sessionName = opts.name ? sanitizeName(opts.name) : null;
+  let sessionKey = sessionName
+    ? `cli:chat:${sessionName}`
+    : `cli:repl:${process.pid}`;
+
+  // Header
+  const label = sessionName
+    ? `${CYAN}${BOLD}Clementine Chat${RESET} ${BLUE}${sessionName}${RESET}`
+    : `${CYAN}${BOLD}Clementine Chat${RESET}`;
+  console.log(`${label} ${DIM}(Ctrl+C to exit)${RESET}`);
+
+  // Check if resuming an existing session
+  if (sessionName) {
+    const sessions = listNamedSessions();
+    const existing = sessions.find(s => s.name === sessionName);
+    if (existing && existing.exchanges > 0) {
+      console.log(`${DIM}Resuming session: ${existing.exchanges} prior exchanges, last active ${timeAgo(existing.timestamp)}${RESET}`);
+    }
+  }
+
   console.log();
 
   const gateway = await getGateway();
@@ -110,6 +211,13 @@ export async function cmdChat(opts: {
 
   console.log();
 
+  // Log session start to activity feed
+  logActivity({
+    type: 'start',
+    trigger: 'cli-chat',
+    detail: `Interactive chat${sessionName ? ': ' + sessionName : ''}`,
+  });
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -131,6 +239,8 @@ export async function cmdChat(opts: {
         `${BOLD}Commands:${RESET}`,
         `  ${CYAN}!model [haiku|sonnet|opus]${RESET} — Switch model`,
         `  ${CYAN}!project <name|list|clear|status>${RESET} — Set project context`,
+        `  ${CYAN}!name <session-name>${RESET} — Name this session (enables resume)`,
+        `  ${CYAN}!sessions${RESET} — List named sessions`,
         `  ${CYAN}!clear${RESET} — Reset conversation`,
         `  ${CYAN}!q <msg>${RESET} — Quick reply (Haiku)`,
         `  ${CYAN}!d <msg>${RESET} — Deep reply (Opus)`,
@@ -144,6 +254,45 @@ export async function cmdChat(opts: {
     if (text === '!clear') {
       gateway.clearSession(sessionKey);
       console.log(`${DIM}Session cleared.${RESET}`);
+      rl.prompt();
+      return;
+    }
+
+    if (text.startsWith('!name')) {
+      const newName = text.slice(5).trim();
+      if (!newName) {
+        if (sessionName) {
+          console.log(`${DIM}Current session: ${sessionName}${RESET}`);
+        } else {
+          console.log(`${DIM}Session is unnamed. Usage: !name <session-name>${RESET}`);
+        }
+        rl.prompt();
+        return;
+      }
+      const sanitized = sanitizeName(newName);
+      const newKey = `cli:chat:${sanitized}`;
+      // Migrate session state if we have an existing session
+      if (sessionKey !== newKey) {
+        gateway.clearSession(newKey); // ensure clean target
+      }
+      sessionName = sanitized;
+      sessionKey = newKey;
+      console.log(`${DIM}Session named: ${CYAN}${sanitized}${DIM}. You can resume with: clementine chat --name ${sanitized}${RESET}`);
+      rl.prompt();
+      return;
+    }
+
+    if (text === '!sessions') {
+      const sessions = listNamedSessions();
+      if (sessions.length === 0) {
+        console.log(`${DIM}No named sessions.${RESET}`);
+      } else {
+        for (const s of sessions) {
+          const age = s.timestamp ? timeAgo(s.timestamp) : '?';
+          const active = s.key === sessionKey ? ` ${GREEN}(current)${RESET}` : '';
+          console.log(`  ${CYAN}${s.name}${RESET}  ${DIM}${s.exchanges} exchanges, ${age}${RESET}${active}`);
+        }
+      }
       rl.prompt();
       return;
     }
@@ -221,21 +370,35 @@ export async function cmdChat(opts: {
     }
 
     // ── Send message ──────────────────────────────────────────
-    process.stdout.write(`\n${DIM}thinking...${RESET}\r`);
+    process.stdout.write('\n');
+    let hasOutput = false;
 
     try {
       const response = await gateway.handleMessage(
         sessionKey,
         effectiveText,
-        undefined,
+        async (token: string) => {
+          hasOutput = true;
+          process.stdout.write(token);
+        },
         oneOffModel,
+        undefined,
+        async (toolName: string) => {
+          // Show tool activity inline
+          const shortName = toolName.replace(/^mcp__19q1-tools__/, '');
+          process.stdout.write(`\n${DIM}  [${shortName}]${RESET} `);
+        },
       );
-      // Clear "thinking..." line
-      process.stdout.write('\x1b[2K\r');
-      console.log(renderMarkdown(response));
-      console.log();
+
+      if (!hasOutput && response) {
+        // Fallback: no streaming happened, print full response
+        process.stdout.write(renderMarkdown(response));
+      }
+      process.stdout.write('\n\n');
     } catch (err) {
-      process.stdout.write('\x1b[2K\r');
+      if (!hasOutput) {
+        process.stdout.write('\n');
+      }
       console.error(`${YELLOW}Error: ${err}${RESET}`);
       console.log();
     }
@@ -244,7 +407,24 @@ export async function cmdChat(opts: {
   });
 
   rl.on('close', () => {
+    logActivity({
+      type: 'done',
+      trigger: 'cli-chat',
+      detail: `Session ended${sessionName ? ': ' + sessionName : ''}`,
+    });
     console.log(`\n${DIM}Goodbye.${RESET}`);
     process.exit(0);
   });
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+function timeAgo(ts: string): string {
+  const ms = Date.now() - new Date(ts).getTime();
+  if (ms < 60000) return 'just now';
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
 }
