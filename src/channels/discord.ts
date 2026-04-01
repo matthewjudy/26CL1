@@ -1761,6 +1761,48 @@ export async function startDiscord(
       return;
     }
 
+    // ── Choice buttons (from discord_ask_choice) ─────────────────────
+    if (customId.startsWith('choice_')) {
+      const choiceSessionKey = button.channel?.isDMBased()
+        ? `discord:user:${button.user.id}`
+        : `discord:channel:${button.channelId}:${button.user.id}`;
+      const chosenLabel = (button.component as any)?.label ?? 'unknown';
+      const originalQuestion = button.message.content ?? '';
+
+      // Disable all buttons and show selection
+      try {
+        const rawComponents = (button.message.components as any[]).map((row: any) => ({
+          type: 1,
+          components: (row.components ?? []).map((comp: any) => ({
+            type: comp.type ?? 2,
+            style: (comp.customId ?? comp.custom_id) === customId ? 1 : 2,
+            label: comp.label,
+            custom_id: comp.customId ?? comp.custom_id,
+            disabled: true,
+          })),
+        }));
+        await button.editReply({
+          content: originalQuestion + `\n\n**Selected:** ${chosenLabel}`,
+          components: rawComponents as any,
+        });
+      } catch { /* non-fatal */ }
+
+      // Route the choice back through the gateway as a message
+      const streamer = new DiscordStreamingMessage(button.channel!);
+      await streamer.start();
+      try {
+        const response = await gateway.handleMessage(
+          choiceSessionKey,
+          `[User selected: "${chosenLabel}"]\n\nOriginal question: ${originalQuestion}\n\nProceed based on this selection.`,
+          (t) => streamer.update(t),
+        );
+        await streamer.finalize(response);
+      } catch (err) {
+        await streamer.finalize(`Error: ${err}`);
+      }
+      return;
+    }
+
     // ── Other buttons — route the decision to the agent as a message
     const sessionKey = `discord:channel:${button.channelId}:${button.user.id}`;
     const originalContent = button.message.content ?? '';

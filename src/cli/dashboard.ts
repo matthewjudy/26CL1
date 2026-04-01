@@ -844,13 +844,19 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
   }
 
   // Protect /api routes with bearer token (GET / serves the SPA with token injected)
+  // Also accept WEBHOOK_SECRET for external API access (e.g., voice memos from phone)
   app.use('/api', (req, res, next) => {
     const auth = req.headers.authorization;
-    if (auth !== `Bearer ${dashboardToken}`) {
-      res.status(401).json({ error: 'Unauthorized' });
+    const webhookSecret = dashEnv('WEBHOOK_SECRET', '');
+    if (auth === `Bearer ${dashboardToken}`) {
+      next();
       return;
     }
-    next();
+    if (webhookSecret && auth === `Bearer ${webhookSecret}`) {
+      next();
+      return;
+    }
+    res.status(401).json({ error: 'Unauthorized' });
   });
 
   // Compute build version hash at startup for cache busting / auto-reload
@@ -2014,6 +2020,90 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     }
   });
 
+  // ── Voice memo endpoint ──────────────────────────────────────────
+  // Accepts base64-encoded audio, transcribes via Groq Whisper, routes through gateway.
+  // Body: { audio: "base64...", format: "webm"|"mp4"|"wav"|..., context?: "optional context" }
+
+  app.post('/api/voice-memo', async (req, res) => {
+    const { audio, format, context } = req.body ?? {};
+    if (!audio || typeof audio !== 'string') {
+      res.status(400).json({ error: 'audio (base64-encoded) is required' });
+      return;
+    }
+    const audioFormat = (typeof format === 'string' && format) ? format : 'webm';
+    const groqKey = dashEnv('GROQ_API_KEY', '');
+    if (!groqKey) {
+      res.status(500).json({ error: 'GROQ_API_KEY is not configured' });
+      return;
+    }
+
+    try {
+      // Decode base64 audio to a Buffer
+      const audioBuffer = Buffer.from(audio, 'base64');
+      const mimeType = `audio/${audioFormat}`;
+      const fileName = `voice-memo.${audioFormat}`;
+
+      // Build multipart/form-data for Groq Whisper API
+      const boundary = `----VoiceMemo${Date.now()}`;
+      const formParts: Buffer[] = [];
+
+      // "file" field
+      formParts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+      ));
+      formParts.push(audioBuffer);
+      formParts.push(Buffer.from('\r\n'));
+
+      // "model" field
+      formParts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-large-v3-turbo\r\n`
+      ));
+
+      // Closing boundary
+      formParts.push(Buffer.from(`--${boundary}--\r\n`));
+
+      const body = Buffer.concat(formParts);
+
+      // Call Groq Whisper API
+      const groqResp = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${groqKey}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      });
+
+      if (!groqResp.ok) {
+        const errText = await groqResp.text();
+        res.status(502).json({ error: `Groq API error ${groqResp.status}: ${errText}` });
+        return;
+      }
+
+      const groqData = await groqResp.json() as { text?: string };
+      const transcript = groqData.text ?? '';
+
+      if (!transcript.trim()) {
+        res.json({ success: true, transcript: '', response: '(empty transcription)' });
+        return;
+      }
+
+      // Build the message for the gateway
+      const contextStr = (typeof context === 'string' && context.trim()) ? context.trim() : '';
+      const message = contextStr
+        ? `[Voice memo, context: ${contextStr}] ${transcript}`
+        : `[Voice memo] ${transcript}`;
+
+      const sessionKey = `voice:memo:${Date.now()}`;
+      const gateway = await getGateway();
+      const response = await gateway.handleMessage(sessionKey, message);
+
+      res.json({ success: true, transcript, response });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   // ── Memory search route ───────────────────────────────────────────
 
   app.get('/api/memory/search', async (req, res) => {
@@ -2384,6 +2474,45 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     return label + ' failed (' + dur + 's)';
   }
 
+  // ── Discord DM notification for completed delegations ──────────────
+  let _ownerDmChannelId: string | null = null;
+
+  async function notifyOwnerDM(message: string): Promise<void> {
+    try {
+      const env = parseEnvFile();
+      let token = env['DISCORD_TOKEN'] ?? '';
+      if (!token) {
+        const name = getAssistantName().toLowerCase();
+        try {
+          token = execSync(
+            `security find-generic-password -s "${name}" -a "DISCORD_TOKEN" -w`,
+            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+          ).trim();
+        } catch { /* no token */ }
+      }
+      const ownerId = env['DISCORD_OWNER_ID'] ?? '';
+      if (!token || !ownerId || ownerId === '0') return;
+
+      // Create or reuse cached DM channel
+      if (!_ownerDmChannelId) {
+        const dmRes = await fetch('https://discord.com/api/v10/users/@me/channels', {
+          method: 'POST',
+          headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recipient_id: ownerId }),
+        });
+        if (!dmRes.ok) return;
+        const dmChannel = await dmRes.json() as { id: string };
+        _ownerDmChannelId = dmChannel.id;
+      }
+
+      await fetch(`https://discord.com/api/v10/channels/${_ownerDmChannelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: message.slice(0, 200) }),
+      });
+    } catch { /* DM notification is best-effort */ }
+  }
+
   // ── Ops Board — aggregated agent status ──────────────────────────────
   app.get('/api/ops-board', async (_req, res) => {
     try {
@@ -2486,9 +2615,43 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                         const logPath = path.join(BASE_DIR, '.activity-log.jsonl');
                         appendFileSync(logPath, JSON.stringify(activityEntry) + '\n');
                         console.log(`[dashboard] Auto-archived ${task.status} task ${task.id} for ${a.slug}`);
+                        // DM owner for completed tasks (not cancelled, not missing result)
+                        if ((task.status === 'completed' || task.status === 'complete') && task.result) {
+                          const dmMsg = `${a.name} completed: ${title}` + (task.result ? ` -- ${task.result.slice(0, 120)}` : '');
+                          notifyOwnerDM(dmMsg).catch(() => {});
+                        }
                       } catch { /* archive failed, still skip display */ }
                       continue;
                     }
+                    // Auto-cancel tasks stuck as pending for >24 hours
+                    const taskAge = Date.now() - new Date(task.createdAt || '').getTime();
+                    const STALE_TASK_MS = 24 * 60 * 60 * 1000; // 24 hours
+                    if (task.status === 'pending' && taskAge > STALE_TASK_MS) {
+                      try {
+                        task.status = 'cancelled';
+                        task.updatedAt = new Date().toISOString();
+                        task.result = 'Auto-cancelled: pending for >24 hours without being picked up.';
+                        const completedDir = path.join(tasksDir, 'completed');
+                        if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+                        writeFileSync(path.join(completedDir, tf), JSON.stringify(task, null, 2));
+                        unlinkSync(taskPath);
+                        const firstLine = (task.task || '').split('\n')[0].trim();
+                        const title = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+                        const activityEntry = {
+                          ts: new Date().toISOString(),
+                          type: 'error',
+                          agent: a.name,
+                          unit: (a as any).unit || '',
+                          trigger: 'delegation',
+                          detail: '✖ Stale task auto-cancelled (>24h): ' + title,
+                        };
+                        const logPath = path.join(BASE_DIR, '.activity-log.jsonl');
+                        appendFileSync(logPath, JSON.stringify(activityEntry) + '\n');
+                        console.log(`[dashboard] Auto-cancelled stale task ${task.id} for ${a.slug} (age: ${Math.round(taskAge / 3600000)}h)`);
+                      } catch { /* failed to cancel, still show it */ }
+                      continue;
+                    }
+
                     delegations[a.slug].push({
                       id: task.id || tf.replace('.json', ''),
                       task: task.task || '',

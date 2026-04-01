@@ -1326,8 +1326,10 @@ program
           usedRows++;
         } else {
           for (const pt of pendingTasks) {
-            const ds = String((pt as any).displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING'));
-            const sc = statusClr[ds] || (ds === 'DONE' ? c.green : ds === 'CANCELLED' ? c.dim : ds === 'PENDING' ? c.yellow : c.blue);
+            const taskAgeMs = (pt as any).createdAt ? Date.now() - new Date((pt as any).createdAt).getTime() : 0;
+            const isStale = pt.status === 'pending' && taskAgeMs > 12 * 3600000; // >12h
+            const ds = String((pt as any).displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : isStale ? 'STALE' : 'PENDING'));
+            const sc = statusClr[ds] || (ds === 'STALE' ? c.red : ds === 'DONE' ? c.green : ds === 'CANCELLED' ? c.dim : ds === 'PENDING' ? c.yellow : c.blue);
             const elapsed = String((pt as any).elapsed || pt.age || '');
             const dimRow = (pt.status === 'completed' || pt.status === 'cancelled') ? c.dim : '';
             const dimEnd = dimRow ? c.reset : '';

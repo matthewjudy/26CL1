@@ -1901,6 +1901,72 @@ server.tool(
   },
 );
 
+// ── 19b. outlook_create_event ─────────────────────────────────────────
+
+server.tool(
+  'outlook_create_event',
+  'Create a new calendar event in Outlook. Times should be in Eastern Time (America/New_York). Returns the created event details.',
+  {
+    subject: z.string().describe('Event title/subject'),
+    start: z.string().describe('Start date-time in ISO 8601 format, Eastern Time (e.g., "2026-04-02T14:00:00")'),
+    end: z.string().describe('End date-time in ISO 8601 format, Eastern Time (e.g., "2026-04-02T15:00:00")'),
+    location: z.string().optional().describe('Location name (optional)'),
+    body: z.string().optional().describe('Event description/notes in plain text (optional)'),
+    attendees: z.array(z.string()).optional().describe('Array of attendee email addresses (optional)'),
+    is_all_day: z.boolean().optional().default(false).describe('Whether this is an all-day event'),
+    is_online_meeting: z.boolean().optional().default(false).describe('Whether to create a Teams meeting link'),
+  },
+  async ({ subject, start, end, location, body, attendees, is_all_day, is_online_meeting }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+
+    const event: Record<string, unknown> = {
+      subject,
+      start: { dateTime: start, timeZone: 'Eastern Standard Time' },
+      end: { dateTime: end, timeZone: 'Eastern Standard Time' },
+      isAllDay: is_all_day,
+    };
+
+    if (location) {
+      event.location = { displayName: location };
+    }
+
+    if (body) {
+      const FONT_STYLE = 'font-family:Aptos,Calibri,sans-serif;font-size:11pt';
+      const htmlBody = body.split('\n').map((l: string) =>
+        l.trim() ? `<p style="${FONT_STYLE}">${l}</p>` : `<p style="${FONT_STYLE}"><br></p>`
+      ).join('\n');
+      event.body = { contentType: 'HTML', content: htmlBody };
+    }
+
+    if (attendees && attendees.length > 0) {
+      event.attendees = attendees.map((email: string) => ({
+        emailAddress: { address: email },
+        type: 'required',
+      }));
+    }
+
+    if (is_online_meeting) {
+      event.isOnlineMeeting = true;
+      event.onlineMeetingProvider = 'teamsForBusiness';
+    }
+
+    const created = await graphPost(`/users/${userEmail}/events`, event);
+
+    const parts = [`Event created: "${created.subject}"`];
+    parts.push(`Start: ${created.start?.dateTime}`);
+    parts.push(`End: ${created.end?.dateTime}`);
+    if (created.location?.displayName) parts.push(`Location: ${created.location.displayName}`);
+    if (created.attendees?.length) {
+      const names = created.attendees.map((a: any) => a.emailAddress?.address).join(', ');
+      parts.push(`Attendees: ${names}`);
+    }
+    if (created.onlineMeeting?.joinUrl) parts.push(`Teams link: ${created.onlineMeeting.joinUrl}`);
+    parts.push(`ID: ${created.id?.slice(0, 20)}...`);
+
+    return textResult(parts.join('\n'));
+  },
+);
+
 // ── 20. outlook_draft ───────────────────────────────────────────────────
 
 server.tool(
@@ -2804,6 +2870,66 @@ server.tool(
     }
     const msg = (await res.json()) as { id: string };
     return textResult(`Message with buttons posted to channel ${channel_id} (message ID: ${msg.id})`);
+  },
+);
+
+// ── Discord Ask Choice ──────────────────────────────────────────────────
+
+server.tool(
+  'discord_ask_choice',
+  'Present the user with a question and 2-5 clickable choice buttons in Discord. ' +
+  'Use this when you need to clarify intent, confirm a direction, or let the user pick between options. ' +
+  'The user\'s choice is routed back to you as your next message. ' +
+  'Each choice should be a short label (max 40 chars). ' +
+  'For DM conversations, use the owner\'s Discord user ID to open a DM channel automatically.',
+  {
+    channel_id: z.string().describe('Discord channel ID to post to. For DMs, use "dm:{userId}" and a DM channel will be opened.'),
+    question: z.string().describe('The question or prompt to show above the buttons'),
+    choices: z.array(z.string()).min(2).max(5).describe('Array of choice labels (2-5 options, max 40 chars each)'),
+  },
+  async ({ channel_id, question, choices }) => {
+    const token = env['DISCORD_TOKEN'] ?? '';
+    if (!token) throw new Error('DISCORD_TOKEN not configured');
+
+    // Handle DM channel resolution
+    let resolvedChannelId = channel_id;
+    if (channel_id.startsWith('dm:')) {
+      const userId = channel_id.slice(3);
+      const dmRes = await fetch('https://discord.com/api/v10/users/@me/channels', {
+        method: 'POST',
+        headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_id: userId }),
+      });
+      if (!dmRes.ok) {
+        return textResult('Error: Could not open DM channel.');
+      }
+      const dmData = (await dmRes.json()) as { id: string };
+      resolvedChannelId = dmData.id;
+    }
+
+    // Build button components (max 5 per action row)
+    const buttons = choices.slice(0, 5).map((label, i) => ({
+      type: 2, // BUTTON
+      style: i === 0 ? 1 : 2, // PRIMARY for first, SECONDARY for rest
+      label: label.slice(0, 40),
+      custom_id: `choice_${i}_${Date.now()}`,
+    }));
+
+    const payload = {
+      content: question.slice(0, 2000),
+      components: [{ type: 1, components: buttons }],
+    };
+
+    const res = await fetch(`https://discord.com/api/v10/channels/${resolvedChannelId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Discord API ${res.status}: ${errText}`);
+    }
+    return textResult(`Choice prompt sent. Waiting for user selection. Do NOT continue until the user clicks a button — their choice will arrive as your next message.`);
   },
 );
 
