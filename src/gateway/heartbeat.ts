@@ -45,7 +45,7 @@ import {
 import type { CronJobDefinition, CronRunEntry, HeartbeatState, SelfImproveConfig, SelfImproveExperiment, SelfImproveState, WorkflowDefinition } from '../types.js';
 import type { NotificationDispatcher } from './notifications.js';
 import type { Gateway } from './router.js';
-import { nextTaskId } from '../config.js';
+import { nextTaskId, shortTaskId } from '../config.js';
 import { scanner } from '../security/scanner.js';
 
 // ── Activity log helper for cron lifecycle events ─────────────────────
@@ -1061,6 +1061,34 @@ export class CronScheduler {
     const cronStartTime = Date.now();
     let cronResult: { ok: boolean; preview: string; error?: string } = { ok: true, preview: '' };
 
+    // ── Create ops board task for non-task-processor cron jobs ──────
+    // Task processors already create delegation tasks; skip those to avoid duplication.
+    // Also skip heartbeat checks which are too frequent and noisy.
+    const isTaskProcessor = job.name.endsWith('-task-processor');
+    const isHeartbeatJob = job.name === 'heartbeat' || job.name === 'heartbeat-check';
+    const showOnOpsBoard = !isTaskProcessor && !isHeartbeatJob;
+    let cronTaskId = '';
+    const cronTaskSlug = job.agentSlug || 'clementine';
+
+    if (showOnOpsBoard) {
+      try {
+        cronTaskId = nextTaskId();
+        const humanLabel = job.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const tasksDir = path.join(AGENTS_DIR, cronTaskSlug, 'tasks');
+        if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
+        writeFileSync(path.join(tasksDir, `${cronTaskId}.json`), JSON.stringify({
+          id: cronTaskId,
+          fromAgent: 'cron',
+          toAgent: cronTaskSlug,
+          task: humanLabel,
+          expectedOutput: '',
+          status: 'in-progress',
+          createdAt: localISO(),
+          updatedAt: localISO(),
+        }, null, 2));
+      } catch { /* non-fatal — ops board task is best-effort */ }
+    }
+
     // Log cron start to activity feed
     logCronActivity({
       agent: agentName,
@@ -1155,26 +1183,8 @@ export class CronScheduler {
             const label = job.name.replace(/-task-processor$/, ': Tasks').replace(/-/g, ' ').replace(/\b\w/g, (ch: string) => ch.toUpperCase());
             logToDailyNote(`**${timeStr}** - ${label} (${durationSec}s): ${preview}`);
 
-            // Write completed task record so it shows in the dashboard
-            const agentSlugForTask = job.agentSlug || 'clementine';
-            try {
-              const completedDir = path.join(AGENTS_DIR, agentSlugForTask, 'tasks', 'completed');
-              if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
-              const taskId = nextTaskId();
-              const completedTask = {
-                id: taskId,
-                fromAgent: 'cron',
-                toAgent: agentSlugForTask,
-                task: label + ': ' + preview,
-                expectedOutput: '',
-                status: 'completed',
-                createdAt: localISO(),
-                updatedAt: localISO(),
-                completedAt: localISO(),
-                result: preview,
-              };
-              writeFileSync(path.join(completedDir, `${taskId}.json`), JSON.stringify(completedTask, null, 2));
-            } catch { /* non-fatal */ }
+            // Completed task records are now handled by the ops board task lifecycle
+            // in the finally block (showOnOpsBoard). No duplicate needed here.
           }
 
           // Fire dependent chained jobs (async, non-blocking)
@@ -1229,6 +1239,29 @@ export class CronScheduler {
       this.runningJobs.delete(job.name);
       this.runningJobAgents.delete(job.name);
       this.emitStatusChange();
+
+      // ── Clean up ops board task ──────────────────────────────────
+      if (showOnOpsBoard && cronTaskId) {
+        try {
+          const tasksDir = path.join(AGENTS_DIR, cronTaskSlug, 'tasks');
+          const taskFile = path.join(tasksDir, `${cronTaskId}.json`);
+          if (existsSync(taskFile)) {
+            if (cronResult.ok && cronResult.preview && cronResult.preview !== 'Completed') {
+              // Real output — move to completed
+              const completedDir = path.join(tasksDir, 'completed');
+              if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+              const taskData = JSON.parse(readFileSync(taskFile, 'utf-8'));
+              taskData.status = 'completed';
+              taskData.completedAt = localISO();
+              taskData.updatedAt = localISO();
+              taskData.result = cronResult.preview;
+              writeFileSync(path.join(completedDir, `${cronTaskId}.json`), JSON.stringify(taskData, null, 2));
+            }
+            // Remove the in-progress task file (whether moved to completed or just noise)
+            unlinkSync(taskFile);
+          }
+        } catch { /* non-fatal */ }
+      }
 
       // Log cron completion to activity feed
       const cronDuration = Date.now() - cronStartTime;
