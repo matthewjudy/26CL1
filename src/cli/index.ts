@@ -303,33 +303,91 @@ function cmdLaunch(options: { foreground?: boolean; install?: boolean; uninstall
   closeSync(logFd);
 }
 
-function cmdStop(): void {
-  const pid = readPid();
-  if (!pid) {
-    console.log('  No running instance found.');
-    return;
+function cmdStop(options?: { dashboard?: boolean; all?: boolean }): void {
+  const doDashboard = options?.dashboard || options?.all;
+  const doDaemon = !options?.dashboard || options?.all;
+
+  if (doDaemon) {
+    const pid = readPid();
+    if (!pid) {
+      console.log('  No running daemon found.');
+    } else if (!isProcessAlive(pid)) {
+      console.log(`  PID ${pid} is not running. Cleaning up PID file.`);
+      try { unlinkSync(getPidFilePath()); } catch { /* ignore */ }
+    } else {
+      console.log(`  Stopping ${getAssistantName()} (PID ${pid})...`);
+      stopDaemon(pid);
+      if (isProcessAlive(pid)) {
+        console.log('  Daemon did not exit cleanly.');
+      } else {
+        console.log('  Daemon stopped.');
+        try { unlinkSync(getPidFilePath()); } catch { /* ignore */ }
+      }
+    }
   }
 
-  if (!isProcessAlive(pid)) {
-    console.log(`  PID ${pid} is not running. Cleaning up PID file.`);
-    try { unlinkSync(getPidFilePath()); } catch { /* ignore */ }
-    return;
-  }
-
-  console.log(`  Stopping ${getAssistantName()} (PID ${pid})...`);
-  stopDaemon(pid);
-
-  if (isProcessAlive(pid)) {
-    console.log('  Process did not exit cleanly.');
-  } else {
-    console.log('  Stopped.');
-    try { unlinkSync(getPidFilePath()); } catch { /* ignore */ }
+  if (doDashboard) {
+    stopDashboardProcess();
   }
 }
 
-function cmdRestart(options: { foreground?: boolean }): void {
-  cmdStop();
-  cmdLaunch({ foreground: options.foreground });
+/** Stop all running dashboard processes. */
+function stopDashboardProcess(): void {
+  try {
+    const name = getAssistantName().toLowerCase();
+    const dashPids = execSync(`pgrep -f '${name}.*dashboard' || true`, { encoding: 'utf-8' }).trim();
+    if (dashPids) {
+      let killed = 0;
+      for (const dp of dashPids.split('\n').filter(Boolean)) {
+        const dpid = parseInt(dp, 10);
+        if (!isNaN(dpid) && dpid !== process.pid) {
+          try { process.kill(dpid, 'SIGTERM'); killed++; } catch { /* ignore */ }
+        }
+      }
+      if (killed) console.log(`  Stopped dashboard (${killed} process${killed > 1 ? 'es' : ''}).`);
+      else console.log('  No dashboard process found.');
+    } else {
+      console.log('  No dashboard process found.');
+    }
+  } catch { console.log('  No dashboard process found.'); }
+}
+
+/** Restart the dashboard via launchd (unload + load plist). Falls back to process kill if no plist. */
+function restartDashboardViaLaunchd(): void {
+  const dashLabel = `com.${getAssistantName().toLowerCase()}.dashboard`;
+  const dashPlistPath = path.join(process.env.HOME ?? '', 'Library', 'LaunchAgents', `${dashLabel}.plist`);
+
+  if (process.platform === 'darwin' && existsSync(dashPlistPath)) {
+    console.log('  Restarting dashboard via launchd...');
+    try { execSync(`launchctl unload "${dashPlistPath}"`, { stdio: 'pipe' }); } catch { /* not loaded */ }
+    // Brief pause for clean teardown
+    const waitUntil = Date.now() + 500;
+    while (Date.now() < waitUntil) { /* busy-wait */ }
+    try {
+      execSync(`launchctl load "${dashPlistPath}"`);
+      console.log(`  Dashboard restarted (LaunchAgent: ${dashLabel}).`);
+    } catch (err) {
+      console.error(`  Failed to reload dashboard LaunchAgent: ${err}`);
+    }
+  } else {
+    // No plist — kill and let user relaunch manually
+    stopDashboardProcess();
+    console.log('  No LaunchAgent installed. Start dashboard with: clementine dashboard');
+  }
+}
+
+function cmdRestart(options: { foreground?: boolean; dashboard?: boolean; all?: boolean }): void {
+  const doDashboard = options.dashboard || options.all;
+  const doDaemon = !options.dashboard || options.all;
+
+  if (doDaemon) {
+    cmdStop();
+    cmdLaunch({ foreground: options.foreground });
+  }
+
+  if (doDashboard) {
+    restartDashboardViaLaunchd();
+  }
 }
 
 function cmdStatus(): void {
@@ -784,12 +842,16 @@ program
 program
   .command('stop')
   .description('Stop the running assistant')
+  .option('-d, --dashboard', 'Stop the dashboard instead of the daemon')
+  .option('-a, --all', 'Stop both daemon and dashboard')
   .action(cmdStop);
 
 program
   .command('restart')
   .description('Restart the assistant (daemon by default)')
   .option('-f, --foreground', 'Run in foreground after restart')
+  .option('-d, --dashboard', 'Restart the dashboard instead of the daemon')
+  .option('-a, --all', 'Restart both daemon and dashboard')
   .action(cmdRestart);
 
 program
@@ -898,33 +960,13 @@ program
       return;
     }
 
-    if (opts.stop || opts.restart) {
-      // Kill existing dashboard process(es)
-      try {
-        const name = getAssistantName().toLowerCase();
-        const dashPids = execSync(`pgrep -f '${name}.*dashboard' || true`, { encoding: 'utf-8' }).trim();
-        if (dashPids) {
-          let killed = 0;
-          for (const dp of dashPids.split('\n').filter(Boolean)) {
-            const dpid = parseInt(dp, 10);
-            if (!isNaN(dpid) && dpid !== process.pid) {
-              try { process.kill(dpid, 'SIGTERM'); killed++; } catch { /* ignore */ }
-            }
-          }
-          if (killed) console.log(`  Stopped dashboard (${killed} process${killed > 1 ? 'es' : ''}).`);
-        } else {
-          console.log('  No dashboard process found.');
-        }
-      } catch { console.log('  No dashboard process found.'); }
+    if (opts.stop) {
+      stopDashboardProcess();
+      return;
+    }
 
-      if (opts.stop) return;
-      // For --restart, brief pause then re-launch
-      setTimeout(() => {
-        cmdDashboard(opts).catch((err: unknown) => {
-          console.error('Dashboard error:', err);
-          process.exit(1);
-        });
-      }, 500);
+    if (opts.restart) {
+      restartDashboardViaLaunchd();
       return;
     }
     cmdDashboard(opts).catch((err: unknown) => {
@@ -2221,7 +2263,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
           try { process.kill(dpid, 'SIGTERM'); } catch { /* ignore */ }
         }
       }
-      console.log(`  ${GREEN}OK${RESET}  Stopped dashboard process (restart with: clementine dashboard)`);
+      console.log(`  ${GREEN}OK${RESET}  Stopped dashboard process (restart with: clementine restart -d)`);
     }
   } catch { /* no dashboard running */ }
 
