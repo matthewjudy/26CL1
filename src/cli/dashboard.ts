@@ -138,7 +138,9 @@ const PROJECT_MARKERS = [
 ];
 
 const WORKSPACE_CANDIDATES = [
-  'Desktop', 'Documents', 'Developer', 'Projects', 'projects',
+  // Skip Desktop and Documents — they are often iCloud-synced on macOS,
+  // and synchronous stat/readdir calls hang waiting for the cloud daemon.
+  'Developer', 'Projects', 'projects',
   'repos', 'Repos', 'src', 'code', 'Code', 'work', 'Work',
   'dev', 'Dev', 'github', 'GitHub', 'gitlab', 'GitLab',
 ];
@@ -278,7 +280,29 @@ function setWorkspaceDirs(dirs: string[]): void {
   writeFileSync(ENV_PATH, lines.join('\n'));
 }
 
+/** Check if a directory is safe to scan synchronously (not cloud-synced). */
+function isSafeToScan(dirPath: string): boolean {
+  // On macOS, iCloud-synced dirs (Desktop, Documents) can hang on sync I/O.
+  // Skip any dir under ~/Library/Mobile Documents (iCloud container).
+  if (dirPath.includes('/Library/Mobile Documents')) return false;
+  // Check for iCloud extended attributes that indicate cloud-only files
+  try {
+    const { execSync: ex } = require('node:child_process') as typeof import('node:child_process');
+    const attrs = ex(`xattr -l "${dirPath}" 2>/dev/null || true`, { encoding: 'utf-8', timeout: 1000 });
+    if (attrs.includes('com.apple.icloud')) return false;
+  } catch { /* timeout or error — skip to be safe */ }
+  return true;
+}
+
+// Cache scanned projects for 30s to avoid repeated filesystem scans
+let _projectCache: { projects: ProjectInfo[]; ts: number } | null = null;
+const PROJECT_CACHE_TTL = 30_000;
+
 function scanProjects(): ProjectInfo[] {
+  if (_projectCache && Date.now() - _projectCache.ts < PROJECT_CACHE_TTL) {
+    return _projectCache.projects;
+  }
+
   const home = os.homedir();
   const seen = new Set<string>();
   const dirs: string[] = [];
@@ -286,6 +310,7 @@ function scanProjects(): ProjectInfo[] {
   const addDir = (d: string) => {
     const resolved = path.resolve(d);
     if (!seen.has(resolved) && existsSync(resolved)) {
+      if (!isSafeToScan(resolved)) return;
       try { if (statSync(resolved).isDirectory()) { seen.add(resolved); dirs.push(resolved); } } catch { /* ignore */ }
     }
   };
@@ -360,7 +385,9 @@ function scanProjects(): ProjectInfo[] {
     }
   }
 
-  return projects.sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = projects.sort((a, b) => a.name.localeCompare(b.name));
+  _projectCache = { projects: sorted, ts: Date.now() };
+  return sorted;
 }
 
 // ── Metrics computation ──────────────────────────────────────────────
@@ -826,7 +853,18 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
   }
   const host = opts.host ?? envHost;
   const app = express();
-  app.use(express.json());
+  // Disable HTTP keep-alive at the response level
+  app.use((_req, res, next) => {
+    res.set('Connection', 'close');
+    next();
+  });
+  // Only parse JSON body on POST/PUT/PATCH - skip for GET requests
+  app.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+      return next();
+    }
+    express.json()(req, res, next);
+  });
 
   // ── Dashboard authentication ────────────────────────────────────────
   const tokenPath = path.join(BASE_DIR, '.dashboard-token');
@@ -3618,6 +3656,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     try {
       await new Promise<void>((resolve, reject) => {
         const server = app.listen(actualPort, host);
+        // Disable keep-alive — forces each request to use a fresh connection.
+        // Prevents Chrome's persistent connections from starving other clients.
+        server.keepAliveTimeout = 0;
         server.once('listening', () => {
           const name = getAssistantName();
           const displayHost = host === '0.0.0.0' ? 'all interfaces' : host;
@@ -3656,12 +3697,14 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     }
   }
 
-  // Try to open in browser
-  try {
-    if (process.platform === 'darwin') {
-      execSync(`open http://localhost:${actualPort}`, { stdio: 'ignore' });
-    }
-  } catch { /* ignore */ }
+  // Open in browser only if running interactively (not from launchd)
+  if (process.stdout.isTTY) {
+    try {
+      if (process.platform === 'darwin') {
+        execSync(`open http://localhost:${actualPort}`, { stdio: 'ignore' });
+      }
+    } catch { /* ignore */ }
+  }
 
   // Keep alive
   await new Promise<void>(() => {});
