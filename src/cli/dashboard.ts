@@ -3287,6 +3287,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         for (const t of tasks) {
           // Skip completed/cancelled tasks (should already be archived, but defensive)
           if (t.status === 'completed' || t.status === 'complete' || t.status === 'cancelled') continue;
+          // Skip cron self-delegation tasks — these are internal scheduler bookkeeping,
+          // already visible as agent activity in the agent table
+          if (t.from === 'cron' && agentSlug === 'clementine') continue;
           const ageMs = t.updatedAt ? Date.now() - new Date(t.updatedAt).getTime() : 0;
           const firstLine = t.task.split('\n')[0].trim();
           const sentenceMatch = firstLine.match(/^(.+?[.!?])\s/);
@@ -5636,11 +5639,11 @@ function getDashboardHTML(token: string): string {
           <div id="ops-board-clock" style="color:#6e7681;font-size:11px"></div>
         </div>
         <!-- Agent table -->
-        <div id="ops-board-agents" style="margin-bottom:10px;flex-shrink:0;overflow-y:auto;max-height:50vh;width:100%">Loading...</div>
-        <!-- Pending tasks (always visible) -->
-        <div id="ops-board-pending" style="flex-shrink:0"></div>
+        <div id="ops-board-agents" style="margin-bottom:6px;flex-shrink:0;overflow-y:auto;max-height:35vh;width:100%">Loading...</div>
+        <!-- Pending tasks -->
+        <div id="ops-board-pending" style="flex-shrink:0;max-height:20vh;overflow-y:auto"></div>
         <!-- Completed tasks -->
-        <div id="ops-board-completed" style="flex-shrink:0;max-height:25vh;overflow-y:auto"></div>
+        <div id="ops-board-completed" style="flex-shrink:0;max-height:15vh;overflow-y:auto"></div>
         <!-- Event log — fills remaining space -->
         <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;border-top:1px solid #21262d;padding-top:8px;margin-top:4px">
           <div style="color:#58a6ff;font-weight:700;font-size:11px;margin-bottom:6px;flex-shrink:0">ACTIVITY FEED</div>
@@ -7529,11 +7532,18 @@ async function refreshOpsBoard() {
       }
     }
 
-    // ── Pending tasks (always visible) ──
+    // ── Pending tasks (collapsed by default, show 5) ──
     var pendEl = document.getElementById('ops-board-pending');
     if (pendEl) {
       var statusColors2 = { 'WORKING': '#58a6ff', 'PENDING': '#d29922', 'DONE': '#3fb950', 'CANCELLED': '#6e7681' };
-      var phtml = '<div style="color:#d29922;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">PENDING TASKS (' + pendingTasks.length + ')</div>';
+      var pendExpanded = pendEl.dataset.expanded === 'true';
+      var pendLimit = pendExpanded ? pendingTasks.length : 5;
+      var pendVisible = pendingTasks.slice(0, pendLimit);
+      var pendHidden = pendingTasks.length - pendVisible.length;
+      var phtml = '<div style="display:flex;align-items:center;gap:8px;color:#d29922;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">'
+        + 'PENDING TASKS (' + pendingTasks.length + ')'
+        + (pendingTasks.length > 5 ? ' <span onclick="var el=document.getElementById(\'ops-board-pending\');el.dataset.expanded=el.dataset.expanded===\'true\'?\'false\':\'true\';refreshOpsBoard()" style="color:#58a6ff;font-weight:400;font-size:10px;cursor:pointer;user-select:none">[' + (pendExpanded ? 'collapse' : 'show all') + ']</span>' : '')
+        + '</div>';
       // Header row
       var phCss = 'color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;padding:2px 0';
       phtml += '<div style="display:flex;gap:8px;' + phCss + ';border-bottom:1px solid #21262d;margin-bottom:2px">'
@@ -7547,8 +7557,8 @@ async function refreshOpsBoard() {
       if (pendingTasks.length === 0) {
         phtml += '<div style="color:#6e7681;font-size:11px;padding:2px 0">No pending tasks</div>';
       } else {
-        for (var pi = 0; pi < pendingTasks.length; pi++) {
-          var pt = pendingTasks[pi];
+        for (var pi = 0; pi < pendVisible.length; pi++) {
+          var pt = pendVisible[pi];
           var ds = pt.displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : 'PENDING');
           var sc = statusColors2[ds] || (ds === 'DONE' ? '#3fb950' : ds === 'CANCELLED' ? '#6e7681' : ds === 'PENDING' ? '#d29922' : '#58a6ff');
           var ptCreated = pt.createdAt ? new Date(pt.createdAt) : null;
@@ -7562,15 +7572,25 @@ async function refreshOpsBoard() {
             + '<span style="color:#8b949e;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(pt.title || '') + '</span>'
             + '</div>';
         }
+        if (pendHidden > 0 && !pendExpanded) {
+          phtml += '<div style="color:#6e7681;font-size:10px;padding:2px 0;cursor:pointer" onclick="var el=document.getElementById(\'ops-board-pending\');el.dataset.expanded=\'true\';refreshOpsBoard()">+ ' + pendHidden + ' more</div>';
+        }
       }
       pendEl.innerHTML = phtml;
     }
 
-    // ── Completed tasks ──
+    // ── Completed tasks (collapsed by default, show 5) ──
     var compEl = document.getElementById('ops-board-completed');
     if (compEl) {
       var chCss = 'color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;padding:2px 0';
-      var chtml = '<div style="color:#3fb950;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">COMPLETED TASKS (' + completedTasks.length + ')</div>';
+      var compExpanded = compEl.dataset.expanded === 'true';
+      var compLimit = compExpanded ? completedTasks.length : 5;
+      var compVisible = completedTasks.slice(0, compLimit);
+      var compHidden = completedTasks.length - compVisible.length;
+      var chtml = '<div style="display:flex;align-items:center;gap:8px;color:#3fb950;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">'
+        + 'COMPLETED TASKS (' + completedTasks.length + ')'
+        + (completedTasks.length > 5 ? ' <span onclick="var el=document.getElementById(\'ops-board-completed\');el.dataset.expanded=el.dataset.expanded===\'true\'?\'false\':\'true\';refreshOpsBoard()" style="color:#58a6ff;font-weight:400;font-size:10px;cursor:pointer;user-select:none">[' + (compExpanded ? 'collapse' : 'show all') + ']</span>' : '')
+        + '</div>';
       chtml += '<div style="display:flex;gap:8px;' + chCss + ';border-bottom:1px solid #21262d;margin-bottom:2px">'
         + '<span style="min-width:46px;flex-shrink:0">INC#</span>'
         + '<span style="min-width:34px;flex-shrink:0">TIME</span>'
@@ -7582,8 +7602,8 @@ async function refreshOpsBoard() {
       if (completedTasks.length === 0) {
         chtml += '<div style="color:#6e7681;font-size:11px;padding:2px 0">No recently completed tasks</div>';
       } else {
-        for (var ci = 0; ci < completedTasks.length; ci++) {
-          var ct = completedTasks[ci];
+        for (var ci = 0; ci < compVisible.length; ci++) {
+          var ct = compVisible[ci];
           var ctTime = ct.completedAt ? new Date(ct.completedAt) : null;
           var ctTs = ctTime ? (String(ctTime.getHours()).padStart(2, '0') + ':' + String(ctTime.getMinutes()).padStart(2, '0')) : '';
           var ctAgo = ct.ago || '';
@@ -7595,6 +7615,9 @@ async function refreshOpsBoard() {
             + '<span style="color:#c9d1d9;min-width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.agent) + '</span>'
             + '<span style="color:#8b949e;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.title || '') + '</span>'
             + '</div>';
+        }
+        if (compHidden > 0 && !compExpanded) {
+          chtml += '<div style="color:#6e7681;font-size:10px;padding:2px 0;cursor:pointer" onclick="var el=document.getElementById(\'ops-board-completed\');el.dataset.expanded=\'true\';refreshOpsBoard()">+ ' + compHidden + ' more</div>';
         }
       }
       compEl.innerHTML = chtml;
@@ -7632,8 +7655,15 @@ async function refreshOpsBoard() {
       if (events.length === 0) {
         evEl.innerHTML = '<div style="color:#6e7681;padding:8px 0">No activity</div>';
       } else {
+        var evExpanded = evEl.dataset.expanded === 'true';
+        var evLimit = evExpanded ? events.length : 10;
+        var evVisible = events.slice(0, evLimit);
+        var evHidden = events.length - evVisible.length;
         var html = '';
-        for (var ei = 0; ei < events.length; ei++) {
+        if (events.length > 10) {
+          html += '<div style="display:flex;justify-content:flex-end;margin-bottom:4px"><span onclick="var el=document.getElementById(\'ops-board-events\');el.dataset.expanded=el.dataset.expanded===\'true\'?\'false\':\'true\';refreshOpsBoard()" style="color:#58a6ff;font-size:10px;cursor:pointer;user-select:none">[' + (evExpanded ? 'show recent' : 'show all ' + events.length) + ']</span></div>';
+        }
+        for (var ei = 0; ei < evVisible.length; ei++) {
           var ev = events[ei];
           var tc = typeColors2[ev.type] || '#8b949e';
           var ti = typeIcons[ev.type] || '\u00b7';
@@ -7664,6 +7694,9 @@ async function refreshOpsBoard() {
             + '<span style="color:' + agentColor + ';min-width:120px;max-width:160px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + esc(ev.agent) + '</span>'
             + '<span style="color:' + detailColor + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ev.detail || '') + '</span>'
             + '</div>';
+        }
+        if (evHidden > 0 && !evExpanded) {
+          html += '<div style="color:#6e7681;font-size:10px;padding:4px 6px;cursor:pointer" onclick="var el=document.getElementById(\'ops-board-events\');el.dataset.expanded=\'true\';refreshOpsBoard()">+ ' + evHidden + ' more events</div>';
         }
         evEl.innerHTML = html;
       }

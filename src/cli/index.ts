@@ -985,10 +985,9 @@ program
   .command('ops')
   .description('Live ops board in the terminal')
   .option('-n, --no-watch', 'Print once and exit (no auto-refresh)')
-  .option('--no-tmux', 'Run directly without tmux (will not survive session resets)')
-  .option('--detach', 'Start ops board in background tmux session without attaching')
-  .option('--kill', 'Stop the persistent ops board tmux session')
-  .action(async (opts: { watch?: boolean; tmux?: boolean; detach?: boolean; kill?: boolean }) => {
+  .option('--detach', 'Start ops board in a dedicated background tmux session')
+  .option('--kill', 'Stop the dedicated ops board tmux session')
+  .action(async (opts: { watch?: boolean; detach?: boolean; kill?: boolean }) => {
     const TMUX_SESSION = 'clementine-ops';
 
     // --kill: tear down the persistent tmux session
@@ -1002,71 +1001,44 @@ program
       return;
     }
 
-    // tmux persistence: if not already inside the ops tmux session, delegate to it
-    if (opts.tmux !== false && opts.watch !== false && !process.env.CLEMENTINE_OPS_INNER) {
-      // Check if tmux is available
-      try {
-        execSync('which tmux', { stdio: 'pipe' });
-      } catch {
-        // No tmux — fall through to direct rendering
-        console.log('  tmux not found — running directly (will not survive session resets).');
-        // fall through
-        opts.tmux = false;
+    // --detach: run in a dedicated background tmux session
+    // --kill: tear down that session
+    // Default: run directly in the current terminal
+    if ((opts.detach || opts.kill) && !process.env.CLEMENTINE_OPS_INNER) {
+      let hasTmux = false;
+      try { execSync('which tmux', { stdio: 'pipe' }); hasTmux = true; } catch { /* no tmux */ }
+
+      if (!hasTmux) {
+        console.log('  tmux not found — cannot use --detach/--kill.');
+        return;
       }
 
-      if (opts.tmux !== false) {
-        // Check if the tmux session already exists with ops running
+      if (opts.detach) {
         let sessionExists = false;
-        try {
-          execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null`, { stdio: 'pipe' });
-          sessionExists = true;
-        } catch { /* no session */ }
-
-        if (opts.detach) {
-          if (sessionExists) {
-            console.log(`  Ops board already running in tmux session '${TMUX_SESSION}'.`);
-            console.log(`  Attach with: clementine ops`);
-          } else {
-            const nodeExec = process.execPath;
-            const cliScript = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
-            execSync(
-              `tmux new-session -d -s ${TMUX_SESSION} "CLEMENTINE_OPS_INNER=1 ${nodeExec} ${cliScript} ops"`,
-              { stdio: 'pipe' },
-            );
-            console.log(`  Started ops board in background tmux session '${TMUX_SESSION}'.`);
-            console.log(`  Attach with: clementine ops`);
-          }
-          return;
-        }
+        try { execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null`, { stdio: 'pipe' }); sessionExists = true; } catch { /* no session */ }
 
         if (sessionExists) {
-          // Attach to existing session
-          const attachCmd = process.env.TMUX
-            ? `tmux switch-client -t ${TMUX_SESSION}`   // already in tmux
-            : `tmux attach-session -t ${TMUX_SESSION}`;
-          try {
-            execSync(attachCmd, { stdio: 'inherit' });
-          } catch { /* user detached or session ended */ }
-          return;
-        }
-
-        // No existing session — create one and attach (or switch)
-        const nodeExec = process.execPath;
-        const cliScript = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
-        if (process.env.TMUX) {
-          // Inside tmux already — create detached, then switch
+          console.log(`  Ops board already running in tmux session '${TMUX_SESSION}'.`);
+          console.log(`  Attach with: tmux attach -t ${TMUX_SESSION}`);
+        } else {
+          const nodeExec = process.execPath;
+          const cliScript = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
           execSync(
             `tmux new-session -d -s ${TMUX_SESSION} "CLEMENTINE_OPS_INNER=1 ${nodeExec} ${cliScript} ops"`,
             { stdio: 'pipe' },
           );
-          try {
-            execSync(`tmux switch-client -t ${TMUX_SESSION}`, { stdio: 'inherit' });
-          } catch { /* user detached */ }
-        } else {
-          execSync(
-            `tmux new-session -s ${TMUX_SESSION} "CLEMENTINE_OPS_INNER=1 ${nodeExec} ${cliScript} ops"`,
-            { stdio: 'inherit' },
-          );
+          // Configure tmux status bar
+          const tmuxSetup = [
+            `tmux set -t ${TMUX_SESSION} status-left-length 40`,
+            `tmux set -t ${TMUX_SESSION} status-left '#[fg=black,bold] 19Q1 OPS #[default]'`,
+            `tmux set -t ${TMUX_SESSION} status-right '#[fg=black]#(cat ${BASE_DIR}/.daemon-status.json 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);j=d.get(\\"runningJobs\\",[]);print(str(len(j))+\\\" jobs\\\")" 2>/dev/null || echo "daemon?") | #(ls ${BASE_DIR}/cron/runs/*.jsonl 2>/dev/null | wc -l | tr -d " ") crons | %H:%M#[default]'`,
+            `tmux set -t ${TMUX_SESSION} status-right-length 60`,
+            `tmux set -t ${TMUX_SESSION} status-style 'bg=green,fg=black'`,
+            `tmux set -t ${TMUX_SESSION} status-interval 10`,
+          ].join(' \\; ');
+          try { execSync(tmuxSetup, { stdio: 'pipe' }); } catch { /* non-fatal */ }
+          console.log(`  Started ops board in tmux session '${TMUX_SESSION}'.`);
+          console.log(`  Attach with: tmux attach -t ${TMUX_SESSION}`);
         }
         return;
       }
@@ -1086,6 +1058,8 @@ program
       brightGreen: '\x1b[92m', brightYellow: '\x1b[93m', brightCyan: '\x1b[96m',
       orange: '\x1b[38;5;208m', purple: '\x1b[38;5;141m',
       bgRed: '\x1b[41m', bgGreen: '\x1b[42m', bgYellow: '\x1b[43m', bgBlue: '\x1b[44m',
+      bgDimBlue: '\x1b[48;5;17m', bgDimRed: '\x1b[48;5;52m', bgDimYellow: '\x1b[48;5;58m',
+      bgDimGreen: '\x1b[48;5;22m', bgDimGray: '\x1b[48;5;236m',
       clear: '\x1b[2J\x1b[H',
     };
 
@@ -1105,6 +1079,7 @@ program
 
     let currentScreen: 'ops' | 'roster' = 'ops';
     let lastData: Record<string, unknown> | null = null;
+    let expandedSections = false; // toggled by 'p' key
 
     async function render() {
       // Detect terminal dimensions
@@ -1353,10 +1328,13 @@ program
         const displayName = a.name;
 
         // Task / Activity text
+        // Skip stale/idle progress — prefer the activity text which reflects current state
+        const hasActiveProgress = a.progress && a.progress.detail
+          && a.progress.phase !== 'idle' && a.progress.phase !== 'complete' && a.progress.phase !== 'waiting';
         let taskText = '—';
         if (a.opStatus === 'WORKING' && a.activity) {
           taskText = a.activity;
-        } else if (a.progress && a.progress.detail) {
+        } else if (hasActiveProgress) {
           taskText = a.progress.detail;
         } else if (a.activity && a.activity !== 'IDLE') {
           taskText = a.activity;
@@ -1387,7 +1365,14 @@ program
         const weekClr = vel.week > 0 ? c.green : c.dim;
         const tokenClr = agentTokens > 5e7 ? c.red : agentTokens > 1e7 ? c.yellow : c.dim;
 
-        let row = `  ${st.clr}${pad(st.sym, statusW)}${c.reset}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${g}${c.white}${pad(displayName, nameW)}${c.reset}${g}${actClr}${pad(safeTaskText.slice(0, activityW), activityW)}${c.reset}${g}${showExtended ? `${todayClr}${pad(todayStr, todayW)}${c.reset}${g}${weekClr}${pad(weekStr, weekW)}${c.reset}${g}${tokenClr}${pad(tokenStr, tokensW)}${c.reset}${g}` : ''}${progStr}${g}${c.dim}${pad(lastStr, lastW)}${c.reset}`;
+        // Row background based on status
+        const rowBg = a.opStatus === 'WORKING' ? c.bgDimBlue
+          : a.opStatus === 'ERROR' ? c.bgDimRed
+          : a.opStatus === 'QUEUED' ? c.bgDimYellow
+          : '';
+        const rowEnd = rowBg ? c.reset : '';
+
+        let row = `  ${rowBg}${st.clr}${pad(st.sym, statusW)}${c.reset}${rowBg}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${rowBg}${g}${c.white}${pad(displayName, nameW)}${c.reset}${rowBg}${g}${actClr}${pad(safeTaskText.slice(0, activityW), activityW)}${c.reset}${rowBg}${g}${showExtended ? `${todayClr}${pad(todayStr, todayW)}${c.reset}${rowBg}${g}${weekClr}${pad(weekStr, weekW)}${c.reset}${rowBg}${g}${tokenClr}${pad(tokenStr, tokensW)}${c.reset}${rowBg}${g}` : ''}${progStr}${rowBg}${g}${c.dim}${pad(lastStr, lastW)}${rowEnd}`;
         out += row + '\n';
         usedRows++;
       }
@@ -1411,7 +1396,10 @@ program
           out += `  ${c.dim}No pending tasks${c.reset}\n`;
           usedRows++;
         } else {
-          for (const pt of pendingTasks) {
+          const ptLimit = expandedSections ? pendingTasks.length : 5;
+          const ptVisible = pendingTasks.slice(0, ptLimit);
+          const ptHidden = pendingTasks.length - ptVisible.length;
+          for (const pt of ptVisible) {
             const taskAgeMs = (pt as any).createdAt ? Date.now() - new Date((pt as any).createdAt).getTime() : 0;
             const isStale = pt.status === 'pending' && taskAgeMs > 12 * 3600000; // >12h
             const ds = String((pt as any).displayStatus || (pt.status === 'in-progress' ? 'WORKING' : pt.status === 'completed' ? 'DONE' : pt.status === 'cancelled' ? 'CANCELLED' : isStale ? 'STALE' : 'PENDING'));
@@ -1423,13 +1411,19 @@ program
             const ptCr = (pt as any).createdAt ? new Date((pt as any).createdAt) : null;
             const ptCrStr = ptCr ? `${ptCr.getMonth()+1}/${String(ptCr.getDate()).padStart(2,' ')} ${String(ptCr.getHours()).padStart(2,'0')}:${String(ptCr.getMinutes()).padStart(2,'0')}` : '';
             const ptInc = shortInc(String((pt as any).id || ''));
-            out += `  ${c.blue}${pad(ptInc, ptIncW)}${c.reset}${g}${c.dim}${pad(ptCrStr, ptCreatedW)}${c.reset}${g}${c.dim}${pad(elapsed, ptElapsedW)}${c.reset}${g}${dimRow}${c.white}${pad(String(pt.agent), ptAgentW)}${c.reset}${g}${sc}${pad(ds, ptStatusW)}${c.reset}${g}${dimRow}${String(pt.title).slice(0, Math.max(20, ptDescW))}${dimEnd}\n`;
+            const ptRowBg = ds === 'STALE' ? c.bgDimRed : ds === 'WORKING' ? c.bgDimBlue : '';
+            const ptRowEnd = ptRowBg ? c.reset : '';
+            out += `  ${ptRowBg}${c.blue}${pad(ptInc, ptIncW)}${c.reset}${ptRowBg}${g}${c.dim}${pad(ptCrStr, ptCreatedW)}${c.reset}${ptRowBg}${g}${c.dim}${pad(elapsed, ptElapsedW)}${c.reset}${ptRowBg}${g}${dimRow}${c.white}${pad(String(pt.agent), ptAgentW)}${c.reset}${ptRowBg}${g}${sc}${pad(ds, ptStatusW)}${c.reset}${ptRowBg}${g}${dimRow}${String(pt.title).slice(0, Math.max(20, ptDescW))}${ptRowEnd}\n`;
+            usedRows++;
+          }
+          if (ptHidden > 0) {
+            out += `  ${c.dim}+ ${ptHidden} more (press p for full list)${c.reset}\n`;
             usedRows++;
           }
         }
       }
 
-      // ── Completed tasks — always visible ──
+      // ── Completed tasks ──
       {
         out += `\n  ${c.bold}${c.green}COMPLETED TASKS (${completedTasks.length})${c.reset}\n`;
         usedRows += 2;
@@ -1446,7 +1440,10 @@ program
           out += `  ${c.dim}No completed tasks${c.reset}\n`;
           usedRows++;
         } else {
-          for (const ct of completedTasks) {
+          const ctLimit = expandedSections ? completedTasks.length : 5;
+          const ctVisible = completedTasks.slice(0, ctLimit);
+          const ctHidden = completedTasks.length - ctVisible.length;
+          for (const ct of ctVisible) {
             const ctTime = ct.completedAt ? new Date(ct.completedAt) : null;
             const ctTs = ctTime ? `${String(ctTime.getHours()).padStart(2, '0')}:${String(ctTime.getMinutes()).padStart(2, '0')}` : '     ';
             const ctAgo = String(ct.ago || '');
@@ -1454,6 +1451,10 @@ program
             const ctUnit = ct.unit ? ` (${ct.unit})` : '';
             const ctInc = shortInc(String(ct.id || ''));
             out += `  ${c.blue}${pad(ctInc, ctIncW)}${c.reset}${g}${c.green}${ctTs}${c.reset}${g}${c.dim}${pad(ctAgo, ctAgoW)}${c.reset}${g}${c.green}${c.bold}\u2713${c.reset}${g}${c.green}${pad(String(ct.agent) + ctUnit, ctAgentW)}${c.reset}${g}${c.green}${ctTitle}${c.reset}\n`;
+            usedRows++;
+          }
+          if (ctHidden > 0) {
+            out += `  ${c.dim}+ ${ctHidden} more${c.reset}\n`;
             usedRows++;
           }
         }
@@ -1465,7 +1466,7 @@ program
       usedRows += 3;
 
       const footerRows = 1; // footer line
-      const availableEventRows = Math.max(3, rows - usedRows - footerRows);
+      const availableEventRows = expandedSections ? Math.max(3, rows - usedRows - footerRows) : Math.min(10, Math.max(3, rows - usedRows - footerRows));
 
       // Activity feed column widths
       const afTimeW = 5;
@@ -1514,12 +1515,17 @@ program
           const agentClr = isCompletion ? c.green : ev.type === 'tool' ? c.gray : c.white;
           const tsClr = isCompletion ? c.green : c.dim;
           const agoClr = isCompletion ? c.green : c.gray;
-          out += `  ${tsClr}${pad(ts, afTimeW)}${c.reset}${g}${agoClr}${pad(ago, afAgoW)}${c.reset}${g}${tc}${c.bold}${pad(ti, afIconW)}${c.reset}${g}${agentClr}${pad(ev.agent, afAgentW)}${c.reset}${g}${detailClr}${(ev.detail || '').replace(/\n/g, ' ').replace(/\s+/g, ' ').slice(0, Math.max(20, afDetailW))}${c.reset}\n`;
+          const evRowBg = isCompletion ? c.bgDimGreen
+            : ev.type === 'error' ? c.bgDimRed
+            : ev.type === 'working' && ev.detail && ev.detail.startsWith('\u26a1') ? c.bgDimBlue
+            : '';
+          const evRowEnd = evRowBg ? c.reset : '';
+          out += `  ${evRowBg}${tsClr}${pad(ts, afTimeW)}${c.reset}${evRowBg}${g}${agoClr}${pad(ago, afAgoW)}${c.reset}${evRowBg}${g}${tc}${c.bold}${pad(ti, afIconW)}${c.reset}${evRowBg}${g}${agentClr}${pad(ev.agent, afAgentW)}${c.reset}${evRowBg}${g}${detailClr}${(ev.detail || '').replace(/\n/g, ' ').replace(/\s+/g, ' ').slice(0, Math.max(20, afDetailW))}${evRowEnd}\n`;
         }
       }
 
       out += `${c.dim}  ${pad('', usable)}${c.reset}\n`;
-      out += `${c.dim}  Refreshing every 10s · [r] roster · ${cols}x${rows} · Ctrl+C to exit${c.reset}`;
+      out += `${c.dim}  Refreshing every 10s · [p] ${expandedSections ? 'collapse' : 'expand all'} · [r] roster · Ctrl+C to exit${c.reset}`;
       process.stdout.write(out);
     }
 
@@ -1621,7 +1627,10 @@ program
         process.stdin.setEncoding('utf8');
         process.stdin.on('data', (key: string) => {
           if (key === '\u0003') { process.exit(); } // Ctrl+C
-          if (key === 'r' && currentScreen === 'ops') {
+          if (key === 'p' && currentScreen === 'ops') {
+            expandedSections = !expandedSections;
+            render();
+          } else if (key === 'r' && currentScreen === 'ops') {
             currentScreen = 'roster';
             render();
           } else if ((key === 'o' || key === '\u001b') && currentScreen === 'roster') { // 'o' or Escape
