@@ -1286,9 +1286,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
   });
 
   // ── Agent activity query ──────────────────────────────────────────
-  app.get('/api/agent/:slug/activity', (req, res) => {
+  app.get('/api/agent/:slug/activity', async (req, res) => {
     try {
-      const { getAgentActivity, getAgentSummary } = require('../agent/agent-activity.js');
+      const { getAgentActivity, getAgentSummary } = await import('../agent/agent-activity.js');
       const { slug } = req.params;
       const date = req.query.date as string | undefined;
       const entries = getAgentActivity(slug, date, 50);
@@ -1300,9 +1300,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
   });
 
   // ── Agent states ──────────────────────────────────────────────────
-  app.get('/api/agent-states', (_req, res) => {
+  app.get('/api/agent-states', async (_req, res) => {
     try {
-      const { AgentStateManager } = require('../agent/agent-state.js');
+      const { AgentStateManager } = await import('../agent/agent-state.js');
       const mgr = new AgentStateManager();
       res.json({ states: mgr.getAll() });
     } catch (err) {
@@ -1311,9 +1311,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
   });
 
   // ── Team summary (today) ──────────────────────────────────────────
-  app.get('/api/team-summary', (req, res) => {
+  app.get('/api/team-summary', async (req, res) => {
     try {
-      const { getTeamSummary } = require('../agent/agent-activity.js');
+      const { getTeamSummary } = await import('../agent/agent-activity.js');
       const date = req.query.date as string | undefined;
       res.json({ team: getTeamSummary(date) });
     } catch (err) {
@@ -3446,15 +3446,15 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       const dailyKpis = readDailyKpis();
 
       // ── Team-first data: agent states + per-agent summaries ──
-      let agentStates: Record<string, unknown>[] = [];
+      let agentStates: unknown[] = [];
       let teamSummary: Array<{ slug: string; name: string; summary: Record<string, unknown> }> = [];
       try {
-        const { AgentStateManager } = require('../agent/agent-state.js');
+        const { AgentStateManager } = await import('../agent/agent-state.js');
         const stateMgr = new AgentStateManager();
         agentStates = stateMgr.getAll();
       } catch { /* non-fatal */ }
       try {
-        const { getTeamSummary, getAgentSummary } = require('../agent/agent-activity.js');
+        const { getTeamSummary, getAgentSummary } = await import('../agent/agent-activity.js');
         const today = new Date().toISOString().slice(0, 10);
         // Get summaries for all visible agents
         for (const a of visibleAgents) {

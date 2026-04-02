@@ -41,6 +41,7 @@ import type { AgentProfile } from '../types.js';
 import type { Gateway } from '../gateway/router.js';
 import { chunkText, DiscordStreamingMessage, friendlyToolName, sanitizeResponse } from './discord-utils.js';
 import { MODELS, SUPPRESS_AGENT_STARTUP_DM } from '../config.js';
+import { logActivity } from '../agent/agent-activity.js';
 
 const logger = pino({ name: 'clementine.agent-bot' });
 
@@ -113,7 +114,6 @@ export function appendActivityLog(entry: {
   // Derive a slug from the agent name for per-agent logging
   // Legacy callers don't pass slug, so we infer it
   const slug = (entry as any).slug || entry.agent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'clementine';
-  const { logActivity } = require('../agent/agent-activity.js');
   logActivity(
     { slug, name: entry.agent, unit: entry.unit },
     { type: entry.type as any, trigger: entry.trigger, detail: entry.detail, durationMs: entry.durationMs, toolName: entry.toolName },
