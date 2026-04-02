@@ -4813,17 +4813,24 @@ server.tool(
     };
     writeFileSync(path.join(completedDir, `${taskId}.json`), JSON.stringify(completedTask, null, 2));
 
-    // ── 3. Write activity log entry for real-time dashboard visibility ──
-    const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
-    const activityEntry = {
-      ts: new Date().toISOString(),
-      type: 'done',
-      agent: callerSlug === 'clementine' ? 'Clementine' : callerSlug,
-      unit: callerSlug === 'clementine' ? '19Q1' : '',
-      trigger: 'log-context',
-      detail: '\u2713 Completed: ' + title,
-    };
-    appendFileSync(activityLogPath, JSON.stringify(activityEntry) + '\n');
+    // ── 3. Write activity log entry via unified per-agent activity system ──
+    try {
+      const { logActivity: logAct } = await import('../agent/agent-activity.js');
+      const agentName = callerSlug === 'clementine' ? 'Clementine' : callerSlug;
+      logAct(
+        { slug: callerSlug, name: agentName, unit: callerSlug === 'clementine' ? '19Q1' : '' },
+        { type: 'done', trigger: 'log-context', detail: '\u2713 Completed: ' + title },
+      );
+    } catch {
+      // Fallback to direct append if the new module isn't available
+      const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
+      appendFileSync(activityLogPath, JSON.stringify({
+        ts: new Date().toISOString(), type: 'done',
+        agent: callerSlug === 'clementine' ? 'Clementine' : callerSlug,
+        unit: callerSlug === 'clementine' ? '19Q1' : '',
+        trigger: 'log-context', detail: '\u2713 Completed: ' + title,
+      }) + '\n');
+    }
 
     logger.info({ taskId, agent: callerSlug, title }, 'Context logged to daily note and dashboard');
     return textResult(`Context logged:\n- Daily note: ${todayStr()}.md > ## Log at ${time}\n- Dashboard: completed task ${taskId}\n- Title: ${title}`);
@@ -4864,6 +4871,16 @@ server.tool(
     // Write flag so the auto-fallback in the message handler skips its own write
     if (!existsSync(MARK_COMPLETE_DIR)) mkdirSync(MARK_COMPLETE_DIR, { recursive: true });
     writeFileSync(path.join(MARK_COMPLETE_DIR, `${callerSlug}.flag`), id);
+
+    // Log to per-agent activity stream
+    try {
+      const { logActivity: logAct } = await import('../agent/agent-activity.js');
+      const agentName = callerSlug === 'clementine' ? 'Clementine' : callerSlug;
+      logAct(
+        { slug: callerSlug, name: agentName },
+        { type: 'done', trigger: 'mark_complete', detail: summary },
+      );
+    } catch { /* non-fatal */ }
 
     logger.info({ id, agent: callerSlug, summary }, 'Marked complete');
     return textResult(`Recorded: ${summary}`);

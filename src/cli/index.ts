@@ -982,6 +982,70 @@ program
   });
 
 program
+  .command('invoke <agent> [instruction...]')
+  .description('Directly invoke an agent with an instruction')
+  .option('-m, --model <model>', 'Model override (haiku/sonnet/opus)')
+  .option('--max-turns <n>', 'Max conversation turns', '25')
+  .action(async (agent: string, instructionParts: string[], opts: { model?: string; maxTurns?: string }) => {
+    const instruction = instructionParts.join(' ');
+    if (!instruction) {
+      console.error('Usage: clementine invoke <agent-slug> <instruction>');
+      process.exit(1);
+    }
+
+    const BOLD = '\x1b[1m';
+    const DIM = '\x1b[2m';
+    const BLUE = '\x1b[34m';
+    const GREEN = '\x1b[32m';
+    const YELLOW = '\x1b[33m';
+    const RESET = '\x1b[0m';
+
+    try {
+      process.env.CLEMENTINE_HOME = BASE_DIR;
+      delete process.env['CLAUDECODE'];
+
+      const { PersonalAssistant } = await import('../agent/assistant.js');
+      const assistant = new PersonalAssistant();
+      const { Gateway: GatewayClass } = await import('../gateway/router.js');
+      const gateway = new GatewayClass(assistant);
+      const { setApprovalCallback } = await import('../agent/hooks.js');
+      setApprovalCallback(async () => false);
+
+      // Resolve agent slug (fuzzy match)
+      const mgr = gateway.getAgentManager();
+      const all = mgr.listAll();
+      const lower = agent.toLowerCase();
+      let resolved = all.find(a => a.slug === lower);
+      if (!resolved) resolved = all.find(a => a.slug.startsWith(lower));
+      if (!resolved) resolved = all.find(a => a.name.toLowerCase().includes(lower));
+      if (!resolved) {
+        console.error(`${YELLOW}Agent '${agent}' not found.${RESET}`);
+        console.error(`${DIM}Available: ${all.map(a => a.slug).join(', ')}${RESET}`);
+        process.exit(1);
+      }
+
+      console.log(`${BLUE}${BOLD}${resolved.name}${RESET} ${DIM}(${resolved.slug})${RESET}`);
+      console.log(`${DIM}> ${instruction}${RESET}`);
+      console.log();
+
+      const startTime = Date.now();
+      const response = await gateway.invokeAgent(resolved.slug, instruction, {
+        model: opts.model,
+        maxTurns: opts.maxTurns ? parseInt(opts.maxTurns, 10) : undefined,
+      });
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(response);
+      console.log();
+      console.log(`${DIM}Completed in ${elapsed}s${RESET}`);
+    } catch (err) {
+      console.error(`${YELLOW}Error: ${err}${RESET}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  });
+
+program
   .command('ops')
   .description('Live ops board in the terminal')
   .option('-n, --no-watch', 'Print once and exit (no auto-refresh)')
@@ -1219,6 +1283,12 @@ program
       const upcomingCron = (data as any).upcomingCron || [];
       const dailyKpis = (data as any).dailyKpis || {};
       const perAgentTokens = ((data as any).usage?.perAgent || {}) as Record<string, number>;
+      const agentStates = ((data as any).agentStates || []) as Array<Record<string, any>>;
+      const teamSummary = ((data as any).teamSummary || []) as Array<{ slug: string; name: string; summary: { completedCount: number; errorCount: number; highlights: string[]; totalDurationMs: number } }>;
+
+      // Build a lookup of agent states by slug
+      const stateBySlug = new Map<string, Record<string, any>>();
+      for (const s of agentStates) { if (s.slug) stateBySlug.set(s.slug, s); }
       const deployed = agents.filter(a => a.deployed);
       const activePool = agents.filter((a: Record<string, unknown>) => !a.deployed && (((a as any).pendingTasks || []).length > 0 || ((a as any).lastCron && (Date.now() - new Date((a as any).lastCron.lastRun).getTime()) < 6 * 3600000)));
       const visible = [...deployed, ...activePool];
@@ -1323,23 +1393,39 @@ program
       usedRows += 2;
 
       for (const a of visible) {
-        const st = statusStyle[a.opStatus] || statusStyle['OFFLINE'];
         const unitStr = a.unit != null ? a.unit : '—';
         const displayName = a.name;
 
-        // Task / Activity text
-        // Skip stale/idle progress — prefer the activity text which reflects current state
+        // Use agent state machine when available, fall back to legacy opStatus
+        const agentState = stateBySlug.get(a.slug);
+        let effectiveStatus = a.opStatus;
+        if (agentState) {
+          if (agentState.state === 'WORKING') effectiveStatus = 'WORKING';
+          else if (agentState.state === 'ERROR') effectiveStatus = 'ERROR';
+          else if (agentState.state === 'BLOCKED') effectiveStatus = 'QUEUED';
+          else if (agentState.state === 'IDLE') effectiveStatus = a.opStatus === 'QUEUED' ? 'QUEUED' : 'AVAILABLE';
+          else if (agentState.state === 'OFFLINE') effectiveStatus = 'OFFLINE';
+        }
+        const st = statusStyle[effectiveStatus] || statusStyle['OFFLINE'];
+
+        // Task / Activity text — prefer state machine, then API activity
         const hasActiveProgress = a.progress && a.progress.detail
           && a.progress.phase !== 'idle' && a.progress.phase !== 'complete' && a.progress.phase !== 'waiting';
         let taskText = '—';
-        if (a.opStatus === 'WORKING' && a.activity) {
+        if (agentState && agentState.state === 'WORKING' && agentState.activity) {
+          taskText = agentState.activity + (agentState.trigger ? ` (${agentState.trigger})` : '');
+        } else if (agentState && agentState.state === 'ERROR' && agentState.error) {
+          taskText = 'ERR: ' + agentState.error;
+        } else if (agentState && agentState.state === 'IDLE' && agentState.lastCompletedDetail) {
+          taskText = 'Last: ' + agentState.lastCompletedDetail;
+        } else if (effectiveStatus === 'WORKING' && a.activity) {
           taskText = a.activity;
         } else if (hasActiveProgress) {
           taskText = a.progress.detail;
         } else if (a.activity && a.activity !== 'IDLE') {
           taskText = a.activity;
         }
-        const actClr = a.opStatus === 'WORKING' ? c.blue : a.opStatus === 'QUEUED' ? c.yellow : c.gray;
+        const actClr = effectiveStatus === 'WORKING' ? c.blue : effectiveStatus === 'QUEUED' ? c.yellow : effectiveStatus === 'ERROR' ? c.red : c.gray;
 
         // Progress bar
         let progStr = '';
@@ -1366,9 +1452,9 @@ program
         const tokenClr = agentTokens > 5e7 ? c.red : agentTokens > 1e7 ? c.yellow : c.dim;
 
         // Row background based on status
-        const rowBg = a.opStatus === 'WORKING' ? c.bgDimBlue
-          : a.opStatus === 'ERROR' ? c.bgDimRed
-          : a.opStatus === 'QUEUED' ? c.bgDimYellow
+        const rowBg = effectiveStatus === 'WORKING' ? c.bgDimBlue
+          : effectiveStatus === 'ERROR' ? c.bgDimRed
+          : effectiveStatus === 'QUEUED' ? c.bgDimYellow
           : '';
         const rowEnd = rowBg ? c.reset : '';
 
@@ -1377,7 +1463,26 @@ program
         usedRows++;
       }
 
-      // ── Pending tasks — always visible ──
+      // ── Today's team activity — per-agent summary ──
+      if (teamSummary.length > 0) {
+        out += `\n  ${c.bold}${c.green}TODAY'S TEAM ACTIVITY${c.reset}\n`;
+        usedRows += 2;
+        for (const ts of teamSummary.slice(0, expandedSections ? teamSummary.length : 5)) {
+          const s = ts.summary;
+          const durMin = Math.round(s.totalDurationMs / 60000);
+          const durStr = durMin > 0 ? ` (${durMin}m)` : '';
+          const errStr = s.errorCount > 0 ? ` ${c.red}${s.errorCount} err${c.reset}` : '';
+          const highlight = s.highlights[0] ? ` -- ${s.highlights[0].slice(0, 60)}` : '';
+          out += `  ${c.green}${pad(ts.name, 20)}${c.reset}  ${c.bold}${s.completedCount}${c.reset} ${c.dim}done${durStr}${errStr}${c.dim}${highlight}${c.reset}\n`;
+          usedRows++;
+        }
+        if (teamSummary.length > 5 && !expandedSections) {
+          out += `  ${c.dim}+ ${teamSummary.length - 5} more (press p)${c.reset}\n`;
+          usedRows++;
+        }
+      }
+
+      // ── Pending tasks ──
       {
         out += `\n  ${c.bold}${c.yellow}PENDING TASKS (${pendingTasks.length})${c.reset}\n`;
         usedRows += 2;

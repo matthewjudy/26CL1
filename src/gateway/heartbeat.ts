@@ -48,8 +48,12 @@ import type { Gateway } from './router.js';
 import { nextTaskId, shortTaskId } from '../config.js';
 import { scanner } from '../security/scanner.js';
 
-// ── Activity log helper for cron lifecycle events ─────────────────────
-const ACTIVITY_LOG_PATH = path.join(BASE_DIR, '.activity-log.jsonl');
+// ── Activity logging via the unified agent-activity module ──────────
+import { logActivity } from '../agent/agent-activity.js';
+import { AgentStateManager } from '../agent/agent-state.js';
+import type { AgentIdentity } from '../types.js';
+
+// Compatibility wrapper — converts old-style calls to new logActivity format
 function logCronActivity(entry: {
   agent: string;
   unit?: string;
@@ -57,11 +61,13 @@ function logCronActivity(entry: {
   trigger: string;
   detail: string;
   durationMs?: number;
+  slug?: string;
 }) {
-  try {
-    const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + '\n';
-    appendFileSync(ACTIVITY_LOG_PATH, line);
-  } catch { /* non-fatal */ }
+  const slug = entry.slug || entry.agent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'clementine';
+  logActivity(
+    { slug, name: entry.agent, unit: entry.unit },
+    { type: entry.type, trigger: entry.trigger, detail: entry.detail, durationMs: entry.durationMs },
+  );
 }
 import { parseAllWorkflows as parseAllWorkflowsSync } from '../agent/workflow-runner.js';
 import { SelfImproveLoop } from '../agent/self-improve.js';
@@ -789,6 +795,7 @@ export class CronScheduler {
   private completedJobs = new Map<string, number>(); // jobName → completion timestamp
   private watching = false;
   readonly runLog: CronRunLog;
+  readonly agentState: AgentStateManager;
 
   // Workflow support
   private workflowDefs: WorkflowDefinition[] = [];
@@ -804,10 +811,11 @@ export class CronScheduler {
   // Event-driven status change listeners (used by Discord status embed)
   private statusChangeListeners: Array<() => void> = [];
 
-  constructor(gateway: Gateway, dispatcher: NotificationDispatcher) {
+  constructor(gateway: Gateway, dispatcher: NotificationDispatcher, agentState?: AgentStateManager) {
     this.gateway = gateway;
     this.dispatcher = dispatcher;
     this.runLog = new CronRunLog();
+    this.agentState = agentState || new AgentStateManager();
   }
 
   /** Register a listener that fires when system state changes (job start/finish, self-improve, etc). */
@@ -848,6 +856,25 @@ export class CronScheduler {
     });
 
     logger.info(`Cron scheduler started with ${this.jobs.length} jobs`);
+
+    // Register all agents with the state manager
+    // This ensures every agent with cron jobs shows up in the state file
+    const seenSlugs = new Set<string>();
+    for (const job of this.jobs) {
+      const slug = job.agentSlug || 'clementine';
+      if (seenSlugs.has(slug)) continue;
+      seenSlugs.add(slug);
+      try {
+        const profile = this.gateway.getAgentManager().get(slug);
+        if (profile) {
+          this.agentState.register({ slug, name: profile.name, unit: profile.unit });
+        }
+      } catch { /* ignore */ }
+    }
+    // Always register Clementine herself
+    if (!seenSlugs.has('clementine')) {
+      this.agentState.register({ slug: 'clementine', name: 'Clementine', unit: '19Q1' });
+    }
   }
 
   stop(): void {
@@ -1049,17 +1076,21 @@ export class CronScheduler {
     if (job.agentSlug) this.runningJobAgents.set(job.name, job.agentSlug);
     this.emitStatusChange();
 
-    // Resolve agent display name for activity logging
-    let agentName = 'Clementine';
-    let agentUnit = '19Q1';
+    // Resolve agent identity for activity logging and state tracking
+    const agentIdentity: AgentIdentity = { slug: 'clementine', name: 'Clementine', unit: '19Q1' };
     if (job.agentSlug) {
+      agentIdentity.slug = job.agentSlug;
       try {
         const profile = this.gateway.getAgentManager().get(job.agentSlug);
-        if (profile) { agentName = profile.name; agentUnit = profile.unit || ''; }
-      } catch { /* fall back to slug */ agentName = job.agentSlug; agentUnit = ''; }
+        if (profile) { agentIdentity.name = profile.name; agentIdentity.unit = profile.unit || ''; }
+        else { agentIdentity.name = job.agentSlug; agentIdentity.unit = ''; }
+      } catch { agentIdentity.name = job.agentSlug; agentIdentity.unit = ''; }
     }
     const cronStartTime = Date.now();
     let cronResult: { ok: boolean; preview: string; error?: string } = { ok: true, preview: '' };
+
+    // Track agent state
+    this.agentState.startWork(agentIdentity.slug, job.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), `cron: ${job.name}`);
 
     // ── Create ops board task for non-task-processor cron jobs ──────
     // Task processors already create delegation tasks; skip those to avoid duplication.
@@ -1091,8 +1122,9 @@ export class CronScheduler {
 
     // Log cron start to activity feed
     logCronActivity({
-      agent: agentName,
-      unit: agentUnit,
+      agent: agentIdentity.name,
+      unit: agentIdentity.unit,
+      slug: agentIdentity.slug,
       type: 'start',
       trigger: `cron: ${job.name}`,
       detail: job.prompt.slice(0, 80),
@@ -1240,6 +1272,13 @@ export class CronScheduler {
       this.runningJobAgents.delete(job.name);
       this.emitStatusChange();
 
+      // Update agent state
+      if (cronResult.ok) {
+        this.agentState.completeWork(agentIdentity.slug, cronResult.preview || 'Completed');
+      } else {
+        this.agentState.setError(agentIdentity.slug, cronResult.error || 'Unknown error');
+      }
+
       // ── Clean up ops board task ──────────────────────────────────
       if (showOnOpsBoard && cronTaskId) {
         try {
@@ -1266,8 +1305,9 @@ export class CronScheduler {
       // Log cron completion to activity feed
       const cronDuration = Date.now() - cronStartTime;
       logCronActivity({
-        agent: agentName,
-        unit: agentUnit,
+        agent: agentIdentity.name,
+        unit: agentIdentity.unit,
+        slug: agentIdentity.slug,
         type: cronResult.ok ? 'done' : 'error',
         trigger: `cron: ${job.name}`,
         detail: cronResult.ok ? (cronResult.preview || 'Completed') : (cronResult.error || 'Unknown error'),

@@ -1269,6 +1269,58 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     }
   });
 
+  // ── Direct agent invocation ──────────────────────────────────────
+  app.post('/api/invoke-agent', async (req, res) => {
+    try {
+      const { slug, instruction } = req.body;
+      if (!slug || !instruction) {
+        res.status(400).json({ error: 'slug and instruction are required' });
+        return;
+      }
+      const gw = await getGateway();
+      const response = await gw.invokeAgent(slug, instruction);
+      res.json({ ok: true, slug, response });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── Agent activity query ──────────────────────────────────────────
+  app.get('/api/agent/:slug/activity', (req, res) => {
+    try {
+      const { getAgentActivity, getAgentSummary } = require('../agent/agent-activity.js');
+      const { slug } = req.params;
+      const date = req.query.date as string | undefined;
+      const entries = getAgentActivity(slug, date, 50);
+      const summary = getAgentSummary(slug, date || new Date().toISOString().slice(0, 10));
+      res.json({ slug, entries, summary });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── Agent states ──────────────────────────────────────────────────
+  app.get('/api/agent-states', (_req, res) => {
+    try {
+      const { AgentStateManager } = require('../agent/agent-state.js');
+      const mgr = new AgentStateManager();
+      res.json({ states: mgr.getAll() });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── Team summary (today) ──────────────────────────────────────────
+  app.get('/api/team-summary', (req, res) => {
+    try {
+      const { getTeamSummary } = require('../agent/agent-activity.js');
+      const date = req.query.date as string | undefined;
+      res.json({ team: getTeamSummary(date) });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.post('/api/dashboard/restart', (_req, res) => {
     try {
       res.json({ ok: true, message: 'Dashboard restarting...' });
@@ -3393,8 +3445,30 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       // Daily KPIs from daily note
       const dailyKpis = readDailyKpis();
 
+      // ── Team-first data: agent states + per-agent summaries ──
+      let agentStates: Record<string, unknown>[] = [];
+      let teamSummary: Array<{ slug: string; name: string; summary: Record<string, unknown> }> = [];
+      try {
+        const { AgentStateManager } = require('../agent/agent-state.js');
+        const stateMgr = new AgentStateManager();
+        agentStates = stateMgr.getAll();
+      } catch { /* non-fatal */ }
+      try {
+        const { getTeamSummary, getAgentSummary } = require('../agent/agent-activity.js');
+        const today = new Date().toISOString().slice(0, 10);
+        // Get summaries for all visible agents
+        for (const a of visibleAgents) {
+          const summary = getAgentSummary(a.slug, today);
+          if (summary.completedCount > 0 || summary.errorCount > 0) {
+            teamSummary.push({ slug: a.slug, name: a.name, summary });
+          }
+        }
+      } catch { /* non-fatal */ }
+
       res.json({
         agents: visibleAgents,
+        agentStates,
+        teamSummary,
         systemCron,
         events: recentEvents,
         pendingTasks: allPendingTasks,

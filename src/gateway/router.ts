@@ -614,6 +614,63 @@ export class Gateway {
     }
   }
 
+  // ── Direct agent invocation ──────────────────────────────────────────
+
+  /**
+   * Invoke an agent directly with an instruction. This is the "talk to my team"
+   * path — the user says "Sasha, check my email" and it happens immediately.
+   *
+   * Uses the same execution path as cron jobs (agent profile loaded, standard
+   * timeout, activity logged) but triggered on-demand instead of by schedule.
+   */
+  async invokeAgent(
+    slug: string,
+    instruction: string,
+    opts?: { onText?: OnTextCallback; maxTurns?: number; model?: string },
+  ): Promise<string> {
+    const profile = this.getAgentManager().get(slug);
+    if (!profile) throw new Error(`Agent '${slug}' not found`);
+
+    const releaseLane = await lanes.acquire('cron');
+    try {
+      const sessionKey = `invoke:${slug}:${Date.now()}`;
+      this.setSessionProfile(sessionKey, slug);
+
+      logger.info({ slug, instruction: instruction.slice(0, 100) }, 'Invoking agent directly');
+
+      // Log activity start
+      const { logActivity: logAct } = await import('../agent/agent-activity.js');
+      logAct(
+        { slug, name: profile.name, unit: profile.unit },
+        { type: 'invoke' as any, trigger: 'invoke', detail: instruction.slice(0, 100) },
+      );
+
+      const response = await this.assistant.runCronJob(
+        `invoke:${slug}`,
+        instruction,
+        profile.tier || 2,
+        opts?.maxTurns,
+        opts?.model || profile.model,
+        profile.agentDir || undefined,
+        5 * 60 * 1000, // 5 minute timeout for direct invocations
+      );
+
+      // Log activity completion
+      logAct(
+        { slug, name: profile.name, unit: profile.unit },
+        { type: 'done', trigger: 'invoke', detail: response?.slice(0, 150) || 'Completed', durationMs: 0 },
+      );
+
+      scanner.refreshIntegrity();
+      return response || '*(no response)*';
+    } catch (err) {
+      logger.error({ err, slug }, 'Agent invocation error');
+      throw err;
+    } finally {
+      releaseLane();
+    }
+  }
+
   // ── Team task execution (unleashed for team messages) ──────────────
 
   /**

@@ -112,6 +112,34 @@ export interface TeamMessage {
   response?: string;               // Agent's response (populated by active bot delivery)
 }
 
+// ── Agent Identity & State ──────────────────────────────────────────
+
+/** Lightweight identity that flows through every execution path. */
+export interface AgentIdentity {
+  slug: string;
+  name: string;
+  unit?: string;
+}
+
+/** Agent operational states. */
+export type AgentStateType = 'OFFLINE' | 'IDLE' | 'WORKING' | 'BLOCKED' | 'ERROR';
+
+/** Snapshot of an agent's current state. */
+export interface AgentStateSnapshot {
+  slug: string;
+  name: string;
+  unit?: string;
+  state: AgentStateType;
+  activity?: string;          // Human-readable: "Triaging email" / "Prepping GSR note"
+  trigger?: string;           // What started the work: "cron: sasha-email-triage" / "invoke" / "DM from Matthew"
+  since?: string;             // ISO timestamp when current state started
+  lastCompletedAt?: string;   // When they last finished something
+  lastCompletedDetail?: string; // What they last finished
+  error?: string;             // Error message if state === ERROR
+}
+
+// ── Agent Profiles ──────────────────────────────────────────────────
+
 export interface AgentProfile {
   slug: string;
   name: string;

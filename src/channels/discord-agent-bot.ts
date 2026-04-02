@@ -97,8 +97,10 @@ const ACTIVITY_LOG_PATH = path.join(
   '.activity-log.jsonl',
 );
 
-/** Append a single activity event to the shared log file.
- *  Keeps the file to ~500 lines max by truncating on write when it exceeds 600. */
+/** Append a single activity event to the shared log file AND per-agent log.
+ *  Compatibility wrapper — delegates to logActivity() from agent-activity.ts.
+ *  Legacy callers pass { agent, unit?, type, ... }. The new function adds
+ *  per-agent dual-write and slug-based tracking. */
 export function appendActivityLog(entry: {
   agent: string;
   unit?: string;
@@ -108,20 +110,14 @@ export function appendActivityLog(entry: {
   durationMs?: number;
   toolName?: string;
 }) {
-  try {
-    const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + '\n';
-    appendFileSync(ACTIVITY_LOG_PATH, line);
-    // Trim if too long (check periodically, not every write)
-    if (Math.random() < 0.05) { // 5% chance each write → amortized
-      try {
-        const content = readFileSync(ACTIVITY_LOG_PATH, 'utf-8');
-        const lines = content.trim().split('\n');
-        if (lines.length > 600) {
-          writeFileSync(ACTIVITY_LOG_PATH, lines.slice(-500).join('\n') + '\n');
-        }
-      } catch { /* ignore */ }
-    }
-  } catch { /* non-fatal */ }
+  // Derive a slug from the agent name for per-agent logging
+  // Legacy callers don't pass slug, so we infer it
+  const slug = (entry as any).slug || entry.agent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'clementine';
+  const { logActivity } = require('../agent/agent-activity.js');
+  logActivity(
+    { slug, name: entry.agent, unit: entry.unit },
+    { type: entry.type as any, trigger: entry.trigger, detail: entry.detail, durationMs: entry.durationMs, toolName: entry.toolName },
+  );
 }
 
 const MARK_COMPLETE_FLAG_DIR = path.join(
