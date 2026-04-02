@@ -5471,22 +5471,31 @@ function getDashboardHTML(token: string): string {
   <nav class="sidebar">
     <div class="nav-section">
       <a href="/morning-brief" target="_blank" class="nav-item" style="color:#f59e0b;text-decoration:none;display:flex;align-items:center;gap:6px">
-        <span class="nav-icon">☀️</span> Morning Brief
+        <span class="nav-icon">&#9788;</span> Morning Brief
       </a>
     </div>
     <div class="nav-section">
-      <div class="nav-section-title">Overview</div>
-      <div class="nav-item active" data-page="overview">
-        <span class="nav-icon">&#9679;</span> Dashboard
+      <div class="nav-section-title">Team</div>
+      <div class="nav-item active" data-page="team">
+        <span class="nav-icon">&#129302;</span> My Team
+        <span class="nav-badge" id="nav-team-count">0</span>
       </div>
-      <div class="nav-item" data-page="metrics">
-        <span class="nav-icon">&#128200;</span> Metrics
+      <div class="nav-item" data-page="ops-board">
+        <span class="nav-icon">&#128225;</span> Ops Board
+      </div>
+      <div class="nav-item" data-page="chat">
+        <span class="nav-icon">&#128172;</span> Chat
       </div>
     </div>
     <div class="nav-section">
-      <div class="nav-section-title">Interact</div>
-      <div class="nav-item" data-page="chat">
-        <span class="nav-icon">&#128172;</span> Chat
+      <div class="nav-section-title">Work</div>
+      <div class="nav-item" data-page="cron">
+        <span class="nav-icon">&#9200;</span> Scheduled Tasks
+        <span class="nav-badge" id="nav-cron-count">0</span>
+      </div>
+      <div class="nav-item" data-page="projects">
+        <span class="nav-icon">&#128193;</span> Projects
+        <span class="nav-badge" id="nav-project-count">0</span>
       </div>
       <div class="nav-item" data-page="search">
         <span class="nav-icon">&#128269;</span> Search Memory
@@ -5496,48 +5505,30 @@ function getDashboardHTML(token: string): string {
       </div>
     </div>
     <div class="nav-section">
-      <div class="nav-section-title">Workspace</div>
-      <div class="nav-item" data-page="projects">
-        <span class="nav-icon">&#128193;</span> Projects
-        <span class="nav-badge" id="nav-project-count">0</span>
+      <div class="nav-section-title">System</div>
+      <div class="nav-item" data-page="overview">
+        <span class="nav-icon">&#9679;</span> Dashboard
       </div>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Automation</div>
-      <div class="nav-item" data-page="cron">
-        <span class="nav-icon">&#9200;</span> Scheduled Tasks
-        <span class="nav-badge" id="nav-cron-count">0</span>
+      <div class="nav-item" data-page="metrics">
+        <span class="nav-icon">&#128200;</span> Metrics
+      </div>
+      <div class="nav-item" data-page="sessions">
+        <span class="nav-icon">&#128488;</span> Sessions
+        <span class="nav-badge" id="nav-session-count">0</span>
       </div>
       <div class="nav-item" data-page="timers">
         <span class="nav-icon">&#9203;</span> Timers
         <span class="nav-badge" id="nav-timer-count">0</span>
-      </div>
-      <div class="nav-item" data-page="self-improve">
-        <span class="nav-icon">&#128300;</span> Self-Improve
-        <span class="nav-badge" id="nav-si-pending">0</span>
-      </div>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Agents</div>
-      <div class="nav-item" data-page="ops-board">
-        <span class="nav-icon">&#128225;</span> Ops Board
-      </div>
-      <div class="nav-item" data-page="team">
-        <span class="nav-icon">&#129302;</span> The Office
-        <span class="nav-badge" id="nav-team-count">0</span>
-      </div>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">System</div>
-      <div class="nav-item" data-page="sessions">
-        <span class="nav-icon">&#128488;</span> Sessions
-        <span class="nav-badge" id="nav-session-count">0</span>
       </div>
       <div class="nav-item" data-page="memory">
         <span class="nav-icon">&#129504;</span> Memory
       </div>
       <div class="nav-item" data-page="logs">
         <span class="nav-icon">&#128220;</span> Logs
+      </div>
+      <div class="nav-item" data-page="self-improve">
+        <span class="nav-icon">&#128300;</span> Self-Improve
+        <span class="nav-badge" id="nav-si-pending">0</span>
       </div>
       <div class="nav-item" data-page="settings">
         <span class="nav-icon">&#9881;</span> Settings
@@ -5549,7 +5540,7 @@ function getDashboardHTML(token: string): string {
   <div class="content">
 
     <!-- ═══ Overview Page ═══ -->
-    <div class="page active" id="page-overview">
+    <div class="page" id="page-overview">
       <div class="agent-hero" id="agent-hero">
         <div class="agent-hero-top">
           <div class="agent-avatar" id="agent-avatar">${name.charAt(0).toUpperCase()}</div>
@@ -5727,15 +5718,33 @@ function getDashboardHTML(token: string): string {
     </div>
 
     <!-- ═══ Team Page — The Office ═══ -->
-    <div class="page" id="page-team">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div class="page-title" style="margin-bottom:0">The Office</div>
+    <div class="page active" id="page-team">
+      <!-- Team Status Strip -->
+      <div id="team-status-strip" style="display:flex;gap:10px;overflow-x:auto;padding:8px 0 12px;margin-bottom:8px;flex-shrink:0"></div>
+
+      <!-- Quick Invoke Bar -->
+      <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center">
+        <select id="team-invoke-agent" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-secondary);color:var(--text-primary);font-size:13px;min-width:160px">
+          <option value="">Select agent...</option>
+        </select>
+        <input type="text" id="team-invoke-input" placeholder="Give an instruction..." style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-secondary);color:var(--text-primary);font-size:13px" onkeydown="if(event.key==='Enter'){event.preventDefault();invokeAgentFromBar()}">
+        <button class="btn-primary" onclick="invokeAgentFromBar()" style="white-space:nowrap">Send</button>
+      </div>
+
+      <!-- Invoke Response Area (hidden by default) -->
+      <div id="team-invoke-response" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:var(--radius);background:var(--bg-card);border:1px solid var(--border);font-size:13px;line-height:1.5;white-space:pre-wrap;max-height:300px;overflow-y:auto"></div>
+
+      <!-- Today's Team Activity -->
+      <div id="team-today-feed" style="margin-bottom:16px"></div>
+
+      <!-- Agent Grid -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="font-weight:600;font-size:14px;color:var(--text-primary)">Team</div>
         <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn" onclick="startHiringInterview()" style="background:var(--green);color:#000;font-weight:600">Hire a New Employee</button>
-          <button class="btn btn-sm" onclick="showAgentCreateModal()" style="color:var(--text-muted)">Manual Setup</button>
+          <button class="btn btn-sm" onclick="startHiringInterview()" style="background:var(--green);color:#000;font-weight:600;font-size:11px;padding:4px 10px">Hire</button>
+          <button class="btn btn-sm" onclick="showAgentCreateModal()" style="color:var(--text-muted);font-size:11px;padding:4px 8px">Manual</button>
         </div>
       </div>
-      <div class="summary-grid" id="team-summary-cards"></div>
       <div class="office-floor" id="team-agent-grid">
         <div class="empty-state">No agents configured</div>
       </div>
@@ -6249,7 +6258,7 @@ function apiFetch(url, opts) {
 // ── Kiosk mode ──
 var isKiosk = new URLSearchParams(window.location.search).has('kiosk');
 
-let currentPage = isKiosk ? 'ops-board' : 'overview';
+let currentPage = isKiosk ? 'ops-board' : 'team';
 if (isKiosk) {
   document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
   var opsPage = document.getElementById('page-ops-board');
@@ -8353,8 +8362,130 @@ function refreshAll() {
   checkVersion();
 }
 
+// ── Team Status Strip + Today's Feed + Invoke ────────────────────────
+
+async function refreshTeamStatusStrip() {
+  try {
+    var [statesRes, summaryRes] = await Promise.all([
+      apiFetch('/api/agent-states'),
+      apiFetch('/api/team-summary'),
+    ]);
+    var statesData = await statesRes.json();
+    var summaryData = await summaryRes.json();
+    var states = statesData.states || [];
+    var teamSummary = summaryData.team || [];
+
+    // Build summary lookup
+    var summaryBySlug = {};
+    for (var ts of teamSummary) { summaryBySlug[ts.slug] = ts.summary; }
+
+    // Status strip — horizontal row of agent pills
+    var stripEl = document.getElementById('team-status-strip');
+    if (stripEl && states.length > 0) {
+      var stateColors = { WORKING: '#58a6ff', IDLE: '#3fb950', ERROR: '#f85149', BLOCKED: '#d29922', OFFLINE: '#484f58' };
+      var stateIcons = { WORKING: '&#9654;', IDLE: '&#9679;', ERROR: '&#10006;', BLOCKED: '&#9670;', OFFLINE: '&#9675;' };
+      var html = '';
+      for (var s of states) {
+        var clr = stateColors[s.state] || '#484f58';
+        var ico = stateIcons[s.state] || '&#9675;';
+        var agentSummary = summaryBySlug[s.slug];
+        var doneCount = agentSummary ? agentSummary.completedCount : 0;
+        var subtitle = s.state === 'WORKING' ? (s.activity || '').slice(0, 30) : s.state === 'ERROR' ? 'Error' : s.state === 'IDLE' && doneCount > 0 ? doneCount + ' done today' : s.state === 'IDLE' ? 'Ready' : 'Offline';
+        html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border);min-width:160px;flex-shrink:0;cursor:pointer" onclick="selectAgentForInvoke(\'' + esc(s.slug) + '\')" title="Click to send instruction">'
+          + '<div style="width:8px;height:8px;border-radius:50%;background:' + clr + ';flex-shrink:0' + (s.state === 'WORKING' ? ';animation:pulse 1.5s infinite' : '') + '"></div>'
+          + '<div style="min-width:0">'
+          + '<div style="font-weight:600;font-size:12px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(s.name) + '</div>'
+          + '<div style="font-size:10px;color:' + clr + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(subtitle) + '</div>'
+          + '</div></div>';
+      }
+      stripEl.innerHTML = html;
+    }
+
+    // Populate invoke agent dropdown
+    var select = document.getElementById('team-invoke-agent');
+    if (select && states.length > 0) {
+      var currentVal = select.value;
+      var opts = '<option value="">Select agent...</option>';
+      for (var s2 of states) {
+        opts += '<option value="' + esc(s2.slug) + '"' + (currentVal === s2.slug ? ' selected' : '') + '>' + esc(s2.name) + '</option>';
+      }
+      select.innerHTML = opts;
+    }
+
+    // Today's team feed
+    var feedEl = document.getElementById('team-today-feed');
+    if (feedEl) {
+      if (teamSummary.length === 0) {
+        feedEl.innerHTML = '<div style="padding:8px 0;color:var(--text-muted);font-size:12px">No team activity today yet.</div>';
+      } else {
+        var fhtml = '<div style="font-weight:600;font-size:13px;color:var(--text-primary);margin-bottom:6px">Today\'s Activity</div>';
+        fhtml += '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+        for (var t of teamSummary) {
+          var sm = t.summary;
+          var durMin = Math.round((sm.totalDurationMs || 0) / 60000);
+          var highlight = sm.highlights && sm.highlights[0] ? sm.highlights[0].slice(0, 60) : '';
+          fhtml += '<div style="flex:1;min-width:200px;padding:10px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border)">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+            + '<span style="font-weight:600;font-size:12px;color:var(--text-primary)">' + esc(t.name) + '</span>'
+            + '<span style="font-size:11px;color:var(--green);font-weight:700">' + sm.completedCount + ' done</span>'
+            + '</div>'
+            + (sm.errorCount > 0 ? '<div style="font-size:10px;color:var(--red)">' + sm.errorCount + ' errors</div>' : '')
+            + (highlight ? '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(highlight) + '</div>' : '')
+            + (durMin > 0 ? '<div style="font-size:10px;color:var(--text-muted);margin-top:2px">' + durMin + ' min active</div>' : '')
+            + '</div>';
+        }
+        fhtml += '</div>';
+        feedEl.innerHTML = fhtml;
+      }
+    }
+  } catch (e) {
+    console.error('Team strip error:', e);
+  }
+}
+
+function selectAgentForInvoke(slug) {
+  var sel = document.getElementById('team-invoke-agent');
+  if (sel) sel.value = slug;
+  var inp = document.getElementById('team-invoke-input');
+  if (inp) inp.focus();
+}
+
+async function invokeAgentFromBar() {
+  var sel = document.getElementById('team-invoke-agent');
+  var inp = document.getElementById('team-invoke-input');
+  var respEl = document.getElementById('team-invoke-response');
+  if (!sel || !inp || !respEl) return;
+  var slug = sel.value;
+  var instruction = inp.value.trim();
+  if (!slug) { toast('Select an agent first', 'error'); return; }
+  if (!instruction) { toast('Enter an instruction', 'error'); return; }
+
+  respEl.style.display = 'block';
+  respEl.innerHTML = '<div style="color:var(--text-muted)">Sending to ' + esc(sel.options[sel.selectedIndex].text) + '...</div>';
+  inp.value = '';
+
+  try {
+    var r = await apiFetch('/api/invoke-agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: slug, instruction: instruction }),
+    });
+    var d = await r.json();
+    if (d.ok) {
+      respEl.innerHTML = '<div style="margin-bottom:6px;font-size:11px;color:var(--text-muted)">' + esc(sel.options[sel.selectedIndex].text) + ':</div>'
+        + '<div style="color:var(--text-primary)">' + esc(d.response || '(no response)') + '</div>';
+    } else {
+      respEl.innerHTML = '<div style="color:var(--red)">Error: ' + esc(d.error || 'Unknown') + '</div>';
+    }
+  } catch (e) {
+    respEl.innerHTML = '<div style="color:var(--red)">Failed: ' + esc(String(e)) + '</div>';
+  }
+}
+
 // ── Team ──────────────────────────────────
 async function refreshTeam() {
+  // Refresh the new team-first sections
+  refreshTeamStatusStrip();
   try {
     const [agentsRes, messagesRes, topoRes] = await Promise.all([
       apiFetch('/api/team/agents'),
