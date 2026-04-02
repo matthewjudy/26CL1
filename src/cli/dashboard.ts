@@ -3065,31 +3065,39 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
       // Sort newest first
       events.sort((a, b) => b.time.localeCompare(a.time));
 
-      // Build a set of agent+trigger pairs that have "done" events
-      // so we can suppress redundant "start" entries for the same conversation
-      const agentDoneTriggers = new Set<string>();
+      // Build a map of agent+trigger → latest "done" timestamp
+      // so we can suppress "start" entries only when a NEWER "done" exists
+      const agentDoneTriggers = new Map<string, string>();
       for (const ev of events) {
-        if (ev.type === 'ok' && ev.detail.startsWith('✓ ')) {
+        if (ev.type === 'ok' && ev.detail.startsWith('\u2713 ')) {
           // Extract trigger portion: "✓ DM from user: ..." → "DM from user"
-          const triggerMatch = ev.detail.match(/^✓\s+(.+?):\s/);
+          const triggerMatch = ev.detail.match(/^\u2713\s+(.+?):\s/);
           if (triggerMatch) {
-            agentDoneTriggers.add(ev.agent + '|' + triggerMatch[1]);
+            const doneKey = ev.agent + '|' + triggerMatch[1];
+            const existing = agentDoneTriggers.get(doneKey);
+            if (!existing || ev.time > existing) {
+              agentDoneTriggers.set(doneKey, ev.time);
+            }
           }
         }
       }
 
       // Deduplicate:
-      // 1. Remove "▶ start" entries if the same agent+trigger has a matching "done" entry
+      // 1. Remove "▶ start" entries if the same agent+trigger has a NEWER "done" entry
       // 2. Remove "▶ start" entries if the same agent has a live "⚡" entry
       // 3. Standard key-based dedup for everything else
       const deduped: typeof events = [];
       const seen = new Set<string>();
       for (const ev of events) {
         const key = ev.agent + '|' + ev.time.slice(0, 16); // same agent, same minute
-        if (ev.type === 'working' && ev.detail.startsWith('▶ ')) {
+        if (ev.type === 'working' && ev.detail.startsWith('\u25b6 ')) {
           // Extract trigger from start entry: "▶ DM from user: ..." → "DM from user"
-          const startTrigger = ev.detail.match(/^▶\s+(.+?):\s/);
-          if (startTrigger && agentDoneTriggers.has(ev.agent + '|' + startTrigger[1])) continue;
+          const startTrigger = ev.detail.match(/^\u25b6\s+(.+?):\s/);
+          if (startTrigger) {
+            const doneTime = agentDoneTriggers.get(ev.agent + '|' + startTrigger[1]);
+            // Only suppress if the done event is newer than this start event
+            if (doneTime && doneTime > ev.time) continue;
+          }
           // Skip start entries if there's a live ⚡ entry for this agent
           if (liveAgents.has(ev.agent)) continue;
         }
@@ -3151,7 +3159,9 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
           } else if (q1Latest && q1Latest.type === 'start') {
             q1Activity = q1Latest.detail;
           } else if (q1Latest && q1Latest.type === 'done') {
-            q1Activity = q1Latest.detail;
+            // Ignore stale "done" events when there's an active session — the
+            // done belongs to a previous session, not the current one.
+            q1Activity = 'Active session (' + totalExchanges + ' exchanges)';
           } else {
             q1Activity = 'Active session (' + totalExchanges + ' exchanges)';
           }

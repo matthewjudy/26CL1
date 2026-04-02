@@ -872,13 +872,19 @@ program
 program
   .command('dashboard')
   .description('Launch local command center')
+  .argument('[action]', 'Action: restart, stop, install, uninstall')
   .option('-p, --port <n>', 'Port (default 3030)', '3030')
   .option('-H, --host <addr>', 'Bind address (default 127.0.0.1, use 0.0.0.0 for network access)')
   .option('--restart', 'Restart the dashboard process')
   .option('--stop', 'Stop the dashboard process')
   .option('--install', 'Install dashboard as a persistent macOS LaunchAgent')
   .option('--uninstall', 'Remove dashboard LaunchAgent')
-  .action((opts: { port?: string; host?: string; restart?: boolean; stop?: boolean; install?: boolean; uninstall?: boolean }) => {
+  .action((action: string | undefined, opts: { port?: string; host?: string; restart?: boolean; stop?: boolean; install?: boolean; uninstall?: boolean }) => {
+    // Support positional subcommands: clementine dashboard restart/stop/install/uninstall
+    if (action === 'restart') opts.restart = true;
+    else if (action === 'stop') opts.stop = true;
+    else if (action === 'install') opts.install = true;
+    else if (action === 'uninstall') opts.uninstall = true;
     const dashLabel = `com.${getAssistantName().toLowerCase()}.dashboard`;
     const dashPlistPath = path.join(process.env.HOME ?? '', 'Library', 'LaunchAgents', `${dashLabel}.plist`);
 

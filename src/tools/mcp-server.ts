@@ -1771,7 +1771,10 @@ async function getGraphToken(): Promise<string> {
 async function graphGet(endpoint: string): Promise<any> {
   const token = await getGraphToken();
   const res = await fetch(`https://graph.microsoft.com/v1.0${endpoint}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Prefer: 'outlook.timezone="Eastern Standard Time"',
+    },
   });
   if (!res.ok) {
     const text = await res.text();
@@ -2174,7 +2177,7 @@ server.tool(
     const userEmail = env['MS_USER_EMAIL'] ?? '';
     const limit = Math.min(count, 50);
     const data = await graphGet(
-      `/users/${userEmail}/chats?$top=${limit}&$expand=members($select=displayName,email)&$orderby=lastUpdatedDateTime desc&$select=id,topic,chatType,lastUpdatedDateTime,createdDateTime`
+      `/users/${userEmail}/chats?$top=${limit}&$expand=members($select=displayName,userId)&$orderby=lastUpdatedDateTime desc&$select=id,topic,chatType,lastUpdatedDateTime,createdDateTime`
     );
     const chats = (data.value ?? []).map((c: any) => {
       const members = (c.members ?? []).map((m: any) => m.displayName || m.email || 'unknown');
@@ -2231,6 +2234,7 @@ server.tool(
   async ({ query, count }) => {
     const userEmail = env['MS_USER_EMAIL'] ?? '';
     const limit = Math.min(count, 25);
+    const region = env['MS_REGION'] ?? 'NAM';
     // Use the Graph search API for Teams messages
     const data = await graphPost('/search/query', {
       requests: [{
@@ -2238,6 +2242,7 @@ server.tool(
         query: { queryString: query },
         from: 0,
         size: limit,
+        region,
       }],
     });
     const hits = data.value?.[0]?.hitsContainers?.[0]?.hits ?? [];
@@ -2800,6 +2805,23 @@ server.tool(
     if (!token) throw new Error('DISCORD_TOKEN not configured');
     if (!channel_id) throw new Error('channel_id is required');
 
+    // Handle DM channel resolution (dm:{userId} → open DM channel)
+    let resolvedChannelId = channel_id;
+    if (channel_id.startsWith('dm:')) {
+      const userId = channel_id.slice(3);
+      const dmRes = await fetch('https://discord.com/api/v10/users/@me/channels', {
+        method: 'POST',
+        headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_id: userId }),
+      });
+      if (!dmRes.ok) {
+        const errText = await dmRes.text();
+        throw new Error(`Failed to open DM channel: ${dmRes.status}: ${errText}`);
+      }
+      const dmData = await dmRes.json() as { id: string };
+      resolvedChannelId = dmData.id;
+    }
+
     const chunks: string[] = [];
     let remaining = message;
     while (remaining.length > 0) {
@@ -2811,7 +2833,7 @@ server.tool(
     }
 
     for (const chunk of chunks) {
-      const res = await fetch(`https://discord.com/api/v10/channels/${channel_id}/messages`, {
+      const res = await fetch(`https://discord.com/api/v10/channels/${resolvedChannelId}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: chunk }),
@@ -2821,7 +2843,7 @@ server.tool(
         throw new Error(`Discord API ${res.status}: ${errText}`);
       }
     }
-    return textResult(`Message posted to channel ${channel_id} (${chunks.length} chunk${chunks.length > 1 ? 's' : ''})`);
+    return textResult(`Message posted to channel ${resolvedChannelId} (${chunks.length} chunk${chunks.length > 1 ? 's' : ''})`);
   },
 );
 
