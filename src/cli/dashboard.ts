@@ -7478,6 +7478,17 @@ function friendlySession(key) {
 }
 
 // ── Ops Board ────────────────────────────
+function toggleOpsSection(id) {
+  var el = document.getElementById(id);
+  if (el) el.dataset.expanded = el.dataset.expanded === 'true' ? 'false' : 'true';
+  refreshOpsBoard();
+}
+function expandOpsSection(id) {
+  var el = document.getElementById(id);
+  if (el) el.dataset.expanded = 'true';
+  refreshOpsBoard();
+}
+
 async function refreshOpsBoard() {
   try {
     var r = await apiFetch('/api/ops-board');
@@ -7638,7 +7649,7 @@ async function refreshOpsBoard() {
       var pendHidden = pendingTasks.length - pendVisible.length;
       var phtml = '<div style="display:flex;align-items:center;gap:8px;color:#d29922;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">'
         + 'PENDING TASKS (' + pendingTasks.length + ')'
-        + (pendingTasks.length > 5 ? ' <span onclick="var el=document.getElementById(\'ops-board-pending\');el.dataset.expanded=el.dataset.expanded===\'true\'?\'false\':\'true\';refreshOpsBoard()" style="color:#58a6ff;font-weight:400;font-size:10px;cursor:pointer;user-select:none">[' + (pendExpanded ? 'collapse' : 'show all') + ']</span>' : '')
+        + (pendingTasks.length > 5 ? ' <span onclick="toggleOpsSection(this.dataset.target)" data-target="ops-board-pending" style="color:#58a6ff;font-weight:400;font-size:10px;cursor:pointer;user-select:none">[' + (pendExpanded ? 'collapse' : 'show all') + ']</span>' : '')
         + '</div>';
       // Header row
       var phCss = 'color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;padding:2px 0';
@@ -7669,7 +7680,7 @@ async function refreshOpsBoard() {
             + '</div>';
         }
         if (pendHidden > 0 && !pendExpanded) {
-          phtml += '<div style="color:#6e7681;font-size:10px;padding:2px 0;cursor:pointer" onclick="var el=document.getElementById(\'ops-board-pending\');el.dataset.expanded=\'true\';refreshOpsBoard()">+ ' + pendHidden + ' more</div>';
+          phtml += '<div style="color:#6e7681;font-size:10px;padding:2px 0;cursor:pointer" onclick="expandOpsSection(this.dataset.target)" data-target="ops-board-pending">+ ' + pendHidden + ' more</div>';
         }
       }
       pendEl.innerHTML = phtml;
@@ -7685,7 +7696,7 @@ async function refreshOpsBoard() {
       var compHidden = completedTasks.length - compVisible.length;
       var chtml = '<div style="display:flex;align-items:center;gap:8px;color:#3fb950;font-weight:700;font-size:11px;margin:6px 0 4px;border-top:1px solid var(--border, #21262d);padding-top:6px">'
         + 'COMPLETED TASKS (' + completedTasks.length + ')'
-        + (completedTasks.length > 5 ? ' <span onclick="var el=document.getElementById(\'ops-board-completed\');el.dataset.expanded=el.dataset.expanded===\'true\'?\'false\':\'true\';refreshOpsBoard()" style="color:#58a6ff;font-weight:400;font-size:10px;cursor:pointer;user-select:none">[' + (compExpanded ? 'collapse' : 'show all') + ']</span>' : '')
+        + (completedTasks.length > 5 ? ' <span onclick="toggleOpsSection(this.dataset.target)" data-target="ops-board-completed" style="color:#58a6ff;font-weight:400;font-size:10px;cursor:pointer;user-select:none">[' + (compExpanded ? 'collapse' : 'show all') + ']</span>' : '')
         + '</div>';
       chtml += '<div style="display:flex;gap:8px;' + chCss + ';border-bottom:1px solid #21262d;margin-bottom:2px">'
         + '<span style="min-width:46px;flex-shrink:0">INC#</span>'
@@ -7713,7 +7724,7 @@ async function refreshOpsBoard() {
             + '</div>';
         }
         if (compHidden > 0 && !compExpanded) {
-          chtml += '<div style="color:#6e7681;font-size:10px;padding:2px 0;cursor:pointer" onclick="var el=document.getElementById(\'ops-board-completed\');el.dataset.expanded=\'true\';refreshOpsBoard()">+ ' + compHidden + ' more</div>';
+          chtml += '<div style="color:#6e7681;font-size:10px;padding:2px 0;cursor:pointer" onclick="expandOpsSection(this.dataset.target)" data-target="ops-board-completed">+ ' + compHidden + ' more</div>';
         }
       }
       compEl.innerHTML = chtml;
@@ -7757,7 +7768,7 @@ async function refreshOpsBoard() {
         var evHidden = events.length - evVisible.length;
         var html = '';
         if (events.length > 10) {
-          html += '<div style="display:flex;justify-content:flex-end;margin-bottom:4px"><span onclick="var el=document.getElementById(\'ops-board-events\');el.dataset.expanded=el.dataset.expanded===\'true\'?\'false\':\'true\';refreshOpsBoard()" style="color:#58a6ff;font-size:10px;cursor:pointer;user-select:none">[' + (evExpanded ? 'show recent' : 'show all ' + events.length) + ']</span></div>';
+          html += '<div style="display:flex;justify-content:flex-end;margin-bottom:4px"><span onclick="toggleOpsSection(this.dataset.target)" data-target="ops-board-events" style="color:#58a6ff;font-size:10px;cursor:pointer;user-select:none">[' + (evExpanded ? 'show recent' : 'show all ' + events.length) + ']</span></div>';
         }
         for (var ei = 0; ei < evVisible.length; ei++) {
           var ev = events[ei];
@@ -7792,7 +7803,7 @@ async function refreshOpsBoard() {
             + '</div>';
         }
         if (evHidden > 0 && !evExpanded) {
-          html += '<div style="color:#6e7681;font-size:10px;padding:4px 6px;cursor:pointer" onclick="var el=document.getElementById(\'ops-board-events\');el.dataset.expanded=\'true\';refreshOpsBoard()">+ ' + evHidden + ' more events</div>';
+          html += '<div style="color:#6e7681;font-size:10px;padding:4px 6px;cursor:pointer" onclick="expandOpsSection(this.dataset.target)" data-target="ops-board-events">+ ' + evHidden + ' more events</div>';
         }
         evEl.innerHTML = html;
       }
@@ -8404,7 +8415,7 @@ async function refreshTeamStatusStrip() {
         var agentSummary = summaryBySlug[s.slug];
         var doneCount = agentSummary ? agentSummary.completedCount : 0;
         var subtitle = s.state === 'WORKING' ? (s.activity || '').slice(0, 30) : s.state === 'ERROR' ? 'Error' : s.state === 'IDLE' && doneCount > 0 ? doneCount + ' done today' : s.state === 'IDLE' ? 'Ready' : 'Offline';
-        html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border);min-width:160px;flex-shrink:0;cursor:pointer" onclick="selectAgentForInvoke(\'' + esc(s.slug) + '\')" title="Click to send instruction">'
+        html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border);min-width:160px;flex-shrink:0;cursor:pointer" onclick="selectAgentForInvoke(this.dataset.slug)" data-slug="' + esc(s.slug) + '" title="Click to send instruction">'
           + '<div style="width:8px;height:8px;border-radius:50%;background:' + clr + ';flex-shrink:0' + (s.state === 'WORKING' ? ';animation:pulse 1.5s infinite' : '') + '"></div>'
           + '<div style="min-width:0">'
           + '<div style="font-weight:600;font-size:12px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(s.name) + '</div>'
@@ -8431,7 +8442,7 @@ async function refreshTeamStatusStrip() {
       if (teamSummary.length === 0) {
         feedEl.innerHTML = '<div style="padding:8px 0;color:var(--text-muted);font-size:12px">No team activity today yet.</div>';
       } else {
-        var fhtml = '<div style="font-weight:600;font-size:13px;color:var(--text-primary);margin-bottom:6px">Today\'s Activity</div>';
+        var fhtml = '<div style="font-weight:600;font-size:13px;color:var(--text-primary);margin-bottom:6px">Today&#39;s Activity</div>';
         fhtml += '<div style="display:flex;flex-wrap:wrap;gap:8px">';
         for (var t of teamSummary) {
           var sm = t.summary;
