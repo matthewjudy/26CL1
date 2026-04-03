@@ -1304,6 +1304,17 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     try {
       const { AgentStateManager } = await import('../agent/agent-state.js');
       const mgr = new AgentStateManager();
+      // If no states loaded from file, register agents from the agent manager
+      if (mgr.getAll().length === 0) {
+        try {
+          const gw = await getGateway();
+          const allAgents = gw.getAgentManager().listAll();
+          for (const a of allAgents) {
+            mgr.register({ slug: a.slug, name: a.name, unit: a.unit });
+          }
+          mgr.register({ slug: 'clementine', name: 'Clementine', unit: '19Q1' });
+        } catch { /* gateway not ready */ }
+      }
       res.json({ states: mgr.getAll() });
     } catch (err) {
       res.status(500).json({ error: String(err) });

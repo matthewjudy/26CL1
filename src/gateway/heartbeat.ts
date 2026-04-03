@@ -857,24 +857,15 @@ export class CronScheduler {
 
     logger.info(`Cron scheduler started with ${this.jobs.length} jobs`);
 
-    // Register all agents with the state manager
-    // This ensures every agent with cron jobs shows up in the state file
-    const seenSlugs = new Set<string>();
-    for (const job of this.jobs) {
-      const slug = job.agentSlug || 'clementine';
-      if (seenSlugs.has(slug)) continue;
-      seenSlugs.add(slug);
-      try {
-        const profile = this.gateway.getAgentManager().get(slug);
-        if (profile) {
-          this.agentState.register({ slug, name: profile.name, unit: profile.unit });
-        }
-      } catch { /* ignore */ }
-    }
+    // Register ALL agents with the state manager (from agent profiles, not just cron jobs)
+    try {
+      const allAgents = this.gateway.getAgentManager().listAll();
+      for (const profile of allAgents) {
+        this.agentState.register({ slug: profile.slug, name: profile.name, unit: profile.unit });
+      }
+    } catch { /* ignore — agent manager may not be ready */ }
     // Always register Clementine herself
-    if (!seenSlugs.has('clementine')) {
-      this.agentState.register({ slug: 'clementine', name: 'Clementine', unit: '19Q1' });
-    }
+    this.agentState.register({ slug: 'clementine', name: 'Clementine', unit: '19Q1' });
   }
 
   stop(): void {
