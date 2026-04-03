@@ -2821,6 +2821,20 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
                       } catch { /* failed to cancel, still show it */ }
                       continue;
                     }
+                    // Auto-cancel in-progress tasks stuck >30 minutes (cron timeout is 10m)
+                    const STALE_IN_PROGRESS_MS = 30 * 60 * 1000;
+                    if (task.status === 'in-progress' && taskAge > STALE_IN_PROGRESS_MS) {
+                      try {
+                        task.status = 'cancelled';
+                        task.updatedAt = new Date().toISOString();
+                        task.result = 'Auto-cancelled: in-progress >30 minutes (likely orphaned)';
+                        const completedDir = path.join(tasksDir, 'completed');
+                        if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+                        writeFileSync(path.join(completedDir, tf), JSON.stringify(task, null, 2));
+                        unlinkSync(taskPath);
+                      } catch { /* non-fatal */ }
+                      continue;
+                    }
 
                     delegations[a.slug].push({
                       id: task.id || tf.replace('.json', ''),
@@ -6246,7 +6260,13 @@ function esc(s) {
 }
 function shortInc(id) {
   if (!id) return '';
-  if (/^\\d{14}$/.test(id)) return '#' + id.slice(-4);
+  // Standard 14-digit IDs (YYYYMMDD00XXXX) and 13-digit variants from /log-context
+  if (/^\d{12,14}$/.test(id)) {
+    // Extract counter after the date+separator prefix (8 date + 2 separator = 10)
+    var counter = id.length > 10 ? id.slice(10) : id.slice(-4);
+    return '#' + counter.padStart(4, '0');
+  }
+  // Legacy hex IDs
   return id.slice(0, 8);
 }
 function timeAgo(iso) {
@@ -7720,11 +7740,13 @@ async function refreshOpsBoard() {
           var ctTime = ct.completedAt ? new Date(ct.completedAt) : null;
           var ctTs = ctTime ? (String(ctTime.getHours()).padStart(2, '0') + ':' + String(ctTime.getMinutes()).padStart(2, '0')) : '';
           var ctAgo = ct.ago || '';
+          var ctIcon = ct.status === 'cancelled' ? '\u2716' : ct.status === 'error' ? '!' : '\u2713';
+          var ctIconColor = ct.status === 'cancelled' ? '#6e7681' : ct.status === 'error' ? '#f85149' : '#3fb950';
           chtml += '<div style="display:flex;gap:8px;padding:2px 0;font-size:11px;align-items:baseline">'
             + '<span style="color:#58a6ff;min-width:46px;flex-shrink:0;font-family:monospace;font-size:10px">' + esc(shortInc(ct.id)) + '</span>'
             + '<span style="color:#484f58;min-width:34px;flex-shrink:0;font-family:monospace">' + esc(ctTs) + '</span>'
             + '<span style="color:#6e7681;min-width:26px;text-align:right;flex-shrink:0">' + esc(ctAgo) + '</span>'
-            + '<span style="color:#3fb950;min-width:14px;flex-shrink:0;text-align:center">\u2713</span>'
+            + '<span style="color:' + ctIconColor + ';min-width:14px;flex-shrink:0;text-align:center">' + ctIcon + '</span>'
             + '<span style="color:#c9d1d9;min-width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.agent) + '</span>'
             + '<span style="color:#8b949e;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ct.title || '') + '</span>'
             + '</div>';

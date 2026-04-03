@@ -791,6 +791,7 @@ export class CronScheduler {
   private disabledJobs = new Set<string>();
   private scheduledTasks = new Map<string, cron.ScheduledTask>();
   private runningJobs = new Set<string>();
+  private runningJobStartTimes = new Map<string, number>(); // jobName → Date.now() at start
   private runningJobAgents = new Map<string, string>(); // jobName → agentSlug
   private completedJobs = new Map<string, number>(); // jobName → completion timestamp
   private watching = false;
@@ -1030,6 +1031,9 @@ export class CronScheduler {
   }
 
   private async runJob(job: CronJobDefinition): Promise<void> {
+    // Reap any jobs stuck longer than 2x timeout before checking concurrency
+    this.reapStuckJobs();
+
     // Prevent concurrent runs of the same job
     if (this.runningJobs.has(job.name)) {
       logger.info(`Cron job '${job.name}' is already running — skipping this trigger`);
@@ -1064,6 +1068,7 @@ export class CronScheduler {
     }
 
     this.runningJobs.add(job.name);
+    this.runningJobStartTimes.set(job.name, Date.now());
     if (job.agentSlug) this.runningJobAgents.set(job.name, job.agentSlug);
     this.emitStatusChange();
 
@@ -1260,6 +1265,7 @@ export class CronScheduler {
       }
     } finally {
       this.runningJobs.delete(job.name);
+      this.runningJobStartTimes.delete(job.name);
       this.runningJobAgents.delete(job.name);
       this.emitStatusChange();
 
@@ -1276,18 +1282,16 @@ export class CronScheduler {
           const tasksDir = path.join(AGENTS_DIR, cronTaskSlug, 'tasks');
           const taskFile = path.join(tasksDir, `${cronTaskId}.json`);
           if (existsSync(taskFile)) {
-            if (cronResult.ok && cronResult.preview && cronResult.preview !== 'Completed') {
-              // Real output — move to completed
-              const completedDir = path.join(tasksDir, 'completed');
-              if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
-              const taskData = JSON.parse(readFileSync(taskFile, 'utf-8'));
-              taskData.status = 'completed';
-              taskData.completedAt = localISO();
-              taskData.updatedAt = localISO();
-              taskData.result = cronResult.preview;
-              writeFileSync(path.join(completedDir, `${cronTaskId}.json`), JSON.stringify(taskData, null, 2));
-            }
-            // Remove the in-progress task file (whether moved to completed or just noise)
+            const completedDir = path.join(tasksDir, 'completed');
+            if (!existsSync(completedDir)) mkdirSync(completedDir, { recursive: true });
+            const taskData = JSON.parse(readFileSync(taskFile, 'utf-8'));
+            taskData.status = cronResult.ok ? 'completed' : 'error';
+            taskData.completedAt = localISO();
+            taskData.updatedAt = localISO();
+            taskData.result = cronResult.ok
+              ? (cronResult.preview || 'No action taken')
+              : (cronResult.error || 'Unknown error');
+            writeFileSync(path.join(completedDir, `${cronTaskId}.json`), JSON.stringify(taskData, null, 2));
             unlinkSync(taskFile);
           }
         } catch { /* non-fatal */ }
@@ -1348,6 +1352,21 @@ export class CronScheduler {
     if (noisePatterns.some((p) => lower.startsWith(p) || lower === p)) return true;
 
     return false;
+  }
+
+  /** Force-remove jobs stuck in runningJobs for >2x the standard timeout. */
+  private reapStuckJobs(): void {
+    const maxAge = CRON_STANDARD_TIMEOUT_MS * 2; // 20 minutes
+    const now = Date.now();
+    for (const [jobName, startTime] of this.runningJobStartTimes) {
+      if (now - startTime > maxAge) {
+        logger.warn({ job: jobName, stuckMs: now - startTime },
+          `Reaping stuck job '${jobName}' -- exceeded ${maxAge / 60000}m`);
+        this.runningJobs.delete(jobName);
+        this.runningJobStartTimes.delete(jobName);
+        this.runningJobAgents.delete(jobName);
+      }
+    }
   }
 
   /** Format cron error messages for clean notifications. */

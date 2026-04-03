@@ -944,8 +944,8 @@ export class AgentBotClient {
           });
         },
       );
-      await streamer.finalize(response);
-      // Log completion — find the first non-empty line as summary
+      // Record completion BEFORE delivering to Discord,
+      // so the record exists even if Discord API fails.
       const cleanResponse = response.replace(/\*\*/g, '').replace(/```[\s\S]*?```/g, '[code]');
       const summaryLine = cleanResponse.split('\n').map(l => l.trim()).find(l => l.length > 0) || 'Completed';
       const shortSummary = summaryLine.length > 120 ? summaryLine.slice(0, 117) + '...' : summaryLine;
@@ -959,7 +959,6 @@ export class AgentBotClient {
         detail: shortSummary,
         durationMs: Date.now() - startTime,
       });
-      // Record as completed task on dashboard if actual work was done
       if (toolCalls > 0) {
         writeConversationComplete({
           agentSlug: this.config.slug,
@@ -967,6 +966,12 @@ export class AgentBotClient {
           summary: shortSummary,
           durationMs: Date.now() - startTime,
         });
+      }
+      // Deliver to Discord -- non-fatal for completion tracking
+      try {
+        await streamer.finalize(response);
+      } catch (discordErr) {
+        logger.warn({ err: discordErr, slug: this.config.slug }, 'Discord finalize failed -- completion already recorded');
       }
     } catch (err) {
       logger.error({ err, slug: this.config.slug }, 'Agent bot message handling error');
