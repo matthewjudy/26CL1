@@ -56,31 +56,27 @@ const PROJECTS_META_FILE = path.join(BASE_DIR, 'projects.json');
 // ── Lazy gateway for chat ────────────────────────────────────────────
 
 let gatewayInstance: Gateway | null = null;
-let gatewayInitializing = false;
+
+let gatewayInitPromise: Promise<Gateway> | null = null;
 
 async function getGateway(): Promise<Gateway> {
   if (gatewayInstance) return gatewayInstance;
-  if (gatewayInitializing) {
-    // Wait for in-progress init
-    while (gatewayInitializing) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return gatewayInstance!;
+  // Use a shared promise so concurrent callers wait on the same init
+  // instead of spin-looping with setTimeout (which starves the event loop)
+  if (!gatewayInitPromise) {
+    gatewayInitPromise = (async () => {
+      process.env.CLEMENTINE_HOME = BASE_DIR;
+      delete process.env['CLAUDECODE'];
+      const { PersonalAssistant } = await import('../agent/assistant.js');
+      const assistant = new PersonalAssistant();
+      const { Gateway: GatewayClass } = await import('../gateway/router.js');
+      gatewayInstance = new GatewayClass(assistant);
+      const { setApprovalCallback } = await import('../agent/hooks.js');
+      setApprovalCallback(async () => false);
+      return gatewayInstance;
+    })();
   }
-  gatewayInitializing = true;
-  try {
-    process.env.CLEMENTINE_HOME = BASE_DIR;
-    delete process.env['CLAUDECODE'];
-    const { PersonalAssistant } = await import('../agent/assistant.js');
-    const assistant = new PersonalAssistant();
-    const { Gateway: GatewayClass } = await import('../gateway/router.js');
-    gatewayInstance = new GatewayClass(assistant);
-    const { setApprovalCallback } = await import('../agent/hooks.js');
-    setApprovalCallback(async () => false);
-    return gatewayInstance;
-  } finally {
-    gatewayInitializing = false;
-  }
+  return gatewayInitPromise;
 }
 
 // ── Memory search (direct DB access, read-only) ─────────────────────
@@ -1299,21 +1295,27 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     }
   });
 
-  // ── Agent states ──────────────────────────────────────────────────
+  // ── Agent states (lightweight — reads file only, no gateway) ──────
   app.get('/api/agent-states', async (_req, res) => {
     try {
       const { AgentStateManager } = await import('../agent/agent-state.js');
       const mgr = new AgentStateManager();
-      // If no states loaded from file, register agents from the agent manager
+      // If no states loaded from file, scan agent dirs directly (no gateway needed)
       if (mgr.getAll().length === 0) {
-        try {
-          const gw = await getGateway();
-          const allAgents = gw.getAgentManager().listAll();
-          for (const a of allAgents) {
-            mgr.register({ slug: a.slug, name: a.name, unit: a.unit });
+        const agentsDir = path.join(VAULT_DIR, 'Meta', 'Clementine', 'agents');
+        if (existsSync(agentsDir)) {
+          for (const d of readdirSync(agentsDir, { withFileTypes: true })) {
+            if (!d.isDirectory()) continue;
+            const agentFile = path.join(agentsDir, d.name, 'agent.md');
+            if (!existsSync(agentFile)) continue;
+            try {
+              const raw = readFileSync(agentFile, 'utf-8');
+              const { data } = matter(raw);
+              mgr.register({ slug: d.name, name: (data.name as string) || d.name, unit: (data.unit as string) || '' });
+            } catch { mgr.register({ slug: d.name, name: d.name }); }
           }
           mgr.register({ slug: 'clementine', name: 'Clementine', unit: '19Q1' });
-        } catch { /* gateway not ready */ }
+        }
       }
       res.json({ states: mgr.getAll() });
     } catch (err) {
