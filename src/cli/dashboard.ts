@@ -4073,7 +4073,7 @@ function getDashboardHTML(token: string): string {
   }
   .page { display: none; }
   .page.active { display: block; }
-  #page-ops-board.active { display: flex; flex: 1; min-height: 0; }
+  #page-ops-board.active { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; overflow: hidden; }
 
   /* ── Fullscreen mode (ops board) ────────── */
   .layout.fullscreen-mode {
@@ -5706,7 +5706,7 @@ function getDashboardHTML(token: string): string {
     </div>
 
     <!-- ═══ Ops Board Page ═══ -->
-    <div class="page" id="page-ops-board" style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+    <div class="page" id="page-ops-board">
       <div id="ops-board-container" style="font-family:'SF Mono',Menlo,Monaco,Consolas,monospace;font-size:12px;background:#0d1117;color:#c9d1d9;border-radius:8px;padding:16px 20px;display:flex;flex-direction:column;flex:1;overflow:hidden">
         <!-- Header bar -->
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-shrink:0">
@@ -5732,11 +5732,17 @@ function getDashboardHTML(token: string): string {
 
     <!-- ═══ Team Page — The Office ═══ -->
     <div class="page active" id="page-team">
+      <!-- Today's Briefing (calendar + action emails) -->
+      <div id="team-briefing" style="margin-bottom:12px"></div>
+
       <!-- Team Status Strip -->
-      <div id="team-status-strip" style="display:flex;gap:10px;overflow-x:auto;padding:8px 0 12px;margin-bottom:8px;flex-shrink:0"></div>
+      <div id="team-status-strip" style="display:flex;gap:10px;overflow-x:auto;padding:4px 0 8px;margin-bottom:4px;flex-shrink:0"></div>
+
+      <!-- Team Metrics Strip -->
+      <div id="team-metrics-strip" style="margin-bottom:10px"></div>
 
       <!-- Quick Invoke Bar -->
-      <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center">
+      <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
         <select id="team-invoke-agent" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-secondary);color:var(--text-primary);font-size:13px;min-width:160px">
           <option value="">Select agent...</option>
         </select>
@@ -8390,12 +8396,18 @@ function refreshAll() {
 
 async function refreshTeamStatusStrip() {
   try {
-    var [statesRes, summaryRes] = await Promise.all([
+    var [statesRes, summaryRes, briefRes, metricsRes] = await Promise.all([
       apiFetch('/api/agent-states'),
       apiFetch('/api/team-summary'),
+      apiFetch('/api/morning-brief/data').catch(function() { return null; }),
+      apiFetch('/api/metrics').catch(function() { return null; }),
     ]);
     var statesData = await statesRes.json();
     var summaryData = await summaryRes.json();
+    var briefData = null;
+    try { if (briefRes && briefRes.ok) briefData = await briefRes.json(); } catch {}
+    var metricsData = null;
+    try { if (metricsRes && metricsRes.ok) metricsData = await metricsRes.json(); } catch {}
     var states = statesData.states || [];
     var teamSummary = summaryData.team || [];
 
@@ -8462,9 +8474,69 @@ async function refreshTeamStatusStrip() {
         feedEl.innerHTML = fhtml;
       }
     }
+    // ── Today's Briefing Widget ──
+    var briefEl = document.getElementById('team-briefing');
+    if (briefEl && briefData) {
+      var bhtml = '';
+      var cal = briefData.calendarToday || [];
+      var actionEmails = briefData.emailAction || [];
+      if (cal.length > 0 || actionEmails.length > 0) {
+        bhtml += '<div style="display:flex;gap:12px;flex-wrap:wrap">';
+        // Calendar
+        if (cal.length > 0) {
+          bhtml += '<div style="flex:1;min-width:240px;padding:10px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border)">';
+          bhtml += '<div style="font-weight:600;font-size:11px;color:var(--accent);margin-bottom:6px;text-transform:uppercase">Today&#39;s Calendar</div>';
+          for (var ci = 0; ci < Math.min(cal.length, 4); ci++) {
+            var ev = cal[ci];
+            bhtml += '<div style="display:flex;gap:8px;align-items:baseline;font-size:12px;padding:2px 0">'
+              + '<span style="color:var(--text-muted);min-width:50px;font-family:monospace;font-size:11px">' + esc(ev.time || '') + '</span>'
+              + '<span style="color:var(--text-primary)">' + esc(ev.title || '') + '</span>'
+              + '</div>';
+          }
+          if (cal.length > 4) bhtml += '<div style="font-size:10px;color:var(--text-muted);padding:2px 0">+ ' + (cal.length - 4) + ' more</div>';
+          bhtml += '</div>';
+        }
+        // Action emails
+        if (actionEmails.length > 0) {
+          bhtml += '<div style="flex:1;min-width:240px;padding:10px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border)">';
+          bhtml += '<div style="font-weight:600;font-size:11px;color:var(--red);margin-bottom:6px;text-transform:uppercase">Action Needed</div>';
+          for (var ei = 0; ei < Math.min(actionEmails.length, 3); ei++) {
+            var em = actionEmails[ei];
+            bhtml += '<div style="font-size:12px;padding:2px 0">'
+              + '<span style="color:var(--text-primary);font-weight:500">' + esc(em.sender || '') + '</span>'
+              + '<span style="color:var(--text-muted)"> - ' + esc((em.subject || '').slice(0, 50)) + '</span>'
+              + (em.timeSensitive ? '<span style="color:var(--red);font-size:10px;margin-left:4px">URGENT</span>' : '')
+              + '</div>';
+          }
+          bhtml += '</div>';
+        }
+        bhtml += '</div>';
+      }
+      briefEl.innerHTML = bhtml;
+    }
+
+    // ── Team Metrics Strip ──
+    var metricsEl = document.getElementById('team-metrics-strip');
+    if (metricsEl) {
+      var totalDone = 0;
+      for (var ti = 0; ti < teamSummary.length; ti++) totalDone += (teamSummary[ti].summary.completedCount || 0);
+      var mParts = [];
+      mParts.push('<span style="color:var(--green);font-weight:700">' + totalDone + '</span><span style="color:var(--text-muted)"> tasks done today</span>');
+      if (metricsData) {
+        if (metricsData.successRate != null) mParts.push('<span style="color:var(--text-muted)">|</span> <span style="color:' + (metricsData.successRate >= 90 ? 'var(--green)' : metricsData.successRate >= 70 ? 'var(--yellow)' : 'var(--red)') + ';font-weight:700">' + metricsData.successRate + '%</span><span style="color:var(--text-muted)"> success</span>');
+        if (metricsData.timeSavedMinutes) mParts.push('<span style="color:var(--text-muted)">|</span> <span style="color:var(--accent);font-weight:700">' + (metricsData.timeSavedMinutes >= 60 ? Math.round(metricsData.timeSavedMinutes / 60) + 'h' : metricsData.timeSavedMinutes + 'm') + '</span><span style="color:var(--text-muted)"> saved</span>');
+      }
+      metricsEl.innerHTML = '<div style="font-size:12px;display:flex;gap:8px;align-items:center;padding:4px 0">' + mParts.join(' ') + '</div>';
+    }
+
   } catch (e) {
     console.error('Team strip error:', e);
   }
+}
+
+function toggleAgentGridExpand(show) {
+  var g = document.getElementById('team-agent-grid');
+  if (g) { g.dataset.showAll = show ? 'true' : 'false'; refreshTeam(); }
 }
 
 function selectAgentForInvoke(slug) {
@@ -8547,86 +8619,58 @@ async function refreshTeam() {
         '<div class="stat-card"><div class="stat-value">' + messages.length + '</div><div class="stat-label">Recent Messages</div></div>';
     }
 
-    // Agent grid — desk station cards
+    // Agent grid — compact cards, deployed agents first
     var grid = document.getElementById('team-agent-grid');
     if (grid) {
       if (allAgents.length === 0) {
-        grid.innerHTML = '<div class="desk-station desk-hire" onclick="startHiringInterview()">' +
-          '<div class="desk-hire-inner"><div class="hire-icon">+</div><div class="hire-label">Hire a New Employee</div></div></div>';
+        grid.innerHTML = '<div style="color:var(--text-muted);padding:16px">No agents configured</div>';
       } else {
-        var cards = allAgents.map(function(a) {
-          // Determine status class (online if either platform is online)
-          var statusClass = 'status-offline';
-          var statusLabel = 'Offline';
+        // Split into deployed (core team) and pool (everyone else)
+        var deployed = allAgents.filter(function(a) { return a.deployed; });
+        var pool = allAgents.filter(function(a) { return !a.deployed; });
+        var showAll = grid.dataset.showAll === 'true';
+        var visible = showAll ? allAgents : deployed;
+
+        // Compact card renderer
+        function compactCard(a) {
+          var stateColors = { online: 'var(--green)', connecting: 'var(--yellow)', error: 'var(--red)', offline: 'var(--text-muted)' };
           var anyOnline = a.botStatus === 'online' || a.slackBotStatus === 'online';
-          var anyConnecting = a.botStatus === 'connecting' || a.slackBotStatus === 'connecting';
           var anyError = a.botStatus === 'error' || a.slackBotStatus === 'error';
-          if (anyOnline) { statusClass = 'status-online'; statusLabel = 'Online'; }
-          else if (anyConnecting) { statusClass = 'status-connecting'; statusLabel = 'Connecting'; }
-          else if (anyError) { statusClass = 'status-error'; statusLabel = 'Error'; }
-
-          var channelDisplay = a.channelName
-            ? (Array.isArray(a.channelName) ? a.channelName.map(function(c) { return '#' + c; }).join(', ') : '#' + a.channelName)
-            : 'no desk';
-
-          // Avatar: use manual URL, then Discord bot avatar, then initial
+          var dotColor = anyOnline ? stateColors.online : anyError ? stateColors.error : stateColors.offline;
+          var initial = a.name.charAt(0).toUpperCase();
           var avatarSrc = a.avatar || a.botAvatarUrl;
-          var avatarContent = avatarSrc
-            ? '<img src="' + avatarSrc + '" onerror="this.style.display=\\'none\\';this.parentElement.textContent=\\'' + a.name.charAt(0).toUpperCase() + '\\';">'
-            : a.name.charAt(0).toUpperCase();
+          var avatarHtml = avatarSrc
+            ? '<img src="' + esc(avatarSrc) + '" style="width:32px;height:32px;border-radius:50%;object-fit:cover">'
+            : '<div style="width:32px;height:32px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px">' + initial + '</div>';
+          var desc = (a.description || '').slice(0, 60);
+          var badges = '';
+          if (a.model) badges += '<span class="badge" style="font-size:9px;padding:1px 5px">' + esc(a.model) + '</span>';
+          if (a.hasDiscordToken && anyOnline) badges += '<span class="badge" style="font-size:9px;padding:1px 5px;background:rgba(88,101,242,0.15);color:var(--green)">Discord</span>';
 
-          // Badges
-          var badges = [];
-          if (a.model) badges.push('<span class="badge">' + a.model + '</span>');
-          if (a.project) badges.push('<span class="badge" style="background:var(--purple);color:#fff">' + a.project + '</span>');
-          if (a.allowedTools) badges.push('<span class="badge" style="background:var(--yellow);color:#000">' + a.allowedTools.length + ' tools</span>');
+          return '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border)">'
+            + '<div style="position:relative;flex-shrink:0">' + avatarHtml
+            + '<div style="position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:' + dotColor + ';border:2px solid var(--bg-card)"></div>'
+            + '</div>'
+            + '<div style="flex:1;min-width:0">'
+            + '<div style="display:flex;align-items:center;gap:6px"><span style="font-weight:600;font-size:13px;color:var(--text-primary)">' + esc(a.name) + '</span>' + badges + '</div>'
+            + '<div style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(desc) + '</div>'
+            + '</div>'
+            + '</div>';
+        }
 
-          // Platform indicators
-          if (a.hasDiscordToken) {
-            var discordColor = a.botStatus === 'online' ? 'var(--green)' : 'var(--text-muted)';
-            badges.push('<span class="badge" style="background:rgba(88,101,242,0.15);color:' + discordColor + ';font-size:10px">Discord</span>');
-          }
-          if (a.hasSlackToken) {
-            var slackColor = a.slackBotStatus === 'online' ? 'var(--green)' : 'var(--text-muted)';
-            badges.push('<span class="badge" style="background:rgba(74,21,75,0.15);color:' + slackColor + ';font-size:10px">Slack</span>');
-          }
+        var html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
+        for (var ai = 0; ai < visible.length; ai++) {
+          html += compactCard(visible[ai]);
+        }
+        html += '</div>';
 
-          // Actions
-          var actions = a.agentDir
-            ? '<button class="btn btn-sm" onclick="event.stopPropagation();editAgent(\\'' + a.slug + '\\')">Edit</button>' +
-              '<button class="btn btn-sm" onclick="event.stopPropagation();deleteAgent(\\'' + a.slug + '\\')" style="color:var(--red)">Let Go</button>'
-            : '';
+        if (!showAll && pool.length > 0) {
+          html += '<div style="text-align:center;padding:8px"><span onclick="toggleAgentGridExpand(true)" style="color:var(--accent);font-size:12px;cursor:pointer">Show all ' + allAgents.length + ' agents (+ ' + pool.length + ' more)</span></div>';
+        } else if (showAll && pool.length > 0) {
+          html += '<div style="text-align:center;padding:8px"><span onclick="toggleAgentGridExpand(false)" style="color:var(--accent);font-size:12px;cursor:pointer">Show deployed only</span></div>';
+        }
 
-          return '<div class="desk-station ' + statusClass + '">' +
-            '<div class="desk-surface">' +
-              '<div class="desk-monitor">' +
-                '<div class="monitor-channel">' + channelDisplay + '</div>' +
-                '<div class="typing-dots">&middot;&middot;&middot;</div>' +
-              '</div>' +
-              '<div style="position:relative">' +
-                '<div class="desk-coffee"></div>' +
-                '<div class="desk-steam"><span></span><span></span><span></span></div>' +
-              '</div>' +
-              '<div class="desk-plant"></div>' +
-            '</div>' +
-            '<div class="desk-agent">' +
-              '<div class="desk-avatar">' + avatarContent + '</div>' +
-              '<div class="desk-status"><span class="desk-status-dot"></span> ' + statusLabel + '</div>' +
-              '<div class="desk-name">' + a.name + '</div>' +
-              '<div class="desk-role">' + (a.description || 'No role assigned') + '</div>' +
-              (badges.length ? '<div class="desk-badges">' + badges.join('') + '</div>' : '') +
-              (actions ? '<div class="desk-actions">' + actions + '</div>' : '') +
-            '</div>' +
-          '</div>';
-        });
-
-        // Add the "Hire" empty desk at the end
-        cards.push(
-          '<div class="desk-station desk-hire" onclick="startHiringInterview()">' +
-          '<div class="desk-hire-inner"><div class="hire-icon">+</div><div class="hire-label">Hire a New Employee</div></div></div>'
-        );
-
-        grid.innerHTML = cards.join('');
+        grid.innerHTML = html;
       }
     }
 
