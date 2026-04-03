@@ -1141,7 +1141,7 @@ program
       return `${barClr}${'█'.repeat(filled)}${c.gray}${'░'.repeat(empty)}${c.reset} ${c.dim}${rpad(String(pct), 3)}%${c.reset}`;
     }
 
-    let currentScreen: 'ops' | 'roster' = 'ops';
+    let currentScreen: 'ops' | 'roster' | 'rocks' = 'ops';
     let lastData: Record<string, unknown> | null = null;
     let expandedSections = false; // toggled by 'p' key
 
@@ -1267,10 +1267,15 @@ program
         };
       }
 
-      // Route to roster screen if toggled
+      // Route to roster or rocks screen if toggled
       if (currentScreen === 'roster') {
         lastData = data;
         await renderRoster();
+        return;
+      }
+      if (currentScreen === 'rocks') {
+        lastData = data;
+        await renderRocks();
         return;
       }
 
@@ -1630,7 +1635,7 @@ program
       }
 
       out += `${c.dim}  ${pad('', usable)}${c.reset}\n`;
-      out += `${c.dim}  Refreshing every 10s · [p] ${expandedSections ? 'collapse' : 'expand all'} · [r] roster · Ctrl+C to exit${c.reset}`;
+      out += `${c.dim}  Refreshing every 10s · [p] ${expandedSections ? 'collapse' : 'expand all'} · [r] roster · [g] rocks · Ctrl+C to exit${c.reset}`;
       process.stdout.write(out);
     }
 
@@ -1721,6 +1726,81 @@ program
       process.stdout.write(out);
     }
 
+    // ── EOS Rocks screen (toggled with 'g') ──
+    async function renderRocks() {
+      const cols = process.stdout.columns || 120;
+      const usable = cols - 4;
+      const g = '  ';
+
+      // Load rocks data from file
+      const rocksFile = path.join(BASE_DIR, 'rocks', 'eos-data.json');
+      let rocksData: { annualGoals: any[]; rocks: any[]; projects: any[] } = { annualGoals: [], rocks: [], projects: [] };
+      try {
+        if (existsSync(rocksFile)) {
+          rocksData = JSON.parse(readFileSync(rocksFile, 'utf-8'));
+        }
+      } catch { /* use empty */ }
+
+      const statusStyle: Record<string, { sym: string; clr: string }> = {
+        'on-track': { sym: 'ON TRACK', clr: c.green },
+        'completed': { sym: 'DONE', clr: c.green },
+        'off-track': { sym: 'OFF TRACK', clr: c.red },
+        'missed': { sym: 'MISS', clr: c.red },
+        'at-risk': { sym: 'AT RISK', clr: c.yellow },
+      };
+
+      const nameW = Math.max(40, Math.floor(usable * 0.50));
+      const ownerW = 16;
+      const statusW = 10;
+      const updatedW = 12;
+
+      let out = c.clear;
+      out += `  ${c.bold}${c.blue}EOS ROCKS${c.reset}  ${c.dim}${rocksData.annualGoals.length} annual goals · ${rocksData.rocks.length} rocks${c.reset}\n`;
+      out += `  ${c.dim}${'\u2500'.repeat(usable)}${c.reset}\n`;
+      out += `  ${c.dim}${pad('GOAL / ROCK / PROJECT', nameW)}${g}${pad('OWNER', ownerW)}${g}${pad('STATUS', statusW)}${g}${pad('UPDATED', updatedW)}${c.reset}\n`;
+      out += `  ${c.dim}${'\u2500'.repeat(nameW)}${g}${'\u2500'.repeat(ownerW)}${g}${'\u2500'.repeat(statusW)}${g}${'\u2500'.repeat(updatedW)}${c.reset}\n`;
+
+      function rockRow(title: string, owner: string, status: string, updated: string, indent: number, bold: boolean) {
+        const st = statusStyle[status] || { sym: status.toUpperCase(), clr: c.gray };
+        const prefix = indent === 0 ? '' : indent === 1 ? '\u25B8 ' : '  \u2022 ';
+        const indentPad = indent === 0 ? '' : indent === 1 ? '  ' : '    ';
+        const nameClr = bold ? `${c.bold}${c.white}` : indent > 1 ? c.gray : c.white;
+        const displayTitle = `${indentPad}${prefix}${title}`.slice(0, nameW);
+        const dateStr = (updated || '').slice(0, 10);
+        out += `  ${nameClr}${pad(displayTitle, nameW)}${c.reset}${g}${c.gray}${pad(owner, ownerW)}${c.reset}${g}${st.clr}${pad(st.sym, statusW)}${c.reset}${g}${c.dim}${pad(dateStr, updatedW)}${c.reset}\n`;
+      }
+
+      // Annual goals with nested rocks
+      for (const goal of rocksData.annualGoals) {
+        rockRow(goal.title, goal.owner, goal.status, goal.updatedAt, 0, true);
+        const childRocks = rocksData.rocks.filter((r: any) => r.parentGoalId === goal.id);
+        for (const rock of childRocks) {
+          rockRow(`${rock.title} [${rock.quarter}]`, rock.owner, rock.status, rock.updatedAt, 1, false);
+          const childProjects = rocksData.projects.filter((p: any) => p.parentRockId === rock.id);
+          for (const proj of childProjects) {
+            rockRow(proj.title, proj.owner, proj.status, proj.updatedAt, 2, false);
+          }
+        }
+      }
+
+      // Independent rocks
+      const independent = rocksData.rocks.filter((r: any) => !r.parentGoalId);
+      if (independent.length > 0) {
+        out += `\n  ${c.dim}${'\u2500'.repeat(usable)}${c.reset}\n`;
+        out += `  ${c.bold}${c.blue}INDEPENDENT ROCKS${c.reset}\n\n`;
+        for (const rock of independent) {
+          rockRow(`${rock.title} [${rock.quarter}]`, rock.owner, rock.status, rock.updatedAt, 0, false);
+          const childProjects = rocksData.projects.filter((p: any) => p.parentRockId === rock.id);
+          for (const proj of childProjects) {
+            rockRow(proj.title, proj.owner, proj.status, proj.updatedAt, 1, false);
+          }
+        }
+      }
+
+      out += `\n${c.dim}  Press [o] for ops board · [r] roster · Ctrl+C to exit${c.reset}`;
+      process.stdout.write(out);
+    }
+
     await render();
     if (opts.watch !== false) {
       setInterval(render, 10000);
@@ -1735,12 +1815,17 @@ program
           if (key === 'p' && currentScreen === 'ops') {
             expandedSections = !expandedSections;
             render();
-          } else if (key === 'r' && currentScreen === 'ops') {
+          } else if (key === 'r' && currentScreen !== 'roster') {
             currentScreen = 'roster';
             render();
-          } else if ((key === 'o' || key === '\u001b') && currentScreen === 'roster') { // 'o' or Escape
-            currentScreen = 'ops';
+          } else if (key === 'g' && currentScreen !== 'rocks') {
+            currentScreen = 'rocks';
             render();
+          } else if (key === 'o' || key === '\u001b') { // 'o' or Escape -> ops board
+            if (currentScreen !== 'ops') {
+              currentScreen = 'ops';
+              render();
+            }
           }
         });
       }

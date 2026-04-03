@@ -454,6 +454,48 @@ export interface PersistentGoal {
   linkedCronJobs?: string[];  // cron jobs that contribute to this goal
 }
 
+// ── EOS Rocks Hierarchy ────────────────────────────────────────────────
+
+export type EOSTrackingStatus = 'on-track' | 'off-track' | 'at-risk' | 'completed' | 'missed';
+
+export interface EOSAnnualGoal {
+  id: string;
+  title: string;
+  description: string;
+  owner: string;
+  year: number;
+  status: EOSTrackingStatus;
+  targetDate?: string;
+  updatedAt: string;
+}
+
+export interface EOSRock {
+  id: string;
+  title: string;
+  description: string;
+  owner: string;
+  quarter: string;
+  status: EOSTrackingStatus;
+  parentGoalId?: string | null;
+  updatedAt: string;
+}
+
+export interface EOSProject {
+  id: string;
+  title: string;
+  description: string;
+  owner: string;
+  status: EOSTrackingStatus;
+  parentRockId: string;
+  updatedAt: string;
+}
+
+export interface EOSRocksData {
+  annualGoals: EOSAnnualGoal[];
+  rocks: EOSRock[];
+  projects: EOSProject[];
+}
+
 // ── Cron Progress Continuity ────────────────────────────────────────
 
 export interface CronProgress {

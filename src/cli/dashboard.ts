@@ -52,6 +52,15 @@ const CRON_FILE = path.join(SYSTEM_DIR, 'CRON.md');
 const DAILY_NOTES_DIR = path.join(VAULT_DIR, dashEnv('VAULT_DAILY_DIR', 'Daily'));
 const MEMORY_DB_PATH = path.join(BASE_DIR, '.memory.db');
 const PROJECTS_META_FILE = path.join(BASE_DIR, 'projects.json');
+const ROCKS_FILE = path.join(BASE_DIR, 'rocks', 'eos-data.json');
+
+function loadRocksData(): { annualGoals: any[]; rocks: any[]; projects: any[] } {
+  const dir = path.dirname(ROCKS_FILE);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(ROCKS_FILE)) return { annualGoals: [], rocks: [], projects: [] };
+  try { return JSON.parse(readFileSync(ROCKS_FILE, 'utf-8')); }
+  catch { return { annualGoals: [], rocks: [], projects: [] }; }
+}
 
 // ── Lazy gateway for chat ────────────────────────────────────────────
 
@@ -1540,6 +1549,30 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
+  });
+
+  // ── EOS Rocks ───────────────────────────────────────────────────────
+
+  app.get('/api/rocks', (_req, res) => {
+    try {
+      const data = loadRocksData();
+      const tree = data.annualGoals.map(goal => ({
+        ...goal,
+        rocks: data.rocks
+          .filter(r => r.parentGoalId === goal.id)
+          .map(rock => ({
+            ...rock,
+            projects: data.projects.filter(p => p.parentRockId === rock.id),
+          })),
+      }));
+      const independentRocks = data.rocks
+        .filter(r => !r.parentGoalId)
+        .map(rock => ({
+          ...rock,
+          projects: data.projects.filter(p => p.parentRockId === rock.id),
+        }));
+      res.json({ tree, independentRocks });
+    } catch (err) { res.status(500).json({ error: String(err) }); }
   });
 
   app.get('/api/browse-dir', (req, res) => {
@@ -5524,6 +5557,9 @@ function getDashboardHTML(token: string): string {
         <span class="nav-icon">&#128193;</span> Projects
         <span class="nav-badge" id="nav-project-count">0</span>
       </div>
+      <div class="nav-item" data-page="rocks">
+        <span class="nav-icon">&#9670;</span> EOS Rocks
+      </div>
       <div class="nav-item" data-page="search">
         <span class="nav-icon">&#128269;</span> Search Memory
       </div>
@@ -5594,6 +5630,15 @@ function getDashboardHTML(token: string): string {
           <div class="card-body" id="panel-controls"><div class="empty-state">Loading...</div></div>
         </div>
       </div>
+    </div>
+
+    <!-- ═══ EOS Rocks Page ═══ -->
+    <div class="page" id="page-rocks" style="font-family:'SF Mono',Menlo,Monaco,Consolas,monospace;font-size:12px;background:var(--bg-secondary, #0d1117);color:var(--text, #c9d1d9);border-radius:8px;padding:16px 20px;overflow-y:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="color:#58a6ff;font-weight:700;font-size:14px">EOS ROCKS</div>
+        <div id="rocks-updated" style="color:#6e7681;font-size:11px"></div>
+      </div>
+      <div id="rocks-tree">Loading...</div>
     </div>
 
     <!-- ═══ Projects Page ═══ -->
@@ -6333,6 +6378,7 @@ function showPage(page) {
   if (page === 'team') refreshTeam();
   if (page === 'ops-board') refreshOpsBoard();
   if (page === 'graph') refreshGraph();
+  if (page === 'rocks') refreshRocks();
 }
 
 document.querySelectorAll('.nav-item').forEach(item => {
@@ -7843,6 +7889,81 @@ async function refreshOpsBoard() {
   }
 }
 
+// ── EOS Rocks Page ─────────────────────────────────────────────────
+async function refreshRocks() {
+  try {
+    var r = await apiFetch('/api/rocks');
+    var d = await r.json();
+    var tree = d.tree || [];
+    var independent = d.independentRocks || [];
+
+    var sc = { 'on-track': '#3fb950', 'completed': '#3fb950', 'off-track': '#f85149', 'missed': '#f85149', 'at-risk': '#d29922' };
+    var sl = { 'on-track': 'ON TRACK', 'off-track': 'OFF TRACK', 'at-risk': 'AT RISK', 'completed': 'DONE', 'missed': 'MISS' };
+    var thCss = 'text-align:left;padding:6px 8px;color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;border-bottom:1px solid #21262d';
+    var tdCss = 'padding:6px 8px;border-bottom:1px solid #161b22';
+
+    var html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<thead><tr>'
+      + '<th style="' + thCss + '">Goal / Rock / Project</th>'
+      + '<th style="' + thCss + ';width:130px">Owner</th>'
+      + '<th style="' + thCss + ';width:80px">Status</th>'
+      + '<th style="' + thCss + ';width:90px">Updated</th>'
+      + '</tr></thead><tbody>';
+
+    var ri = 0;
+    function row(title, owner, status, updated, indent, bold) {
+      var bg = ri % 2 === 0 ? 'transparent' : '#161b22';
+      var clr = sc[status] || '#484f58';
+      var lbl = sl[status] || status.toUpperCase();
+      var pad = indent * 24;
+      var prefix = indent === 0 ? '' : indent === 1 ? '<span style="color:#484f58;margin-right:6px">&#9656;</span>' : '<span style="color:#484f58;margin-right:6px">&#8226;</span>';
+      var fw = bold ? 'font-weight:700' : '';
+      var tc = indent > 1 ? '#8b949e' : '#c9d1d9';
+      html += '<tr style="background:' + bg + '">'
+        + '<td style="' + tdCss + ';padding-left:' + (8 + pad) + 'px;color:' + tc + ';' + fw + '">' + prefix + esc(title) + '</td>'
+        + '<td style="' + tdCss + ';color:#8b949e">' + esc(owner) + '</td>'
+        + '<td style="' + tdCss + '"><span style="color:' + clr + ';font-weight:600;font-size:11px">' + lbl + '</span></td>'
+        + '<td style="' + tdCss + ';color:#6e7681;font-size:11px">' + esc((updated || '').slice(0, 10)) + '</td>'
+        + '</tr>';
+      ri++;
+    }
+
+    for (var i = 0; i < tree.length; i++) {
+      var g = tree[i];
+      row(g.title, g.owner, g.status, g.updatedAt, 0, true);
+      for (var j = 0; j < (g.rocks || []).length; j++) {
+        var rk = g.rocks[j];
+        row(rk.title + ' [' + rk.quarter + ']', rk.owner, rk.status, rk.updatedAt, 1, false);
+        for (var k = 0; k < (rk.projects || []).length; k++) {
+          var p = rk.projects[k];
+          row(p.title, p.owner, p.status, p.updatedAt, 2, false);
+        }
+      }
+    }
+
+    if (independent.length > 0) {
+      html += '<tr><td colspan="4" style="padding:12px 8px 6px;color:#484f58;font-weight:600;font-size:10px;text-transform:uppercase;border-bottom:1px solid #21262d">Independent Rocks</td></tr>';
+      for (var m = 0; m < independent.length; m++) {
+        var ir = independent[m];
+        row(ir.title + ' [' + ir.quarter + ']', ir.owner, ir.status, ir.updatedAt, 0, false);
+        for (var n = 0; n < (ir.projects || []).length; n++) {
+          var ip = ir.projects[n];
+          row(ip.title, ip.owner, ip.status, ip.updatedAt, 1, false);
+        }
+      }
+    }
+
+    html += '</tbody></table>';
+    if (tree.length === 0 && independent.length === 0) {
+      html = '<div style="color:#6e7681;padding:16px">No EOS rocks data found</div>';
+    }
+    document.getElementById('rocks-tree').innerHTML = html;
+    document.getElementById('rocks-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById('rocks-tree').innerHTML = '<div style="color:#6e7681;padding:16px">Error loading rocks data</div>';
+  }
+}
+
 // ── Memory ────────────────────────────────
 async function refreshMemory() {
   try {
@@ -8411,6 +8532,7 @@ function refreshAll() {
   if (currentPage === 'self-improve') refreshSelfImprove();
   if (currentPage === 'team') refreshTeam();
   if (currentPage === 'ops-board') refreshOpsBoard();
+  if (currentPage === 'rocks') refreshRocks();
   checkVersion();
 }
 
