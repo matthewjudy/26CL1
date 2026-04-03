@@ -4639,17 +4639,28 @@ server.tool(
 
     writeFileSync(path.join(tasksDir, `${id}.json`), JSON.stringify(delegation, null, 2));
 
-    // Log to activity feed
-    const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
-    const activityEntry = {
-      ts: new Date().toISOString(),
-      type: 'start' as const,
-      agent: callerSlug === 'clementine' ? 'Clementine' : callerSlug,
-      unit: callerSlug === 'clementine' ? '19Q1' : '',
-      trigger: 'delegation',
-      detail: `Delegated to ${resolvedSlug}: ${task.slice(0, 80)}`,
-    };
-    appendFileSync(activityLogPath, JSON.stringify(activityEntry) + '\n');
+    // Log to per-agent activity feed (both delegator and delegatee)
+    try {
+      const { logActivity: logAct } = await import('../agent/agent-activity.js');
+      const callerName = callerSlug === 'clementine' ? 'Clementine' : callerSlug;
+      logAct(
+        { slug: callerSlug, name: callerName, unit: callerSlug === 'clementine' ? '19Q1' : '' },
+        { type: 'start', trigger: 'delegation', detail: `Delegated to ${resolvedSlug}: ${task.slice(0, 80)}` },
+      );
+      // Also log on the receiving agent so their activity stream shows the incoming task
+      logAct(
+        { slug: resolvedSlug, name: resolvedSlug },
+        { type: 'start', trigger: 'delegation', detail: `Received task from ${callerName}: ${task.slice(0, 80)}` },
+      );
+    } catch {
+      // Fallback to direct append
+      const activityLogPath = path.join(BASE_DIR, '.activity-log.jsonl');
+      appendFileSync(activityLogPath, JSON.stringify({
+        ts: new Date().toISOString(), type: 'start',
+        agent: callerSlug === 'clementine' ? 'Clementine' : callerSlug,
+        trigger: 'delegation', detail: `Delegated to ${resolvedSlug}: ${task.slice(0, 80)}`,
+      }) + '\n');
+    }
 
     // Immediately trigger the agent's task processor in the background
     const taskProcessorName = `${resolvedSlug}-task-processor`;

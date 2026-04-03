@@ -13,6 +13,7 @@ import cron from 'node-cron';
 import matter from 'gray-matter';
 import type { CronJobDefinition } from '../types.js';
 import { localISO } from '../config.js';
+import { logActivity } from '../agent/agent-activity.js';
 import {
   parseCronJobs,
   HeartbeatScheduler,
@@ -23,18 +24,29 @@ import {
 const BASE_DIR = process.env.CLEMENTINE_HOME || path.join(os.homedir(), '.clementine');
 const ACTIVITY_LOG_PATH = path.join(BASE_DIR, '.activity-log.jsonl');
 
-/** Append a cron activity event to the shared activity log. */
+/** Append a cron activity event to both the shared log and per-agent log. */
 function logCronActivity(entry: {
   agent: string;
+  slug?: string;
+  unit?: string;
   type: 'cron';
   trigger: string;
   detail: string;
   durationMs?: number;
 }) {
   try {
-    const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + '\n';
-    appendFileSync(ACTIVITY_LOG_PATH, line);
-  } catch { /* non-fatal */ }
+    const slug = entry.slug || entry.agent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'clementine';
+    logActivity(
+      { slug, name: entry.agent, unit: entry.unit },
+      { type: entry.type, trigger: entry.trigger, detail: entry.detail, durationMs: entry.durationMs },
+    );
+  } catch {
+    // Fallback to direct append
+    try {
+      const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + '\n';
+      appendFileSync(ACTIVITY_LOG_PATH, line);
+    } catch { /* non-fatal */ }
+  }
 }
 const LAST_RUN_FILE = path.join(BASE_DIR, '.cron_last_run.json');
 
@@ -136,6 +148,7 @@ export async function cmdCronRun(jobName: string): Promise<void> {
       const preview = response.replace(/\*\*/g, '').split('\n')[0].trim();
       logCronActivity({
         agent: job.name.replace(/-task-processor$/, '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        slug: job.agentSlug || undefined,
         type: 'cron',
         trigger: `Cron: ${job.name}`,
         detail: preview.length > 120 ? preview.slice(0, 117) + '...' : preview,
@@ -247,6 +260,7 @@ export async function cmdCronRunDue(): Promise<void> {
             const preview = response.replace(/\*\*/g, '').split('\n')[0].trim();
             logCronActivity({
               agent: job.name.replace(/-task-processor$/, '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+              slug: job.agentSlug || undefined,
               type: 'cron',
               trigger: `Cron: ${job.name}`,
               detail: preview.length > 120 ? preview.slice(0, 117) + '...' : preview,
