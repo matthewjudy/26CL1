@@ -3361,7 +3361,7 @@ server.tool(
       maxTurns: z.number().optional().default(15).describe('Max agent turns'),
     })).describe('Workflow steps'),
     trigger_schedule: z.string().optional().describe('Cron expression for scheduled trigger'),
-    inputs: z.record(z.object({
+    inputs: z.record(z.string(), z.object({
       type: z.enum(['string', 'number']).default('string'),
       default: z.string().optional(),
       description: z.string().optional(),
@@ -3458,7 +3458,7 @@ server.tool(
   'Trigger a workflow by name with optional input overrides. Returns the workflow result.',
   {
     name: z.string().describe('Workflow name'),
-    inputs: z.record(z.string()).optional().default({}).describe('Input overrides (key=value pairs)'),
+    inputs: z.record(z.string(), z.string()).optional().default({}).describe('Input overrides (key=value pairs)'),
   },
   async ({ name: workflowName, inputs }) => {
     const { parseAllWorkflows } = await import('../agent/workflow-runner.js');
@@ -4534,7 +4534,7 @@ server.tool(
     completedItems: z.array(z.string()).optional().describe('Items completed in this run'),
     pendingItems: z.array(z.string()).optional().describe('Items still pending for next run'),
     notes: z.string().optional().describe('Free-form observations or notes'),
-    state: z.record(z.unknown()).optional().describe('Custom key-value state to persist'),
+    state: z.record(z.string(), z.unknown()).optional().describe('Custom key-value state to persist'),
   },
   async ({ job_name, completedItems, pendingItems, notes, state }) => {
     ensureCronProgressDir();
