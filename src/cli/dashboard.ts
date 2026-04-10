@@ -5870,6 +5870,7 @@ function getDashboardHTML(token: string): string {
         <div style="color:#58a6ff;font-weight:700;font-size:14px">EOS ROCKS</div>
         <div id="rocks-updated" style="color:#6e7681;font-size:11px"></div>
       </div>
+      <div id="goal-pulse" style="margin-bottom:16px"></div>
       <div id="rocks-tree">Loading...</div>
     </div>
 
@@ -6067,6 +6068,38 @@ function getDashboardHTML(token: string): string {
           <div class="card-header">Inter-Agent Messages</div>
           <div class="card-body" id="team-messages-log"><div class="empty-state">No messages yet</div></div>
         </div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <h3 style="margin:0;font-size:14px;color:#e6edf3">Collaboration Feed</h3>
+          <div style="display:flex;gap:8px">
+            <select id="collab-agent-filter" onchange="refreshCollabFeed()" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:12px">
+              <option value="">All Agents</option>
+            </select>
+            <select id="collab-time-filter" onchange="refreshCollabFeed()" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:12px">
+              <option value="6">Last 6 hours</option>
+              <option value="24" selected>Last 24 hours</option>
+              <option value="168">Last 7 days</option>
+            </select>
+            <select id="collab-type-filter" onchange="refreshCollabFeed()" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:12px">
+              <option value="">All Types</option>
+              <option value="message">Messages</option>
+              <option value="delegation">Delegations</option>
+              <option value="cross-review">Reviews</option>
+              <option value="escalation">Escalations</option>
+            </select>
+          </div>
+        </div>
+        <div id="collab-feed-content" style="max-height:400px;overflow-y:auto">
+          <div style="color:#7d8590;padding:16px;text-align:center">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent Detail Slide-over -->
+    <div id="agent-detail-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:1000" onclick="this.style.display='none'">
+      <div style="position:absolute;top:0;right:0;width:600px;height:100%;background:#0d1117;border-left:1px solid #30363d;overflow-y:auto;padding:20px" onclick="event.stopPropagation()">
+        <div id="agent-detail-content"><div style="color:#7d8590;text-align:center;padding:40px">Loading...</div></div>
       </div>
     </div>
 
@@ -7888,6 +7921,7 @@ async function refreshOpsBoard() {
         var html = '<table style="' + tblCss + '">';
         html += '<thead><tr>'
           + '<th style="' + thCss + ';width:90px">Status</th>'
+          + '<th style="' + thCss + ';width:40px">Tier</th>'
           + '<th style="' + thCss + ';width:55px">Unit</th>'
           + '<th style="' + thCss + ';width:160px">Agent</th>'
           + '<th style="' + thCss + '">Task / Activity</th>'
@@ -7937,10 +7971,17 @@ async function refreshOpsBoard() {
             lastRunText = '<span style="color:#6e7681">' + timeAgoFromMs(lastMs) + '</span>';
           }
 
+          var tierColors = { opus: '#a371f7', sonnet: '#58a6ff', haiku: '#3fb950' };
+          var tierBg = { opus: '#2d1f4e', sonnet: '#1a2744', haiku: '#1a2e1a' };
+          var tierLabels = { opus: 'OPU', sonnet: 'SON', haiku: 'HAI' };
+          var model = a.model || 'sonnet';
+          var tierHtml = '<span style="background:' + (tierBg[model] || '#161b22') + ';color:' + (tierColors[model] || '#7d8590') + ';padding:1px 4px;border-radius:3px;font-size:10px;font-weight:700">' + (tierLabels[model] || model) + '</span>';
+
           html += '<tr style="background:' + (i % 2 === 0 ? '#0d1117' : '#161b22') + '">'
             + '<td style="' + tdCss + '"><span style="color:' + clr + ';font-weight:600">' + ico + ' ' + lbl + '</span></td>'
+            + '<td style="' + tdCss + '">' + tierHtml + '</td>'
             + '<td style="' + tdCss + '">' + unitCell + '</td>'
-            + '<td style="' + tdCss + ';color:#c9d1d9;font-weight:600">' + displayName + '</td>'
+            + '<td onclick="showAgentDetail(\'' + esc(a.slug) + '\')" style="' + tdCss + ';font-weight:600;cursor:pointer;color:#58a6ff">' + displayName + '</td>'
             + '<td style="' + tdCss + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0">' + taskText + '</td>'
             + '<td style="' + tdCss + '">' + progressCell + '</td>'
             + '<td style="' + tdCss + '">' + lastRunText + '</td>'
@@ -8131,6 +8172,71 @@ async function refreshOpsBoard() {
 
 // ── EOS Rocks Page ─────────────────────────────────────────────────
 async function refreshRocks() {
+  // Goal pulse tracker
+  try {
+    var br = await apiFetch('/api/daily-briefing');
+    var bd = await br.json();
+    var gm = bd.goalMetrics || {};
+    var pulseEl = document.getElementById('goal-pulse');
+    if (pulseEl) {
+      var trajColor = function(t) {
+        if (t === 'on-track') return '#3fb950';
+        if (t === 'at-risk') return '#d29922';
+        return '#e74c3c';
+      };
+      var trajBg = function(t) {
+        if (t === 'on-track') return '#0d2818';
+        if (t === 'at-risk') return '#2a1a0d';
+        return '#2a0d0d';
+      };
+      var trajLabel = function(t) {
+        if (t === 'on-track') return 'ON TRACK';
+        if (t === 'at-risk') return 'AT RISK';
+        return 'OFF TRACK';
+      };
+      var goals = [
+        { label: 'LEAD GEN GROWTH', data: gm.leadGenGrowth || {} },
+        { label: 'ONBOARDING', data: gm.newFranchiseeOnboarding || {} },
+        { label: 'VENDOR ADOPTION', data: gm.vendorAdoption || {} }
+      ];
+      var phtml = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
+      for (var gi = 0; gi < goals.length; gi++) {
+        var goal = goals[gi];
+        var gd = goal.data;
+        var traj = gd.trajectory || 'off-track';
+        var tc = trajColor(traj);
+        var tbg = trajBg(traj);
+        var currentVal = goal.label === 'ONBOARDING' ? ((gd.hittingTarget || '--') + '/' + (gd.total || '--')) : (gd.current || '--');
+        var targetVal = gd.target || '--';
+        var pct = 0;
+        if (typeof gd.current === 'number' && typeof gd.target === 'number' && gd.target > 0) {
+          pct = Math.min(100, Math.round((gd.current / gd.target) * 100));
+        } else if (typeof gd.hittingTarget === 'number' && typeof gd.total === 'number' && gd.total > 0) {
+          pct = Math.min(100, Math.round((gd.hittingTarget / gd.total) * 100));
+        }
+        phtml += '<div style="background:' + tbg + ';border:1px solid #30363d;border-radius:8px;padding:12px 16px">';
+        phtml += '<div style="color:#7d8590;font-size:10px;text-transform:uppercase;font-weight:600;margin-bottom:6px">' + goal.label + '</div>';
+        phtml += '<div style="display:flex;align-items:baseline;gap:6px;margin-bottom:6px">';
+        phtml += '<span style="font-size:28px;font-weight:700;color:' + tc + '">' + esc(String(currentVal)) + '</span>';
+        phtml += '<span style="color:#7d8590;font-size:13px">/ ' + esc(String(targetVal)) + '</span>';
+        phtml += '</div>';
+        phtml += '<div style="height:6px;background:#21262d;border-radius:3px;overflow:hidden;margin-bottom:6px">';
+        phtml += '<div style="height:100%;width:' + pct + '%;background:' + tc + ';border-radius:3px"></div>';
+        phtml += '</div>';
+        phtml += '<div style="display:flex;align-items:center;gap:6px">';
+        phtml += '<span style="color:' + tc + ';font-size:11px;font-weight:600">' + trajLabel(traj) + '</span>';
+        if (gd.trend) phtml += '<span style="color:#7d8590;font-size:11px">' + esc(gd.trend) + '</span>';
+        phtml += '</div>';
+        phtml += '</div>';
+      }
+      phtml += '</div>';
+      pulseEl.innerHTML = phtml;
+    }
+  } catch(e) {
+    var pulseEl2 = document.getElementById('goal-pulse');
+    if (pulseEl2) pulseEl2.innerHTML = '';
+  }
+
   try {
     var r = await apiFetch('/api/rocks');
     var d = await r.json();
@@ -9275,6 +9381,7 @@ async function refreshTeam() {
   } catch(e) {
     console.error('Team refresh error:', e);
   }
+  refreshCollabFeed();
 }
 
 // ── Agent CRUD Modal ──────────────────────
@@ -9748,6 +9855,128 @@ function showGraphDetail(node, data) {
 
 document.getElementById('graph-filter-label').addEventListener('change', function() { refreshGraph(); });
 document.getElementById('graph-search').addEventListener('input', function() { clearTimeout(this._t); this._t = setTimeout(refreshGraph, 300); });
+
+async function refreshCollabFeed() {
+  var agent = document.getElementById('collab-agent-filter') ? document.getElementById('collab-agent-filter').value : '';
+  var hours = document.getElementById('collab-time-filter') ? document.getElementById('collab-time-filter').value : '24';
+  var type = document.getElementById('collab-type-filter') ? document.getElementById('collab-type-filter').value : '';
+  var url = '/api/collaboration-feed?hours=' + hours + '&limit=50';
+  if (agent) url += '&agent=' + agent;
+  if (type) url += '&type=' + type;
+  try {
+    var r = await apiFetch(url);
+    var feed = await r.json();
+    var el = document.getElementById('collab-feed-content');
+    if (!el) return;
+    if (!Array.isArray(feed) || feed.length === 0) {
+      el.innerHTML = '<div style="color:#7d8590;padding:16px;text-align:center">No collaboration activity in this period.</div>';
+      return;
+    }
+    var typeStyles = {
+      'delegation': { bg: '#1f2a3d', color: '#58a6ff', label: 'DELEGATION' },
+      'message': { bg: '#2a1f3d', color: '#a371f7', label: 'MESSAGE' },
+      'cross-review': { bg: '#1a2e1a', color: '#3fb950', label: 'CROSS-REVIEW' },
+      'qa-gate': { bg: '#1a2e1a', color: '#3fb950', label: 'QA GATE' },
+      'escalation': { bg: '#3d1f1f', color: '#e74c3c', label: 'ESCALATION' }
+    };
+    var html = '';
+    feed.forEach(function(entry) {
+      var style = typeStyles[entry.type] || typeStyles['message'];
+      var time = entry.ts ? new Date(entry.ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
+      html += '<div style="padding:10px 12px;border-bottom:1px solid #21262d">';
+      html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">';
+      html += '<span style="color:#7d8590;font-size:11px">' + time + '</span>';
+      html += '<span style="background:' + style.bg + ';color:' + style.color + ';padding:1px 6px;border-radius:3px;font-size:10px">' + style.label + '</span></div>';
+      html += '<div style="color:#e6edf3"><span style="color:#58a6ff;font-weight:500">' + (entry.from || '') + '</span>';
+      html += '<span style="color:#7d8590;margin:0 4px">--&gt;</span>';
+      html += '<span style="color:#58a6ff;font-weight:500">' + (entry.to || '') + '</span></div>';
+      html += '<div style="color:#7d8590;font-size:12px;margin-top:2px">' + ((entry.content || '').length > 200 ? (entry.content || '').slice(0, 200) + '...' : (entry.content || '')) + '</div></div>';
+    });
+    el.innerHTML = html;
+  } catch(e) {
+    var el2 = document.getElementById('collab-feed-content');
+    if (el2) el2.innerHTML = '<div style="color:#e74c3c;padding:16px">Error: ' + e + '</div>';
+  }
+}
+
+async function showAgentDetail(slug) {
+  var overlay = document.getElementById('agent-detail-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'block';
+  var content = document.getElementById('agent-detail-content');
+  if (content) content.innerHTML = '<div style="color:#7d8590;text-align:center;padding:40px">Loading...</div>';
+  try {
+    var r = await apiFetch('/api/agent/' + slug + '/detail');
+    var d = await r.json();
+    var tierColors = { opus: '#a371f7', sonnet: '#58a6ff', haiku: '#3fb950' };
+    var tierBg = { opus: '#2d1f4e', sonnet: '#1a2744', haiku: '#1a2e1a' };
+    var tierLabels = { opus: 'OPU', sonnet: 'SON', haiku: 'HAI' };
+    var model = d.model || 'sonnet';
+    var tierBadge = '<span style="background:' + (tierBg[model] || '#161b22') + ';color:' + (tierColors[model] || '#7d8590') + ';padding:2px 6px;border-radius:3px;font-size:11px;font-weight:700">' + (tierLabels[model] || model) + '</span>';
+
+    var html = '';
+    // Header
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">';
+    html += '<div>';
+    html += '<div style="font-size:20px;font-weight:700;color:#e6edf3">' + esc(d.name || slug) + '</div>';
+    html += '<div style="color:#7d8590;font-size:13px;margin-top:4px">' + esc(d.description || '') + '</div>';
+    html += '</div>';
+    html += tierBadge;
+    html += '</div>';
+
+    // Quick stat cards
+    var stats = d.stats || {};
+    var statCards = [
+      { label: 'Tasks Today', value: stats.tasksToday != null ? stats.tasksToday : '--', color: '#58a6ff' },
+      { label: 'All Time', value: stats.allTimeCompleted != null ? stats.allTimeCompleted : '--', color: '#3fb950' },
+      { label: 'Avg Duration', value: stats.avgDuration || '--', color: '#d29922' },
+      { label: 'Pending', value: stats.pendingCount != null ? stats.pendingCount : '--', color: '#a371f7' }
+    ];
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:20px">';
+    for (var si = 0; si < statCards.length; si++) {
+      var sc = statCards[si];
+      html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;text-align:center">';
+      html += '<div style="font-size:22px;font-weight:700;color:' + sc.color + '">' + esc(String(sc.value)) + '</div>';
+      html += '<div style="color:#7d8590;font-size:11px;margin-top:4px">' + esc(sc.label) + '</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // Recent activity
+    var activity = d.recentActivity || [];
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:16px">';
+    html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">Recent Activity</div>';
+    if (activity.length === 0) {
+      html += '<div style="color:#7d8590;font-size:13px">No recent activity.</div>';
+    } else {
+      for (var ai = 0; ai < activity.length; ai++) {
+        var act = activity[ai];
+        var actTime = act.ts ? new Date(act.ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
+        html += '<div style="padding:6px 0;border-bottom:1px solid #21262d;display:flex;align-items:baseline;gap:8px">';
+        html += '<span style="color:#484f58;font-size:11px;min-width:60px">' + actTime + '</span>';
+        html += '<span style="color:#c9d1d9;font-size:13px">' + esc(act.detail || act.title || '') + '</span>';
+        html += '</div>';
+      }
+    }
+    html += '</div>';
+
+    // Config section (collapsible)
+    var config = d.config || {};
+    var configJson = JSON.stringify(config, null, 2);
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden">';
+    html += '<div onclick="var el=document.getElementById(\'agent-detail-config\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'" style="padding:14px 16px;cursor:pointer;display:flex;align-items:center;justify-content:space-between">';
+    html += '<span style="font-weight:700;color:#c9d1d9;font-size:14px">Configuration</span>';
+    html += '<span style="color:#7d8590;font-size:12px">Click to toggle</span>';
+    html += '</div>';
+    html += '<div id="agent-detail-config" style="display:none;padding:0 16px 14px;max-height:300px;overflow-y:auto">';
+    html += '<pre style="color:#8b949e;font-size:12px;white-space:pre-wrap;margin:0">' + esc(configJson) + '</pre>';
+    html += '</div></div>';
+
+    if (content) content.innerHTML = html;
+  } catch(e) {
+    if (content) content.innerHTML = '<div style="color:#e74c3c;text-align:center;padding:40px">Error loading agent detail: ' + e + '</div>';
+  }
+}
 
 refreshAll();
 setInterval(refreshAll, 5000);
