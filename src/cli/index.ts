@@ -1141,7 +1141,7 @@ program
       return `${barClr}${'█'.repeat(filled)}${c.gray}${'░'.repeat(empty)}${c.reset} ${c.dim}${rpad(String(pct), 3)}%${c.reset}`;
     }
 
-    let currentScreen: 'ops' | 'roster' | 'rocks' = 'ops';
+    let currentScreen: 'ops' | 'roster' | 'rocks' | 'comms' = 'ops';
     let lastData: Record<string, unknown> | null = null;
     let expandedSections = false; // toggled by 'p' key
 
@@ -1267,7 +1267,12 @@ program
         };
       }
 
-      // Route to roster or rocks screen if toggled
+      // Route to comms, roster or rocks screen if toggled
+      if (currentScreen === 'comms') {
+        lastData = data;
+        await renderComms();
+        return;
+      }
       if (currentScreen === 'roster') {
         lastData = data;
         await renderRoster();
@@ -1307,6 +1312,7 @@ program
       // Proportional: STATUS 8%, UNIT 5%, AGENT 17%, TASK 48%, PROGRESS 14%, LAST 8%
       const statusW = Math.max(10, Math.floor(content * 0.08));
       const unitW = Math.max(5, Math.floor(content * 0.05));
+      const tierW = 4;
       const nameW = Math.max(16, Math.floor(content * 0.17));
       const progressW = Math.max(12, Math.floor(content * 0.14));
       const lastW = Math.max(5, Math.floor(content * 0.08));
@@ -1316,7 +1322,7 @@ program
       const weekW = showExtended ? 5 : 0;
       const tokensW = showExtended ? 7 : 0;
       const extendedW = todayW + weekW + tokensW + (showExtended ? gap * 3 : 0);
-      const activityW = Math.max(20, content - statusW - unitW - nameW - progressW - lastW - extendedW);
+      const activityW = Math.max(20, content - statusW - unitW - tierW - nameW - progressW - lastW - extendedW);
 
       // Render
       let out = c.clear;
@@ -1392,9 +1398,9 @@ program
       }
 
       // Header row: STATUS | UNIT | AGENT | TASK / ACTIVITY | [TODAY | WEEK | TOKENS |] PROGRESS | LAST
-      let hdr = `  ${c.dim}${pad('STATUS', statusW)}${g}${pad('UNIT', unitW)}${g}${pad('AGENT', nameW)}${g}${pad('TASK / ACTIVITY', activityW)}${g}${showExtended ? `${pad('TODAY', todayW)}${g}${pad('WEEK', weekW)}${g}${pad('TOKENS', tokensW)}${g}` : ''}${pad('PROGRESS', progressW)}${g}${pad('LAST', lastW)}${c.reset}`;
+      let hdr = `  ${c.dim}${pad('STATUS', statusW)}${g}${pad('UNIT', unitW)}${g}${pad('TIER', tierW)}${g}${pad('AGENT', nameW)}${g}${pad('TASK / ACTIVITY', activityW)}${g}${showExtended ? `${pad('TODAY', todayW)}${g}${pad('WEEK', weekW)}${g}${pad('TOKENS', tokensW)}${g}` : ''}${pad('PROGRESS', progressW)}${g}${pad('LAST', lastW)}${c.reset}`;
       out += hdr + '\n';
-      out += `  ${c.dim}${'─'.repeat(statusW)}${g}${'─'.repeat(unitW)}${g}${'─'.repeat(nameW)}${g}${'─'.repeat(activityW)}${g}${showExtended ? `${'─'.repeat(todayW)}${g}${'─'.repeat(weekW)}${g}${'─'.repeat(tokensW)}${g}` : ''}${'─'.repeat(progressW)}${g}${'─'.repeat(lastW)}${c.reset}\n`;
+      out += `  ${c.dim}${'─'.repeat(statusW)}${g}${'─'.repeat(unitW)}${g}${'─'.repeat(tierW)}${g}${'─'.repeat(nameW)}${g}${'─'.repeat(activityW)}${g}${showExtended ? `${'─'.repeat(todayW)}${g}${'─'.repeat(weekW)}${g}${'─'.repeat(tokensW)}${g}` : ''}${'─'.repeat(progressW)}${g}${'─'.repeat(lastW)}${c.reset}\n`;
       usedRows += 2;
 
       for (const a of visible) {
@@ -1463,7 +1469,12 @@ program
           : '';
         const rowEnd = rowBg ? c.reset : '';
 
-        let row = `  ${rowBg}${st.clr}${pad(st.sym, statusW)}${c.reset}${rowBg}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${rowBg}${g}${c.white}${pad(displayName, nameW)}${c.reset}${rowBg}${g}${actClr}${pad(safeTaskText.slice(0, activityW), activityW)}${c.reset}${rowBg}${g}${showExtended ? `${todayClr}${pad(todayStr, todayW)}${c.reset}${rowBg}${g}${weekClr}${pad(weekStr, weekW)}${c.reset}${rowBg}${g}${tokenClr}${pad(tokenStr, tokensW)}${c.reset}${rowBg}${g}` : ''}${progStr}${rowBg}${g}${c.dim}${pad(lastStr, lastW)}${rowEnd}`;
+        // Tier label from model field
+        const modelRaw = (a.model || 'sonnet') as string;
+        const tierLabel = modelRaw.includes('opus') ? 'OPU' : modelRaw.includes('haiku') ? 'HAI' : 'SON';
+        const tierClr = modelRaw.includes('opus') ? c.purple : modelRaw.includes('haiku') ? c.green : c.blue;
+
+        let row = `  ${rowBg}${st.clr}${pad(st.sym, statusW)}${c.reset}${rowBg}${g}${c.dim}${pad(unitStr, unitW)}${c.reset}${rowBg}${g}${tierClr}${pad(tierLabel, tierW)}${c.reset}${rowBg}${g}${c.white}${pad(displayName, nameW)}${c.reset}${rowBg}${g}${actClr}${pad(safeTaskText.slice(0, activityW), activityW)}${c.reset}${rowBg}${g}${showExtended ? `${todayClr}${pad(todayStr, todayW)}${c.reset}${rowBg}${g}${weekClr}${pad(weekStr, weekW)}${c.reset}${rowBg}${g}${tokenClr}${pad(tokenStr, tokensW)}${c.reset}${rowBg}${g}` : ''}${progStr}${rowBg}${g}${c.dim}${pad(lastStr, lastW)}${rowEnd}`;
         out += row + '\n';
         usedRows++;
       }
@@ -1635,7 +1646,7 @@ program
       }
 
       out += `${c.dim}  ${pad('', usable)}${c.reset}\n`;
-      out += `${c.dim}  Refreshing every 10s · [p] ${expandedSections ? 'collapse' : 'expand all'} · [r] roster · [g] rocks · Ctrl+C to exit${c.reset}`;
+      out += `${c.dim}  Refreshing every 10s · [p] ${expandedSections ? 'collapse' : 'expand all'} · [r] roster · [c] comms · [g] rocks · Ctrl+C to exit${c.reset}`;
       process.stdout.write(out);
     }
 
@@ -1664,19 +1675,20 @@ program
 
       const nameW = 20;
       const unitW = 7;
+      const tierW2 = 4;
       const statusW = 8;
       const modelW = 7;
       const doneW = 6;
       const usable2 = cols - 4;
       const gap2 = 2;
       const g2 = '  ';
-      const descW = Math.max(20, usable2 - nameW - unitW - statusW - modelW - doneW - (gap2 * 5));
+      const descW = Math.max(20, usable2 - nameW - unitW - tierW2 - statusW - modelW - doneW - (gap2 * 6));
 
       let out = c.clear;
       out += `  ${c.bold}${c.blue}AGENT ROSTER${c.reset}  ${c.dim}${agents.filter(a => a.deployed).length} deployed${c.reset}\n`;
       out += `  ${c.dim}${'\u2500'.repeat(usable2)}${c.reset}\n`;
-      out += `  ${c.dim}${pad('AGENT', nameW)}${g2}${pad('UNIT', unitW)}${g2}${pad('STATUS', statusW)}${g2}${pad('MODEL', modelW)}${g2}${pad('DONE', doneW)}${g2}${pad('SPECIALTY / ROLE', descW)}${c.reset}\n`;
-      out += `  ${c.dim}${'\u2500'.repeat(nameW)}${g2}${'\u2500'.repeat(unitW)}${g2}${'\u2500'.repeat(statusW)}${g2}${'\u2500'.repeat(modelW)}${g2}${'\u2500'.repeat(doneW)}${g2}${'\u2500'.repeat(descW)}${c.reset}\n`;
+      out += `  ${c.dim}${pad('AGENT', nameW)}${g2}${pad('UNIT', unitW)}${g2}${pad('TIER', tierW2)}${g2}${pad('STATUS', statusW)}${g2}${pad('MODEL', modelW)}${g2}${pad('DONE', doneW)}${g2}${pad('SPECIALTY / ROLE', descW)}${c.reset}\n`;
+      out += `  ${c.dim}${'\u2500'.repeat(nameW)}${g2}${'\u2500'.repeat(unitW)}${g2}${'\u2500'.repeat(tierW2)}${g2}${'\u2500'.repeat(statusW)}${g2}${'\u2500'.repeat(modelW)}${g2}${'\u2500'.repeat(doneW)}${g2}${'\u2500'.repeat(descW)}${c.reset}\n`;
 
       const sorted = [...agents].sort((a, b) => {
         if (a.slug === '19q1') return -1;
@@ -1693,9 +1705,11 @@ program
         const done = completedCounts[name] || 0;
         const desc = (a.description || '').slice(0, descW);
         const nameClr = a.opStatus === 'AVAILABLE' ? c.white : a.opStatus === 'WORKING' ? c.blue : c.gray;
-        out += `  ${nameClr}${pad(name, nameW)}${c.reset}${g2}${c.dim}${pad(unit, unitW)}${c.reset}${g2}${st.clr}${pad(st.sym, statusW)}${c.reset}${g2}${c.dim}${pad(model, modelW)}${c.reset}${g2}${done > 0 ? c.green : c.dim}${pad(String(done), doneW)}${c.reset}${g2}${c.gray}${desc}${c.reset}\n`;
+        const rTierLabel = model.includes('opus') ? 'OPU' : model.includes('haiku') ? 'HAI' : 'SON';
+        const rTierClr = model.includes('opus') ? c.purple : model.includes('haiku') ? c.green : c.blue;
+        out += `  ${nameClr}${pad(name, nameW)}${c.reset}${g2}${c.dim}${pad(unit, unitW)}${c.reset}${g2}${rTierClr}${pad(rTierLabel, tierW2)}${c.reset}${g2}${st.clr}${pad(st.sym, statusW)}${c.reset}${g2}${c.dim}${pad(model, modelW)}${c.reset}${g2}${done > 0 ? c.green : c.dim}${pad(String(done), doneW)}${c.reset}${g2}${c.gray}${desc}${c.reset}\n`;
         if (a.opStatus === 'WORKING' && a.activity) {
-          out += `  ${' '.repeat(nameW)}${g2}${' '.repeat(unitW)}${g2}${c.blue}${pad('', statusW)}${c.reset}${g2}${' '.repeat(modelW)}${g2}${' '.repeat(doneW)}${g2}${c.cyan}${a.activity.slice(0, descW)}${c.reset}\n`;
+          out += `  ${' '.repeat(nameW)}${g2}${' '.repeat(unitW)}${g2}${' '.repeat(tierW2)}${g2}${c.blue}${pad('', statusW)}${c.reset}${g2}${' '.repeat(modelW)}${g2}${' '.repeat(doneW)}${g2}${c.cyan}${a.activity.slice(0, descW)}${c.reset}\n`;
         }
       }
 
@@ -1722,7 +1736,68 @@ program
         out += `  ${c.white}${pad(a.name || a.slug, nameW)}${c.reset}${g2}${c.dim}#${a.channel}${c.reset}\n`;
       }
 
-      out += `\n${c.dim}  Press [o] for ops board · Ctrl+C to exit${c.reset}`;
+      out += `\n${c.dim}  Press [o] for ops board · [c] comms · [g] rocks · Ctrl+C to exit${c.reset}`;
+      process.stdout.write(out);
+    }
+
+    // ── Comms screen (toggled with 'c') ──
+    async function renderComms() {
+      const cols = process.stdout.columns || 120;
+      const usable = cols - 4;
+      const g = '  ';
+
+      let feedItems: Array<Record<string, any>> = [];
+      if (existsSync(tokenPath)) {
+        try {
+          const token = readFileSync(tokenPath, 'utf-8').trim();
+          const resp = await fetch(`http://127.0.0.1:3030/api/collaboration-feed?hours=24&limit=20`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (resp.ok) {
+            const body = await resp.json() as Record<string, any>;
+            feedItems = (body.items || body.feed || body) as Array<Record<string, any>>;
+            if (!Array.isArray(feedItems)) feedItems = [];
+          }
+        } catch { /* dashboard not running */ }
+      }
+
+      const timeW = 8;
+      const typeW = 10;
+      const fromW = 16;
+      const toW = 16;
+      const summaryW = Math.max(20, usable - timeW - typeW - fromW - toW - (2 * 4));
+
+      let out = c.clear;
+      out += `  ${c.bold}${c.purple}COMMS${c.reset}  ${c.dim}Agent Collaboration Feed${c.reset}\n`;
+      out += `  ${c.dim}${'\u2500'.repeat(usable)}${c.reset}\n`;
+      out += `  ${c.dim}${pad('TIME', timeW)}${g}${pad('TYPE', typeW)}${g}${pad('FROM', fromW)}${g}${pad('TO', toW)}${g}${pad('SUMMARY', summaryW)}${c.reset}\n`;
+      out += `  ${c.dim}${'\u2500'.repeat(timeW)}${g}${'\u2500'.repeat(typeW)}${g}${'\u2500'.repeat(fromW)}${g}${'\u2500'.repeat(toW)}${g}${'\u2500'.repeat(summaryW)}${c.reset}\n`;
+
+      const typeStyles: Record<string, { label: string; clr: string }> = {
+        'delegate': { label: 'DELEGATE', clr: c.blue },
+        'message': { label: 'MESSAGE', clr: c.purple },
+        'review': { label: 'REVIEW', clr: c.green },
+        'qa_gate': { label: 'QA GATE', clr: c.green },
+        'qa-gate': { label: 'QA GATE', clr: c.green },
+        'escalate': { label: 'ESCALATE', clr: c.red },
+      };
+
+      if (feedItems.length === 0) {
+        out += `\n  ${c.dim}No collaboration events in the last 24 hours.${c.reset}\n`;
+      } else {
+        for (const item of feedItems) {
+          const ts = item.timestamp || item.time || '';
+          const timeStr = ts ? new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '--:--';
+          const rawType = (item.type || 'message').toLowerCase().replace(/\s+/g, '_');
+          const tStyle = typeStyles[rawType] || { label: rawType.toUpperCase(), clr: c.dim };
+          const from = (item.from || item.agent || '').slice(0, fromW);
+          const to = (item.to || item.target || '').slice(0, toW);
+          const summary = (item.summary || item.detail || item.message || '').replace(/\n/g, ' ').slice(0, summaryW);
+          out += `  ${c.dim}${pad(timeStr, timeW)}${c.reset}${g}${tStyle.clr}${pad(tStyle.label, typeW)}${c.reset}${g}${c.white}${pad(from, fromW)}${c.reset}${g}${c.white}${pad(to, toW)}${c.reset}${g}${c.gray}${summary}${c.reset}\n`;
+        }
+      }
+
+      out += `\n${c.dim}  Press [o] for ops board · [r] roster · [g] rocks · Ctrl+C to exit${c.reset}`;
       process.stdout.write(out);
     }
 
@@ -1757,6 +1832,80 @@ program
       let out = c.clear;
       out += `  ${c.bold}${c.blue}EOS ROCKS${c.reset}  ${c.dim}${rocksData.annualGoals.length} annual goals · ${rocksData.rocks.length} rocks${c.reset}\n`;
       out += `  ${c.dim}${'\u2500'.repeat(usable)}${c.reset}\n`;
+      // ── Goal Pulse Box ──
+      let goalMetrics: Record<string, any> | null = null;
+      if (existsSync(tokenPath)) {
+        try {
+          const token = readFileSync(tokenPath, 'utf-8').trim();
+          const briefResp = await fetch(`http://127.0.0.1:3030/api/daily-briefing`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (briefResp.ok) {
+            const briefData = await briefResp.json() as Record<string, any>;
+            goalMetrics = briefData.goalMetrics || null;
+          }
+        } catch { /* dashboard not running */ }
+      }
+
+      if (goalMetrics) {
+        const pulseW = Math.min(usable, 72);
+        const barW = 20;
+        const labelW = 14;
+        const valW = 14;
+        const statW = pulseW - labelW - valW - barW - 8;
+
+        function goalBar(pct: number, width: number): string {
+          const filled = Math.round((pct / 100) * width);
+          const empty = width - filled;
+          return `\u2588`.repeat(filled) + `${c.dim}\u2588${c.reset}`.repeat(empty);
+        }
+
+        function goalStatus(trajectory: string): string {
+          if (trajectory === 'on-track') return `${c.green}ON TRACK${c.reset}`;
+          if (trajectory === 'at-risk') return `${c.yellow}AT RISK${c.reset}`;
+          return `${c.red}OFF TRACK${c.reset}`;
+        }
+
+        function goalColor(trajectory: string): string {
+          if (trajectory === 'on-track') return c.green;
+          if (trajectory === 'at-risk') return c.yellow;
+          return c.red;
+        }
+
+        out += `  ${c.dim}\u250C${'─'.repeat(pulseW - 2)}\u2510${c.reset}\n`;
+        out += `  ${c.dim}\u2502${c.reset} ${c.bold}GOAL PULSE${c.reset}${' '.repeat(pulseW - 13)}${c.dim}\u2502${c.reset}\n`;
+        out += `  ${c.dim}\u251C${'─'.repeat(pulseW - 2)}\u2524${c.reset}\n`;
+
+        const lg = goalMetrics.leadGen || goalMetrics.lead_gen || {};
+        if (lg.current != null) {
+          const lgPct = lg.target ? Math.round((lg.current / lg.target) * 100) : lg.current;
+          const lgTraj = lg.trajectory || (lgPct >= 80 ? 'on-track' : lgPct >= 50 ? 'at-risk' : 'off-track');
+          const lgClr = goalColor(lgTraj);
+          out += `  ${c.dim}\u2502${c.reset} ${c.white}${pad('Lead Gen', labelW)}${c.reset}${lgClr}${pad(`${lg.current}% / ${lg.target || 100}%`, valW)}${c.reset} ${lgClr}${goalBar(lgPct, barW)}${c.reset} ${goalStatus(lgTraj)}${' '.repeat(Math.max(0, statW - 10))}${c.dim}\u2502${c.reset}\n`;
+        }
+
+        const ob = goalMetrics.onboarding || {};
+        if (ob.hitting != null || ob.current != null) {
+          const obHitting = ob.hitting != null ? ob.hitting : ob.current;
+          const obTotal = ob.total || ob.target || 1;
+          const obPct = Math.round((obHitting / obTotal) * 100);
+          const obTraj = ob.trajectory || (obPct >= 80 ? 'on-track' : obPct >= 50 ? 'at-risk' : 'off-track');
+          const obClr = goalColor(obTraj);
+          out += `  ${c.dim}\u2502${c.reset} ${c.white}${pad('Onboarding', labelW)}${c.reset}${obClr}${pad(`${obHitting} / ${obTotal}`, valW)}${c.reset} ${obClr}${goalBar(obPct, barW)}${c.reset} ${goalStatus(obTraj)}${' '.repeat(Math.max(0, statW - 10))}${c.dim}\u2502${c.reset}\n`;
+        }
+
+        const ad = goalMetrics.adoption || {};
+        if (ad.current != null) {
+          const adPct = ad.target ? Math.round((ad.current / ad.target) * 100) : ad.current;
+          const adTraj = ad.trajectory || (adPct >= 80 ? 'on-track' : adPct >= 50 ? 'at-risk' : 'off-track');
+          const adClr = goalColor(adTraj);
+          out += `  ${c.dim}\u2502${c.reset} ${c.white}${pad('Adoption', labelW)}${c.reset}${adClr}${pad(`${ad.current}% / ${ad.target || 100}%`, valW)}${c.reset} ${adClr}${goalBar(adPct, barW)}${c.reset} ${goalStatus(adTraj)}${' '.repeat(Math.max(0, statW - 10))}${c.dim}\u2502${c.reset}\n`;
+        }
+
+        out += `  ${c.dim}\u2514${'─'.repeat(pulseW - 2)}\u2518${c.reset}\n`;
+        out += '\n';
+      }
+
       out += `  ${c.dim}${pad('GOAL / ROCK / PROJECT', nameW)}${g}${pad('OWNER', ownerW)}${g}${pad('STATUS', statusW)}${g}${pad('UPDATED', updatedW)}${c.reset}\n`;
       out += `  ${c.dim}${'\u2500'.repeat(nameW)}${g}${'\u2500'.repeat(ownerW)}${g}${'\u2500'.repeat(statusW)}${g}${'\u2500'.repeat(updatedW)}${c.reset}\n`;
 
@@ -1797,7 +1946,7 @@ program
         }
       }
 
-      out += `\n${c.dim}  Press [o] for ops board · [r] roster · Ctrl+C to exit${c.reset}`;
+      out += `\n${c.dim}  Press [o] for ops board · [r] roster · [c] comms · Ctrl+C to exit${c.reset}`;
       process.stdout.write(out);
     }
 
@@ -1817,6 +1966,9 @@ program
             render();
           } else if (key === 'r' && currentScreen !== 'roster') {
             currentScreen = 'roster';
+            render();
+          } else if (key === 'c' && currentScreen !== 'comms') {
+            currentScreen = 'comms';
             render();
           } else if (key === 'g' && currentScreen !== 'rocks') {
             currentScreen = 'rocks';
