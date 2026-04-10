@@ -2079,9 +2079,8 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
       }
     } catch { /* best effort */ }
 
-    try {
-      execSync('git checkout -- src/', { cwd: PACKAGE_ROOT, stdio: 'pipe' });
-    } catch { /* no local src/ changes to reset */ }
+    // Skipped: git checkout -- src/ would discard custom source modifications
+    // Source mods are managed via commits to the fork instead
   }
 
   // 3. Stash any remaining local changes (package-lock.json, etc.)
@@ -2406,7 +2405,6 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
           console.log(`  ${GREEN}OK${RESET}  Rebuild succeeded`);
         } catch {
           console.error(`  ${YELLOW}WARN${RESET}  Rebuild failed — continuing with base build`);
-          try { execSync('git checkout -- src/', { cwd: PACKAGE_ROOT, stdio: 'pipe' }); } catch { /* best effort */ }
         }
       }
       if (result.needsReconciliation.length > 0) {
