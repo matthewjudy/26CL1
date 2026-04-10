@@ -2182,8 +2182,8 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
       const stream = query({ prompt, options: sdkOptions });
       const cronAgentSlug = sdkOptions.env?.CLEMENTINE_TEAM_AGENT || 'clementine';
       // Resolve agent display name and unit for activity logging
-      let cronAgentName = cronAgentSlug === 'clementine' ? 'Clementine' : cronAgentSlug;
-      let cronAgentUnit = cronAgentSlug === 'clementine' ? '19Q1' : '';
+      let cronAgentName = (cronAgentSlug === 'clementine' || cronAgentSlug === 'doug-stamper') ? 'Doug Stamper' : cronAgentSlug;
+      let cronAgentUnit = (cronAgentSlug === 'clementine' || cronAgentSlug === 'doug-stamper') ? '19S1' : '';
       try {
         const agentMdPath = path.join(AGENTS_DIR, cronAgentSlug, 'agent.md');
         if (fs.existsSync(agentMdPath)) {

@@ -1327,7 +1327,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
               mgr.register({ slug: d.name, name: (data.name as string) || d.name, unit: (data.unit as string) || '' });
             } catch { mgr.register({ slug: d.name, name: d.name }); }
           }
-          mgr.register({ slug: 'clementine', name: 'Clementine', unit: '19Q1' });
+          mgr.register({ slug: 'doug-stamper', name: 'Doug Stamper', unit: '19S1' });
         }
       }
       res.json({ states: mgr.getAll() });
@@ -3018,7 +3018,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         const agentsDir = path.join(VAULT_DIR, 'Meta', 'Clementine', 'agents');
         if (existsSync(agentsDir)) {
           try {
-            for (const a of [...all, { slug: 'clementine', name: 'Clementine', unit: '19Q1' }]) {
+            for (const a of [...all, { slug: 'doug-stamper', name: 'Doug Stamper', unit: '19S1' }]) {
               const tasksDir = path.join(agentsDir, a.slug, 'tasks');
               if (existsSync(tasksDir)) {
                 const taskFiles = readdirSync(tasksDir).filter(f => f.endsWith('.json'));
@@ -3573,8 +3573,8 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
       const q1Agent = {
         slug: '19q1',
-        name: '19Q1 (Clementine)',
-        unit: '19Q1',
+        name: '19S1 (Doug Stamper)',
+        unit: '19S1',
         deployed: true,
         model: 'opus',
         project: null,
@@ -3677,7 +3677,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
       const agentsDir2 = path.join(SYSTEM_DIR, 'agents');
       // Include Q1 (clementine) in the scan — it's not in the agent manager's `all` list
-      const allWithQ1 = [...all, { slug: 'clementine', name: 'Clementine', unit: '19Q1' }];
+      const allWithQ1 = [...all, { slug: 'doug-stamper', name: 'Doug Stamper', unit: '19S1' }];
       if (existsSync(agentsDir2)) {
         for (const a of allWithQ1) {
           const completedDir = path.join(agentsDir2, a.slug, 'tasks', 'completed');
