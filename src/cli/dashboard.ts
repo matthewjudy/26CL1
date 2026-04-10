@@ -1637,18 +1637,19 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         }
       } catch { /* ignore */ }
 
-      // Planning ideas from vault
+      // Planning ideas from vault (latest weekly plan)
       const ideas: string[] = [];
       try {
         const planDir = path.join(VAULT_DIR, 'Meta', 'Clementine', 'planning');
         if (existsSync(planDir)) {
-          const files = readdirSync(planDir).filter(f => f.endsWith('.md'));
-          for (const f of files.slice(0, 20)) {
-            try {
-              const raw = readFileSync(path.join(planDir, f), 'utf-8');
-              const { data, content } = matter(raw);
-              ideas.push((data.title as string) || content.split('\n')[0] || f);
-            } catch { ideas.push(f); }
+          const files = readdirSync(planDir).filter(f => f.endsWith('.md')).sort().reverse();
+          if (files.length > 0) {
+            const raw = readFileSync(path.join(planDir, files[0]), 'utf-8');
+            const lines = raw.split('\n');
+            for (const line of lines) {
+              const match = line.match(/^\d+\.\s*(.+)$/) || line.match(/^-\s+(.+)$/);
+              if (match && ideas.length < 5) ideas.push(match[1].trim());
+            }
           }
         }
       } catch { /* ignore */ }
@@ -1670,7 +1671,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         generated: new Date().toISOString(),
         goalMetrics,
         teamStatus,
-        overnightActivity,
+        overnightActivity: overnightActivity.slice(0, 30),
         ideas,
         briefData,
       };
