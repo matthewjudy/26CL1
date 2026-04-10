@@ -1647,6 +1647,12 @@ program
 
       out += `${c.dim}  ${pad('', usable)}${c.reset}\n`;
       out += `${c.dim}  Refreshing every 10s · [p] ${expandedSections ? 'collapse' : 'expand all'} · [r] roster · [c] comms · [g] rocks · Ctrl+C to exit${c.reset}`;
+      // Truncate output to terminal height to prevent overflow
+      const outputLines = out.split('\n');
+      const maxLines = (process.stdout.rows || 40) - 1;
+      if (outputLines.length > maxLines) {
+        out = outputLines.slice(0, maxLines).join('\n');
+      }
       process.stdout.write(out);
     }
 
@@ -1737,6 +1743,12 @@ program
       }
 
       out += `\n${c.dim}  Press [o] for ops board · [c] comms · [g] rocks · Ctrl+C to exit${c.reset}`;
+      // Truncate output to terminal height to prevent overflow
+      const rosterLines = out.split('\n');
+      const rosterMax = (process.stdout.rows || 40) - 1;
+      if (rosterLines.length > rosterMax) {
+        out = rosterLines.slice(0, rosterMax).join('\n');
+      }
       process.stdout.write(out);
     }
 
@@ -1798,6 +1810,12 @@ program
       }
 
       out += `\n${c.dim}  Press [o] for ops board · [r] roster · [g] rocks · Ctrl+C to exit${c.reset}`;
+      // Truncate output to terminal height to prevent overflow
+      const commsLines = out.split('\n');
+      const commsMax = (process.stdout.rows || 40) - 1;
+      if (commsLines.length > commsMax) {
+        out = commsLines.slice(0, commsMax).join('\n');
+      }
       process.stdout.write(out);
     }
 
@@ -1947,6 +1965,12 @@ program
       }
 
       out += `\n${c.dim}  Press [o] for ops board · [r] roster · [c] comms · Ctrl+C to exit${c.reset}`;
+      // Truncate output to terminal height to prevent overflow
+      const rocksLines = out.split('\n');
+      const rocksMax = (process.stdout.rows || 40) - 1;
+      if (rocksLines.length > rocksMax) {
+        out = rocksLines.slice(0, rocksMax).join('\n');
+      }
       process.stdout.write(out);
     }
 
@@ -1956,11 +1980,15 @@ program
 
       // Keyboard handling for screen switching
       if (process.stdin.isTTY) {
+        process.stdout.write('\x1b[?1049h'); // enter alternate screen buffer
+        process.on('exit', () => {
+          process.stdout.write('\x1b[?1049l'); // exit alternate screen buffer
+        });
         process.stdin.setRawMode(true);
         process.stdin.resume();
         process.stdin.setEncoding('utf8');
         process.stdin.on('data', (key: string) => {
-          if (key === '\u0003') { process.exit(); } // Ctrl+C
+          if (key === '\u0003') { process.stdout.write('\x1b[?1049l'); process.exit(); } // Ctrl+C
           if (key === 'p' && currentScreen === 'ops') {
             expandedSections = !expandedSections;
             render();

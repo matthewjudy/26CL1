@@ -157,8 +157,8 @@ export async function startSlack(
     const startTime = Date.now();
     let toolCalls = 0;
     appendActivityLog({
-      agent: 'Clementine',
-      unit: '19Q1',
+      agent: 'Doug Stamper',
+      unit: '19S1',
       type: 'start',
       trigger: triggerLabel,
       detail: msgPreview,
@@ -176,8 +176,8 @@ export async function startSlack(
           const friendly = friendlyToolName(toolName, toolInput);
           streamer.setToolStatus(friendly);
           appendActivityLog({
-            agent: 'Clementine',
-            unit: '19Q1',
+            agent: 'Doug Stamper',
+            unit: '19S1',
             type: 'tool',
             trigger: triggerLabel,
             detail: friendly,
@@ -191,8 +191,8 @@ export async function startSlack(
       const summaryLine = cleanResponse.split('\n').map((l: string) => l.trim()).find((l: string) => l.length > 0) || 'Completed';
       const shortSummary = summaryLine.length > 120 ? summaryLine.slice(0, 117) + '...' : summaryLine;
       appendActivityLog({
-        agent: 'Clementine',
-        unit: '19Q1',
+        agent: 'Doug Stamper',
+        unit: '19S1',
         type: 'done',
         trigger: triggerLabel,
         detail: shortSummary,
@@ -200,7 +200,7 @@ export async function startSlack(
       });
       if (toolCalls > 0) {
         writeConversationComplete({
-          agentSlug: 'clementine',
+          agentSlug: 'doug-stamper',
           trigger: triggerLabel,
           summary: shortSummary,
           durationMs: Date.now() - startTime,
@@ -220,8 +220,8 @@ export async function startSlack(
       logger.error({ err }, 'Error processing Slack message');
       await streamer.finalize(`Something went wrong: ${err}`);
       appendActivityLog({
-        agent: 'Clementine',
-        unit: '19Q1',
+        agent: 'Doug Stamper',
+        unit: '19S1',
         type: 'error',
         trigger: triggerLabel,
         detail: String(err).slice(0, 120),

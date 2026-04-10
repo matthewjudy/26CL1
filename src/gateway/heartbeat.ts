@@ -866,7 +866,7 @@ export class CronScheduler {
       }
     } catch { /* ignore — agent manager may not be ready */ }
     // Always register Clementine herself
-    this.agentState.register({ slug: 'clementine', name: 'Clementine', unit: '19Q1' });
+    this.agentState.register({ slug: 'doug-stamper', name: 'Doug Stamper', unit: '19S1' });
   }
 
   stop(): void {
@@ -1073,7 +1073,7 @@ export class CronScheduler {
     this.emitStatusChange();
 
     // Resolve agent identity for activity logging and state tracking
-    const agentIdentity: AgentIdentity = { slug: 'clementine', name: 'Clementine', unit: '19Q1' };
+    const agentIdentity: AgentIdentity = { slug: 'doug-stamper', name: 'Doug Stamper', unit: '19S1' };
     if (job.agentSlug) {
       agentIdentity.slug = job.agentSlug;
       try {
