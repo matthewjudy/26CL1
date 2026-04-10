@@ -303,6 +303,10 @@ function isSafeToScan(dirPath: string): boolean {
 let _projectCache: { projects: ProjectInfo[]; ts: number } | null = null;
 const PROJECT_CACHE_TTL = 30_000;
 
+// Cache daily briefing for 60s to avoid repeated aggregation
+let _briefingCache: { data: Record<string, unknown>; ts: number } | null = null;
+const BRIEFING_CACHE_TTL = 60_000;
+
 function scanProjects(): ProjectInfo[] {
   if (_projectCache && Date.now() - _projectCache.ts < PROJECT_CACHE_TTL) {
     return _projectCache.projects;
@@ -1573,6 +1577,231 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         }));
       res.json({ tree, independentRocks });
     } catch (err) { res.status(500).json({ error: String(err) }); }
+  });
+
+  // ── Daily Briefing ──────────────────────────────────────────────────
+  app.get('/api/daily-briefing', async (_req, res) => {
+    try {
+      if (_briefingCache && Date.now() - _briefingCache.ts < BRIEFING_CACHE_TTL) {
+        res.json(_briefingCache.data);
+        return;
+      }
+
+      const gw = await getGateway();
+      const mgr = gw.getAgentManager();
+      const allAgents = mgr.listAll();
+
+      // Agent states from bot-status.json
+      let botStatuses: Record<string, { status: string; activity?: { trigger?: string } }> = {};
+      try {
+        const statusPath = path.join(BASE_DIR, '.bot-status.json');
+        if (existsSync(statusPath)) {
+          botStatuses = JSON.parse(readFileSync(statusPath, 'utf-8'));
+        }
+      } catch { /* ignore */ }
+
+      // Goal metrics from eos-data.json
+      let goalMetrics: unknown = null;
+      try {
+        const rocksData = loadRocksData();
+        goalMetrics = (rocksData as Record<string, unknown>).goalMetrics || null;
+      } catch { /* ignore */ }
+
+      // Morning brief data
+      let briefData: unknown = null;
+      try {
+        const briefPath = path.join(BASE_DIR, 'morning-brief', 'latest.json');
+        if (existsSync(briefPath)) {
+          briefData = JSON.parse(readFileSync(briefPath, 'utf-8'));
+        }
+      } catch { /* ignore */ }
+
+      // Overnight activity (last 12 hours)
+      const overnightActivity: unknown[] = [];
+      try {
+        const logPath = path.join(BASE_DIR, '.activity-log.jsonl');
+        if (existsSync(logPath)) {
+          const content = readFileSync(logPath, 'utf-8');
+          const lines = content.trim().split('\n').filter(Boolean);
+          const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+              const entry = JSON.parse(lines[i]);
+              if (new Date(entry.ts).getTime() >= cutoff) {
+                overnightActivity.push(entry);
+              } else {
+                break; // entries are chronological, stop once we pass the cutoff
+              }
+            } catch { /* skip */ }
+          }
+        }
+      } catch { /* ignore */ }
+
+      // Planning ideas from vault
+      const ideas: string[] = [];
+      try {
+        const planDir = path.join(VAULT_DIR, 'Meta', 'Clementine', 'planning');
+        if (existsSync(planDir)) {
+          const files = readdirSync(planDir).filter(f => f.endsWith('.md'));
+          for (const f of files.slice(0, 20)) {
+            try {
+              const raw = readFileSync(path.join(planDir, f), 'utf-8');
+              const { data, content } = matter(raw);
+              ideas.push((data.title as string) || content.split('\n')[0] || f);
+            } catch { ideas.push(f); }
+          }
+        }
+      } catch { /* ignore */ }
+
+      // Team status
+      const teamStatus = allAgents.map(a => {
+        const bs = botStatuses[a.slug] || {};
+        return {
+          slug: a.slug,
+          name: a.name,
+          model: a.model || 'unknown',
+          status: (bs as Record<string, unknown>).status || 'offline',
+          focus: (bs.activity as Record<string, unknown> | undefined)?.trigger || null,
+        };
+      });
+
+      const result: Record<string, unknown> = {
+        date: new Date().toISOString().slice(0, 10),
+        generated: new Date().toISOString(),
+        goalMetrics,
+        teamStatus,
+        overnightActivity,
+        ideas,
+        briefData,
+      };
+
+      _briefingCache = { data: result, ts: Date.now() };
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── Collaboration Feed ──────────────────────────────────────────────
+  app.get('/api/collaboration-feed', async (req, res) => {
+    try {
+      const agentFilter = req.query.agent as string | undefined;
+      const hours = Math.max(1, parseInt(String(req.query.hours ?? '24'), 10));
+      const typeFilter = req.query.type as string | undefined;
+      const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '50'), 10)));
+
+      const cutoff = Date.now() - hours * 60 * 60 * 1000;
+      const feed: Array<{ type: string; ts: string; from: string; to: string; content: string }> = [];
+
+      // Team bus messages
+      try {
+        const gw = await getGateway();
+        const messages = gw.getTeamBus().getRecentMessages(200);
+        for (const msg of messages) {
+          if (new Date(msg.timestamp).getTime() < cutoff) continue;
+          if (agentFilter && msg.fromAgent !== agentFilter && msg.toAgent !== agentFilter) continue;
+
+          // Classify message type
+          let msgType = 'message';
+          const lc = msg.content.toLowerCase();
+          if (lc.includes('cross-review') || lc.includes('review')) msgType = 'cross-review';
+          else if (lc.includes('qa') || lc.includes('quality')) msgType = 'qa-gate';
+          else if (lc.includes('escalat') || lc.includes('urgent') || lc.includes('blocked')) msgType = 'escalation';
+
+          if (typeFilter && msgType !== typeFilter) continue;
+          feed.push({
+            type: msgType,
+            ts: msg.timestamp,
+            from: msg.fromAgent,
+            to: msg.toAgent,
+            content: msg.content,
+          });
+        }
+      } catch { /* ignore */ }
+
+      // Delegation events from activity log
+      try {
+        const logPath = path.join(BASE_DIR, '.activity-log.jsonl');
+        if (existsSync(logPath)) {
+          const content = readFileSync(logPath, 'utf-8');
+          const lines = content.trim().split('\n').filter(Boolean);
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+              const entry = JSON.parse(lines[i]);
+              if (new Date(entry.ts).getTime() < cutoff) break;
+              if (entry.type !== 'invoke') continue;
+              if (agentFilter && entry.slug !== agentFilter && entry.agent !== agentFilter) continue;
+              if (typeFilter && typeFilter !== 'invoke') continue;
+              feed.push({
+                type: 'invoke',
+                ts: entry.ts,
+                from: entry.agent || '',
+                to: entry.slug || '',
+                content: entry.detail || '',
+              });
+            } catch { /* skip */ }
+          }
+        }
+      } catch { /* ignore */ }
+
+      // Sort newest first and apply limit
+      feed.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+      res.json(feed.slice(0, limit));
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── Agent Detail ────────────────────────────────────────────────────
+  app.get('/api/agent/:slug/detail', async (req, res) => {
+    try {
+      const { slug } = req.params;
+      const { getAgentActivity, getAgentPerformance } = await import('../agent/agent-activity.js');
+
+      // Activity
+      const activity = getAgentActivity(slug, undefined, 50);
+
+      // Performance
+      const performance = getAgentPerformance(slug);
+
+      // Pending tasks from vault
+      const pendingTasks: unknown[] = [];
+      try {
+        const tasksDir = path.join(VAULT_DIR, 'Meta', 'Clementine', 'agents', slug, 'tasks');
+        if (existsSync(tasksDir)) {
+          const taskFiles = readdirSync(tasksDir).filter(f => f.endsWith('.json'));
+          for (const tf of taskFiles) {
+            try {
+              const task = JSON.parse(readFileSync(path.join(tasksDir, tf), 'utf-8'));
+              pendingTasks.push(task);
+            } catch { /* skip */ }
+          }
+        }
+      } catch { /* ignore */ }
+
+      // Config from agent profile
+      let config: Record<string, unknown> = {};
+      try {
+        const gw = await getGateway();
+        const mgr = gw.getAgentManager();
+        const profile = mgr.listAll().find(a => a.slug === slug);
+        if (profile) {
+          config = {
+            model: profile.model || null,
+            tier: profile.tier,
+            unit: profile.unit || null,
+            canMessage: profile.team?.canMessage || [],
+            allowedTools: profile.team?.allowedTools || [],
+            channelName: profile.team?.channelName || null,
+            deployed: profile.deployed ?? false,
+          };
+        }
+      } catch { /* ignore */ }
+
+      res.json({ slug, activity, performance, pendingTasks, config });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   app.get('/api/browse-dir', (req, res) => {

@@ -116,6 +116,54 @@ export function getAgentSummary(slug: string, date?: string): {
 }
 
 /**
+ * Get performance metrics for an agent.
+ * Reads the per-agent activity.jsonl and computes daily and overall stats.
+ */
+export function getAgentPerformance(slug: string): {
+  tasksToday: number;
+  errorsToday: number;
+  avgDurationMs: number;
+  totalCompleted: number;
+} {
+  const logPath = path.join(AGENTS_DIR, slug, 'activity.jsonl');
+  if (!existsSync(logPath)) return { tasksToday: 0, errorsToday: 0, avgDurationMs: 0, totalCompleted: 0 };
+
+  try {
+    const content = readFileSync(logPath, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    const today = new Date().toISOString().slice(0, 10);
+
+    let tasksToday = 0;
+    let errorsToday = 0;
+    let totalCompleted = 0;
+    let totalDurationMs = 0;
+    let doneWithDuration = 0;
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as ActivityEntry;
+        if (entry.type === 'done') {
+          totalCompleted++;
+          if (entry.durationMs) { totalDurationMs += entry.durationMs; doneWithDuration++; }
+          if (entry.ts.startsWith(today)) tasksToday++;
+        } else if (entry.type === 'error') {
+          if (entry.ts.startsWith(today)) errorsToday++;
+        }
+      } catch { /* skip bad line */ }
+    }
+
+    return {
+      tasksToday,
+      errorsToday,
+      avgDurationMs: doneWithDuration > 0 ? Math.round(totalDurationMs / doneWithDuration) : 0,
+      totalCompleted,
+    };
+  } catch {
+    return { tasksToday: 0, errorsToday: 0, avgDurationMs: 0, totalCompleted: 0 };
+  }
+}
+
+/**
  * Get all agents' summaries for today.
  */
 export function getTeamSummary(date?: string): Array<{ slug: string; summary: ReturnType<typeof getAgentSummary> }> {
