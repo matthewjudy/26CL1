@@ -5765,7 +5765,10 @@ function getDashboardHTML(token: string): string {
     </div>
     <div class="nav-section">
       <div class="nav-section-title">Team</div>
-      <div class="nav-item active" data-page="team">
+      <div class="nav-item active" data-page="briefing">
+        <span class="nav-icon">&#9788;</span> Daily Briefing
+      </div>
+      <div class="nav-item" data-page="team">
         <span class="nav-icon">&#129302;</span> My Team
         <span class="nav-badge" id="nav-team-count">0</span>
       </div>
@@ -6019,7 +6022,7 @@ function getDashboardHTML(token: string): string {
     </div>
 
     <!-- ═══ Team Page — The Office ═══ -->
-    <div class="page active" id="page-team">
+    <div class="page" id="page-team">
       <!-- Today's Briefing (calendar + action emails) -->
       <div id="team-briefing" style="margin-bottom:12px"></div>
 
@@ -6224,6 +6227,13 @@ function getDashboardHTML(token: string): string {
       <div class="page-title">Settings</div>
       <p style="color:var(--text-muted);margin-bottom:16px">Manage API keys and configuration. Changes are saved to <code>~/.clementine/.env</code> and take effect on daemon restart.</p>
       <div id="settings-content"><div class="empty-state">Loading settings...</div></div>
+    </div>
+
+    <!-- Daily Briefing Page -->
+    <div class="page active" id="page-briefing">
+      <div id="briefing-content" style="padding:16px;max-width:1200px;margin:0 auto;">
+        <div style="color:#7d8590;text-align:center;padding:40px;">Loading briefing...</div>
+      </div>
     </div>
 
   </div><!-- /content -->
@@ -6571,7 +6581,7 @@ function apiFetch(url, opts) {
 // ── Kiosk mode ──
 var isKiosk = new URLSearchParams(window.location.search).has('kiosk');
 
-let currentPage = isKiosk ? 'ops-board' : 'team';
+let currentPage = isKiosk ? 'ops-board' : 'briefing';
 if (isKiosk) {
   document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
   var opsPage = document.getElementById('page-ops-board');
@@ -6608,6 +6618,7 @@ function showPage(page) {
   if (page === 'ops-board') refreshOpsBoard();
   if (page === 'graph') refreshGraph();
   if (page === 'rocks') refreshRocks();
+  if (page === 'briefing') refreshBriefing();
 }
 
 document.querySelectorAll('.nav-item').forEach(item => {
@@ -8747,6 +8758,179 @@ async function checkVersion() {
   } catch { /* ignore */ }
 }
 
+// ── Daily Briefing ───────────────────────────────────────────────────
+async function refreshBriefing() {
+  var container = document.getElementById('briefing-content');
+  if (!container) return;
+  try {
+    var r = await apiFetch('/api/daily-briefing');
+    var d = await r.json();
+
+    var tierBadge = function(model) {
+      var colors = { opus: '#a371f7', sonnet: '#58a6ff', haiku: '#3fb950' };
+      var labels = { opus: 'OPU', sonnet: 'SON', haiku: 'HAI' };
+      var bgColors = { opus: '#2d1f4e', sonnet: '#1a2744', haiku: '#1a2e1a' };
+      return '<span style="background:' + (bgColors[model]||'#161b22') + ';color:' + (colors[model]||'#7d8590') + ';padding:1px 4px;border-radius:3px;font-size:10px;font-weight:700">' + (labels[model]||model) + '</span>';
+    };
+
+    var trajColor = function(t) {
+      if (t === 'on-track') return '#3fb950';
+      if (t === 'at-risk') return '#d29922';
+      return '#e74c3c';
+    };
+    var trajBg = function(t) {
+      if (t === 'on-track') return '#0d2818';
+      if (t === 'at-risk') return '#2a1a0d';
+      return '#2a0d0d';
+    };
+
+    var gm = d.goalMetrics || {};
+    var lg = gm.leadGenGrowth || {};
+    var fo = gm.newFranchiseeOnboarding || {};
+    var va = gm.vendorAdoption || {};
+
+    function goalCard(title, current, target, trajectory) {
+      var c = trajColor(trajectory);
+      var bg = trajBg(trajectory);
+      return '<div style="flex:1;background:' + bg + ';border:1px solid #30363d;border-radius:8px;padding:12px 16px;min-width:180px">'
+        + '<div style="color:#7d8590;font-size:11px;margin-bottom:4px">' + esc(title) + '</div>'
+        + '<div style="font-size:24px;font-weight:700;color:' + c + '">' + esc(String(current)) + '</div>'
+        + '<div style="color:#7d8590;font-size:11px;margin-top:2px">Target: ' + esc(String(target)) + '</div>'
+        + '</div>';
+    }
+
+    // Header bar
+    var html = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">';
+    html += '<div>';
+    html += '<div style="font-size:20px;font-weight:700;color:#c9d1d9">' + esc(d.date || 'Daily Briefing') + '</div>';
+    html += '<div style="color:#7d8590;font-size:12px">Doug Stamper | Generated ' + esc(d.generated || '') + '</div>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:10px;flex-wrap:wrap">';
+    html += goalCard('Lead Gen Growth', lg.current || '--', lg.target || '--', lg.trajectory || 'off-track');
+    html += goalCard('Onboarding', (fo.hittingTarget || '--') + '/' + (fo.total || '--'), 'Target', fo.trajectory || 'off-track');
+    html += goalCard('Vendor Adoption', va.current || '--', va.target || '--', va.trajectory || 'off-track');
+    html += '</div></div>';
+
+    // Two-column layout
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">';
+
+    // ── LEFT COLUMN: Action ──
+    html += '<div>';
+
+    // Attention Required
+    var attention = (d.briefData && d.briefData.attention) || [];
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:12px">';
+    html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">Attention Required</div>';
+    if (attention.length === 0) {
+      html += '<div style="color:#7d8590;font-size:13px">No items requiring attention.</div>';
+    } else {
+      for (var ai = 0; ai < attention.length; ai++) {
+        var att = attention[ai];
+        var attColor = (att.level === 'red') ? '#e74c3c' : '#d29922';
+        html += '<div style="padding:6px 0;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:8px">';
+        html += '<span style="color:' + attColor + ';font-size:16px">&#9679;</span>';
+        html += '<span style="color:#c9d1d9;font-size:13px">' + esc(att.text || att.title || JSON.stringify(att)) + '</span>';
+        html += '</div>';
+      }
+    }
+    html += '</div>';
+
+    // Today's Calendar
+    var calendar = (d.briefData && (d.briefData.calendarToday || d.briefData.calendar)) || [];
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:12px">';
+    html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">Today\'s Calendar</div>';
+    if (calendar.length === 0) {
+      html += '<div style="color:#7d8590;font-size:13px">No calendar items today.</div>';
+    } else {
+      for (var ci = 0; ci < calendar.length; ci++) {
+        var cal = calendar[ci];
+        var prepReady = cal.prepStatus === 'ready' || cal.prep === 'ready';
+        var prepColor = prepReady ? '#3fb950' : '#d29922';
+        var prepLabel = prepReady ? 'Prep ready' : 'Prep pending';
+        html += '<div style="padding:6px 0;border-bottom:1px solid #21262d;display:flex;align-items:center;justify-content:space-between">';
+        html += '<div style="display:flex;gap:8px;align-items:center">';
+        html += '<span style="color:#7d8590;font-size:12px;min-width:50px">' + esc(cal.time || '') + '</span>';
+        html += '<span style="color:#c9d1d9;font-size:13px">' + esc(cal.title || '') + '</span>';
+        html += '</div>';
+        html += '<span style="background:' + (prepReady ? '#0d2818' : '#2a1a0d') + ';color:' + prepColor + ';padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">' + prepLabel + '</span>';
+        html += '</div>';
+      }
+    }
+    html += '</div>';
+
+    // Vendor Watch
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:12px">';
+    html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">Vendor Watch</div>';
+    html += '<div style="color:#7d8590;font-size:13px">Vendor commitment data populates as agents run.</div>';
+    html += '</div>';
+
+    html += '</div>'; // end left column
+
+    // ── RIGHT COLUMN: Awareness ──
+    html += '<div>';
+
+    // Team Status
+    var teamStatus = d.teamStatus || [];
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:12px">';
+    html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">Team Status</div>';
+    if (teamStatus.length === 0) {
+      html += '<div style="color:#7d8590;font-size:13px">No team data available.</div>';
+    } else {
+      html += '<div style="display:grid;grid-template-columns:auto 1fr 2fr;gap:4px 8px;font-size:12px">';
+      for (var ti = 0; ti < teamStatus.length; ti++) {
+        var agent = teamStatus[ti];
+        html += tierBadge(agent.model || 'haiku');
+        html += '<span style="color:#c9d1d9">' + esc(agent.name || agent.slug || '') + '</span>';
+        html += '<span style="color:#7d8590">' + esc(agent.focus || agent.status || '') + '</span>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // From Sunday Planning
+    var ideas = d.ideas || [];
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:12px">';
+    html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">From Sunday Planning</div>';
+    if (ideas.length === 0) {
+      html += '<div style="color:#7d8590;font-size:13px">No ideas recorded.</div>';
+    } else {
+      for (var ii = 0; ii < ideas.length; ii++) {
+        html += '<div style="padding:4px 0;color:#c9d1d9;font-size:13px;border-bottom:1px solid #21262d">' + esc(ideas[ii]) + '</div>';
+      }
+    }
+    html += '</div>';
+
+    // Overnight Activity
+    var overnight = d.overnightActivity || [];
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:12px">';
+    html += '<details>';
+    html += '<summary style="font-weight:700;color:#c9d1d9;font-size:14px;cursor:pointer;outline:none">Overnight Activity (' + overnight.length + ')</summary>';
+    if (overnight.length === 0) {
+      html += '<div style="color:#7d8590;font-size:13px;margin-top:8px">No overnight activity.</div>';
+    } else {
+      html += '<div style="margin-top:8px">';
+      for (var oi = 0; oi < overnight.length; oi++) {
+        var ov = overnight[oi];
+        html += '<div style="padding:4px 0;border-bottom:1px solid #21262d;font-size:12px">';
+        html += '<span style="color:#7d8590;margin-right:8px">' + esc(ov.ts || '') + '</span>';
+        html += '<span style="color:#58a6ff;margin-right:8px">' + esc(ov.agent || '') + '</span>';
+        html += '<span style="color:#c9d1d9">' + esc(ov.detail || '') + '</span>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+    html += '</details>';
+    html += '</div>';
+
+    html += '</div>'; // end right column
+    html += '</div>'; // end grid
+
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = '<div style="color:#7d8590;text-align:center;padding:40px;">Failed to load briefing: ' + e + '</div>';
+  }
+}
+
 // ── Refresh orchestrator ──────────────────
 function refreshAll() {
   refreshStatus();
@@ -8762,6 +8946,7 @@ function refreshAll() {
   if (currentPage === 'team') refreshTeam();
   if (currentPage === 'ops-board') refreshOpsBoard();
   if (currentPage === 'rocks') refreshRocks();
+  if (currentPage === 'briefing') refreshBriefing();
   checkVersion();
 }
 
