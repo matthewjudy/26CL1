@@ -1589,7 +1589,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
       const gw = await getGateway();
       const mgr = gw.getAgentManager();
-      const allAgents = mgr.listAll();
+      const allAgents = mgr.listAll().filter(a => a.slug !== '19q1' && a.slug !== 'clementine');
 
       // Agent states from bot-status.json
       let botStatuses: Record<string, { status: string; activity?: { trigger?: string } }> = {};
@@ -2588,7 +2588,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     try {
       const gw = await getGateway();
       const router = gw.getTeamRouter();
-      const agents = router.listTeamAgents();
+      const agents = router.listTeamAgents().filter(a => a.slug !== '19q1' && a.slug !== 'clementine');
       res.json(agents.map(a => ({
         slug: a.slug,
         name: a.name,
@@ -2955,7 +2955,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
 
       const gw = await getGateway();
       const mgr = gw.getAgentManager();
-      const all = mgr.listAll();
+      const all = mgr.listAll().filter(a => a.slug !== '19q1' && a.slug !== 'clementine');
 
       // Bot statuses (now includes activity context)
       let botStatuses: Record<string, { status: string; botTag?: string; activity?: { trigger?: string; action?: string; since?: string; lastSummary?: string; lastCompletedAt?: string } }> = {};
@@ -8925,7 +8925,7 @@ async function refreshBriefing() {
     html += '<div>';
 
     // Attention Required
-    var attention = (d.briefData && d.briefData.attention) || [];
+    var attention = (d.briefData && (d.briefData.attention_required || d.briefData.attention || d.briefData.emailAction)) || [];
     html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:12px">';
     html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">Attention Required</div>';
     if (attention.length === 0) {
@@ -8936,7 +8936,7 @@ async function refreshBriefing() {
         var attColor = (att.level === 'red') ? '#e74c3c' : '#d29922';
         html += '<div style="padding:6px 0;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:8px">';
         html += '<span style="color:' + attColor + ';font-size:16px">&#9679;</span>';
-        html += '<span style="color:#c9d1d9;font-size:13px">' + esc(att.text || att.title || JSON.stringify(att)) + '</span>';
+        html += '<span style="color:#c9d1d9;font-size:13px">' + esc(att.text || att.title || att.summary || att.description || att.subject || JSON.stringify(att)) + '</span>';
         html += '</div>';
       }
     }
