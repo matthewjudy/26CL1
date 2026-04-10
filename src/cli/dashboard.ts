@@ -7982,7 +7982,7 @@ async function refreshOpsBoard() {
             + '<td style="' + tdCss + '"><span style="color:' + clr + ';font-weight:600">' + ico + ' ' + lbl + '</span></td>'
             + '<td style="' + tdCss + '">' + tierHtml + '</td>'
             + '<td style="' + tdCss + '">' + unitCell + '</td>'
-            + '<td onclick="showAgentDetail(\'' + esc(a.slug) + '\')" style="' + tdCss + ';font-weight:600;cursor:pointer;color:#58a6ff">' + displayName + '</td>'
+            + '<td data-agent-slug="' + esc(a.slug) + '" style="' + tdCss + ';font-weight:600;cursor:pointer;color:#58a6ff" onclick="showAgentDetail(this.dataset.agentSlug)">' + displayName + '</td>'
             + '<td style="' + tdCss + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0">' + taskText + '</td>'
             + '<td style="' + tdCss + '">' + progressCell + '</td>'
             + '<td style="' + tdCss + '">' + lastRunText + '</td>'
@@ -8945,7 +8945,7 @@ async function refreshBriefing() {
     // Today's Calendar
     var calendar = (d.briefData && (d.briefData.calendarToday || d.briefData.calendar)) || [];
     html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:12px">';
-    html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">Today\'s Calendar</div>';
+    html += '<div style="font-weight:700;color:#c9d1d9;margin-bottom:8px;font-size:14px">Calendar Today</div>';
     if (calendar.length === 0) {
       html += '<div style="color:#7d8590;font-size:13px">No calendar items today.</div>';
     } else {
@@ -9965,7 +9965,7 @@ async function showAgentDetail(slug) {
     var config = d.config || {};
     var configJson = JSON.stringify(config, null, 2);
     html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden">';
-    html += '<div onclick="var el=document.getElementById(\'agent-detail-config\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'" style="padding:14px 16px;cursor:pointer;display:flex;align-items:center;justify-content:space-between">';
+    html += '<div onclick="var el=document.getElementById(&quot;agent-detail-config&quot;);el.style.display=el.style.display===&quot;none&quot;?&quot;block&quot;:&quot;none&quot;" style="padding:14px 16px;cursor:pointer;display:flex;align-items:center;justify-content:space-between">';
     html += '<span style="font-weight:700;color:#c9d1d9;font-size:14px">Configuration</span>';
     html += '<span style="color:#7d8590;font-size:12px">Click to toggle</span>';
     html += '</div>';
