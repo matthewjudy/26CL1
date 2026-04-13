@@ -12,7 +12,7 @@ import pino from 'pino';
 import { VAULT_MIGRATIONS_STATE , localISO } from '../config.js';
 import type { MigrationState, VaultMigration, VaultMigrationSummary } from './types.js';
 
-const logger = pino({ name: 'clementine.vault-migrations' });
+const logger = pino({ name: 'wcmdr.vault-migrations' });
 
 /** Load the migration state file. Returns empty state if missing or corrupt. */
 function loadState(): MigrationState {

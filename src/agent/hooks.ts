@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Security enforcement and audit logging.
+ * Watch Commander — Security enforcement and audit logging.
  *
  * Real enforcement via SDK canUseTool callback + disallowed_tools for heartbeats.
  * Layers:

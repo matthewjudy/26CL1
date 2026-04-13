@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Discord channel adapter.
+ * Watch Commander — Discord channel adapter.
  *
  * DM-only personal assistant bot using discord.js v14.
  * Features: streaming responses, message chunking, model switching,
@@ -55,7 +55,7 @@ import type { NotificationDispatcher } from '../gateway/notifications.js';
 import type { Gateway } from '../gateway/router.js';
 import { findProjectByName, getLinkedProjects } from '../agent/assistant.js';
 
-const logger = pino({ name: 'clementine.discord' });
+const logger = pino({ name: 'wcmdr.discord' });
 
 const BOT_MESSAGE_TRACKING_LIMIT = 100;
 

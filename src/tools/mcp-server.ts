@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Standalone MCP stdio server for memory and task tools.
+ * Watch Commander — Standalone MCP stdio server for memory and task tools.
  *
  * Runs as a child process. The Claude CLI connects via stdio transport.
  *
@@ -75,7 +75,7 @@ const CRON_FILE = path.join(SYSTEM_DIR, 'CRON.md');
 
 // Log to stderr so stdout stays clean for MCP stdio
 const logger = pino(
-  { name: 'clementine.mcp', level: process.env.LOG_LEVEL ?? 'info' },
+  { name: 'wcmdr.mcp', level: process.env.LOG_LEVEL ?? 'info' },
   pino.destination(2),
 );
 
@@ -920,7 +920,10 @@ server.tool(
     }
 
     const body = content ?? `# ${title}\n`;
-    const noteContent = `---
+    const hasFrontmatter = body.trimStart().startsWith('---');
+    const noteContent = hasFrontmatter
+      ? body
+      : `---
 type: ${note_type}
 created: "${todayStr()}"
 tags:

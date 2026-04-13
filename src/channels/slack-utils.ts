@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Shared Slack utilities.
+ * Watch Commander — Shared Slack utilities.
  *
  * Extracted from slack.ts so agent bot clients can reuse streaming,
  * markdown conversion, and chunked sending without importing the monolith.

@@ -1,5 +1,5 @@
 /**
- * Clementine Command Center — Local web dashboard.
+ * Watch Commander Command Center — Local web dashboard.
  *
  * Serves an inline HTML SPA with JSON API from Express.
  * Binds to 127.0.0.1 by default; use --host 0.0.0.0 or DASHBOARD_HOST env var for remote access.
@@ -33,7 +33,9 @@ import { getMorningBriefHTML, ensureBriefDirs, briefPaths, MORNING_BRIEF_PROMPT 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const BASE_DIR = process.env.CLEMENTINE_HOME || path.join(os.homedir(), '.clementine');
+const _newDir = path.join(os.homedir(), '.watchcommander');
+const _legacyDir = path.join(os.homedir(), '.clementine');
+const BASE_DIR = process.env.WATCHCOMMANDER_HOME || process.env.CLEMENTINE_HOME || (existsSync(_newDir) ? _newDir : existsSync(_legacyDir) ? _legacyDir : _newDir);
 const PACKAGE_ROOT = path.resolve(__dirname, '..', '..');
 const DIST_ENTRY = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
 const ENV_PATH = path.join(BASE_DIR, '.env');
@@ -74,6 +76,7 @@ async function getGateway(): Promise<Gateway> {
   // instead of spin-looping with setTimeout (which starves the event loop)
   if (!gatewayInitPromise) {
     gatewayInitPromise = (async () => {
+      process.env.WATCHCOMMANDER_HOME = BASE_DIR;
       process.env.CLEMENTINE_HOME = BASE_DIR;
       delete process.env['CLAUDECODE'];
       const { PersonalAssistant } = await import('../agent/assistant.js');
@@ -506,11 +509,11 @@ function getAssistantName(): string {
     const match = content.match(/^ASSISTANT_NAME=(.+)$/m);
     if (match) return match[1].trim();
   }
-  return 'Clementine';
+  return 'Watch Commander';
 }
 
 function getPidFilePath(): string {
-  const name = getAssistantName().toLowerCase();
+  const name = getAssistantName().toLowerCase().replace(/\s+/g, '-');
   return path.join(BASE_DIR, `.${name}.pid`);
 }
 
@@ -809,7 +812,7 @@ async function getMemory(): Promise<Record<string, unknown>> {
 }
 
 function getLogs(lines: number): string {
-  const logFile = path.join(BASE_DIR, 'logs', 'clementine.log');
+  const logFile = path.join(BASE_DIR, 'logs', 'watchcommander.log');
   if (!existsSync(logFile)) return '';
   try {
     const content = readFileSync(logFile, 'utf-8');
@@ -983,7 +986,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: BASE_DIR,
-        env: { ...process.env, CLEMENTINE_HOME: BASE_DIR },
+        env: { ...process.env, WATCHCOMMANDER_HOME: BASE_DIR, CLEMENTINE_HOME: BASE_DIR },
       });
       child.unref();
       res.json({ ok: true, message: 'Morning brief generation started' });
@@ -1065,7 +1068,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
     }
 
     // Scan recent log lines for chat messages and heartbeat events
-    const logFile = path.join(BASE_DIR, 'logs', 'clementine.log');
+    const logFile = path.join(BASE_DIR, 'logs', 'watchcommander.log');
     if (existsSync(logFile)) {
       try {
         const content = readFileSync(logFile, 'utf-8');
@@ -1266,7 +1269,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         detached: true,
         stdio: 'ignore',
         cwd: BASE_DIR,
-        env: { ...process.env, CLEMENTINE_HOME: BASE_DIR },
+        env: { ...process.env, WATCHCOMMANDER_HOME: BASE_DIR, CLEMENTINE_HOME: BASE_DIR },
       });
       child.unref();
       if (child.pid) {
@@ -1356,7 +1359,7 @@ export async function cmdDashboard(opts: { port?: string; host?: string }): Prom
         detached: true,
         stdio: 'ignore',
         cwd: BASE_DIR,
-        env: { ...process.env, CLEMENTINE_HOME: BASE_DIR },
+        env: { ...process.env, WATCHCOMMANDER_HOME: BASE_DIR, CLEMENTINE_HOME: BASE_DIR },
       });
       child.unref();
       // Give the response time to flush, then exit
@@ -5878,7 +5881,7 @@ function getDashboardHTML(token: string): string {
     <!-- ═══ Projects Page ═══ -->
     <div class="page" id="page-projects">
       <div class="page-title">Projects</div>
-      <p style="color:var(--text-muted);margin-bottom:16px">Link projects to give Clementine automatic access to their tools and MCP servers. When you mention a linked project's keywords in chat, Clementine switches into that project's context automatically.</p>
+      <p style="color:var(--text-muted);margin-bottom:16px">Link projects to give Watch Commander automatic access to their tools and MCP servers. When you mention a linked project's keywords in chat, Watch Commander switches into that project's context automatically.</p>
       <div class="card" style="margin-bottom:20px">
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
           <span>Workspace Directories</span>
@@ -6466,7 +6469,7 @@ function getDashboardHTML(token: string): string {
       <div class="form-row">
         <label>Description</label>
         <input type="text" id="project-description" placeholder="e.g. Salesforce CRM integration tools" />
-        <div class="form-hint">Describe what this project provides so Clementine can match it from chat context.</div>
+        <div class="form-hint">Describe what this project provides so Watch Commander can match it from chat context.</div>
       </div>
       <div class="form-row">
         <label>Keywords</label>
@@ -8421,12 +8424,12 @@ async function refreshSettings() {
       + '<input type="text" id="custom-env-value" placeholder="Value" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary);font-size:13px"></div>'
       + '<button class="btn-sm btn-primary" onclick="addCustomEnv()">Add</button>'
       + '</div>'
-      + '<div style="font-size:11px;color:var(--text-muted);margin-top:6px">Any env variable added here will be available to Clementine. Use UPPER_SNAKE_CASE for key names.</div>'
+      + '<div style="font-size:11px;color:var(--text-muted);margin-top:6px">Any env variable added here will be available to Watch Commander. Use UPPER_SNAKE_CASE for key names.</div>'
       + '</div></div>';
 
     html += '<div style="padding:12px;color:var(--text-muted);font-size:12px">'
       + '<strong>Note:</strong> Changes to API keys require a daemon restart to take effect. '
-      + 'Use <code>clementine restart</code> after updating channel tokens.'
+      + 'Use <code>wcmdr restart</code> after updating channel tokens.'
       + '</div>';
     container.innerHTML = html;
 

@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Agent manager (scoped multi-agent system).
+ * Watch Commander — Agent manager (scoped multi-agent system).
  *
  * Loads agent profiles from two sources:
  *   1. Meta/Clementine/agents/{slug}/agent.md  — new agent directory format

@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Prompt injection detection patterns and thresholds.
+ * Watch Commander — Prompt injection detection patterns and thresholds.
  *
  * All constants used by the 5-layer injection scanner.
  * Zero dependencies — pure data.

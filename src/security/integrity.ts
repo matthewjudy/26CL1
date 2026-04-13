@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — File integrity monitor (Layer 3).
+ * Watch Commander — File integrity monitor (Layer 3).
  *
  * Computes SHA-256 checksums for critical vault system files and detects tampering.
  * Zero external dependencies — uses node:crypto and node:fs only.

@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — HTTP API webhook server.
+ * Watch Commander — HTTP API webhook server.
  *
  * Provides a REST API for programmatic access to the assistant.
  * Uses Express with Bearer token authentication.
@@ -10,7 +10,7 @@ import pino from 'pino';
 import { WEBHOOK_PORT, WEBHOOK_SECRET , localISO } from '../config.js';
 import type { Gateway } from '../gateway/router.js';
 
-const logger = pino({ name: 'clementine.webhook' });
+const logger = pino({ name: 'wcmdr.webhook' });
 
 // ── Entry point ───────────────────────────────────────────────────────
 

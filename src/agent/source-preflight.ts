@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Worktree Preflight Validator.
+ * Watch Commander — Worktree Preflight Validator.
  *
  * Validates proposed source changes in an isolated git worktree before
  * they touch the live repo. Uses worktree isolation for safe validation.
@@ -12,7 +12,7 @@ import pino from 'pino';
 
 import { PKG_DIR, STAGING_DIR } from '../config.js';
 
-const logger = pino({ name: 'clementine.source-preflight' });
+const logger = pino({ name: 'wcmdr.source-preflight' });
 
 export interface PreflightResult {
   success: boolean;

@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Slack channel adapter.
+ * Watch Commander — Slack channel adapter.
  *
  * Uses @slack/bolt with Socket Mode (no public URL required).
  * Supports streaming message updates, markdown conversion, and chunked sending.
@@ -20,7 +20,7 @@ import { mdToSlack, sendChunkedSlack, SlackStreamingMessage } from './slack-util
 import { friendlyToolName } from './discord-utils.js';
 import { appendActivityLog, writeConversationComplete } from './discord-agent-bot.js';
 
-const logger = pino({ name: 'clementine.slack' });
+const logger = pino({ name: 'wcmdr.slack' });
 
 const BOT_MESSAGE_TRACKING_LIMIT = 100;
 

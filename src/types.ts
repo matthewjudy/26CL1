@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Shared types.
+ * Watch Commander — Shared types.
  */
 
 // ── Memory / Search ──────────────────────────────────────────────────

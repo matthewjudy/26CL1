@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Plan Orchestrator.
+ * Watch Commander — Plan Orchestrator.
  *
  * Decomposes a task into steps, runs independent steps in parallel
  * via concurrent query() calls, then synthesizes a final response.
@@ -11,7 +11,7 @@ import type { PersonalAssistant } from './assistant.js';
 import type { PlanStep, ExecutionPlan, PlanProgressUpdate } from '../types.js';
 import { PLAN_STATE_DIR , localISO } from '../config.js';
 
-const logger = pino({ name: 'clementine.orchestrator' });
+const logger = pino({ name: 'wcmdr.orchestrator' });
 
 const MAX_STEPS = 10;
 const MAX_CONCURRENT_STEPS = 3;

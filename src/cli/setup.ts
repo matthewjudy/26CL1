@@ -20,12 +20,12 @@ const CYAN = '\x1b[0;36m';
 const RESET = '\x1b[0m';
 
 const BANNER = `
-${ORANGE} ██████╗██╗     ███████╗███╗   ███╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗
-██╔════╝██║     ██╔════╝████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝
-██║     ██║     █████╗  ██╔████╔██║█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗
-██║     ██║     ██╔══╝  ██║╚██╔╝██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝
-╚██████╗███████╗███████╗██║ ╚═╝ ██║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗
- ╚═════╝╚══════╝╚══════╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝${RESET}
+${ORANGE}██╗    ██╗ █████╗ ████████╗ ██████╗██╗  ██╗     ██████╗███╗   ███╗██████╗ ██████╗
+██║    ██║██╔══██╗╚══██╔══╝██╔════╝██║  ██║    ██╔════╝████╗ ████║██╔══██╗██╔══██╗
+██║ █╗ ██║███████║   ██║   ██║     ███████║    ██║     ██╔████╔██║██║  ██║██████╔╝
+██║███╗██║██╔══██║   ██║   ██║     ██╔══██║    ██║     ██║╚██╔╝██║██║  ██║██╔══██╗
+╚███╔███╔╝██║  ██║   ██║   ╚██████╗██║  ██║    ╚██████╗██║ ╚═╝ ██║██████╔╝██║  ██║
+ ╚══╝╚══╝ ╚═╝  ╚═╝   ╚═╝    ╚═════╝╚═╝  ╚═╝     ╚═════╝╚═╝     ╚═╝╚═════╝ ╚═╝  ╚═╝${RESET}
 `;
 
 function sectionHeader(title: string): void {
@@ -227,7 +227,7 @@ const FEATURES: FeatureDef[] = [
       {
         key: 'MS_USER_EMAIL',
         label: 'Mailbox email address',
-        help: `The email address Clementine should access (e.g. nathan@example.com)`,
+        help: `The email address Watch Commander should access (e.g. nathan@example.com)`,
       },
     ],
   },
@@ -483,12 +483,12 @@ export async function runSetup(): Promise<void> {
 
   entries['ASSISTANT_NAME'] = await input({
     message: 'Assistant name',
-    default: entries['ASSISTANT_NAME'] || 'Clementine',
+    default: entries['ASSISTANT_NAME'] || 'Watch Commander',
   });
 
   entries['ASSISTANT_NICKNAME'] = await input({
     message: 'Nickname',
-    default: entries['ASSISTANT_NICKNAME'] || 'Clemmy',
+    default: entries['ASSISTANT_NICKNAME'] || 'WCMDR',
   });
 
   entries['OWNER_NAME'] = await input({
@@ -559,8 +559,8 @@ export async function runSetup(): Promise<void> {
   // ── Step 5: Workspace ──────────────────────────────────────────────
   sectionHeader('Step 5: Workspace');
 
-  console.log(`  ${DIM}Point Clementine at parent directories containing your projects.${RESET}`);
-  console.log(`  ${DIM}She'll auto-discover project roots (git repos, npm packages, etc.)${RESET}`);
+  console.log(`  ${DIM}Point Watch Commander at parent directories containing your projects.${RESET}`);
+  console.log(`  ${DIM}It will auto-discover project roots (git repos, npm packages, etc.)${RESET}`);
   console.log();
 
   entries['WORKSPACE_DIRS'] = await input({
@@ -630,7 +630,7 @@ export async function runSetup(): Promise<void> {
   if (process.platform === 'darwin') {
     sectionHeader('Step 8: Auto-Start');
 
-    console.log(`  ${DIM}Install a login service so ${entries['ASSISTANT_NAME'] || 'Clementine'} starts${RESET}`);
+    console.log(`  ${DIM}Install a login service so ${entries['ASSISTANT_NAME'] || 'Watch Commander'} starts${RESET}`);
     console.log(`  ${DIM}automatically when you turn on your computer.${RESET}`);
     console.log();
 
@@ -649,7 +649,7 @@ export async function runSetup(): Promise<void> {
   console.log();
   console.log(`  ${BOLD}Next steps${RESET}`);
   console.log(`  ${DIM}${'─'.repeat(50)}${RESET}`);
-  console.log(`    ${BOLD}clementine launch${RESET}    Start the assistant`);
-  console.log(`    ${BOLD}clementine doctor${RESET}    Verify everything is configured`);
+  console.log(`    ${BOLD}wcmdr launch${RESET}    Start the assistant`);
+  console.log(`    ${BOLD}wcmdr doctor${RESET}    Verify everything is configured`);
   console.log();
 }

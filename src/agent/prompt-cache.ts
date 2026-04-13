@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — File-watcher cache for system prompt files.
+ * Watch Commander — File-watcher cache for system prompt files.
  *
  * Pre-reads vault files and invalidates on fs change, avoiding 50-200ms
  * of readFileSync + gray-matter parsing on every message.

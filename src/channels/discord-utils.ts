@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Shared Discord utilities.
+ * Watch Commander — Shared Discord utilities.
  *
  * Extracted from discord.ts so agent bot clients can reuse streaming,
  * chunking, and sanitization without importing the monolith.
@@ -8,7 +8,7 @@
 import type { Message } from 'discord.js';
 import pino from 'pino';
 
-const logger = pino({ name: 'clementine.discord-utils' });
+const logger = pino({ name: 'wcmdr.discord-utils' });
 
 export const STREAM_EDIT_INTERVAL = 400;
 export const THINKING_INDICATOR = '*thinking...*';
@@ -105,7 +105,7 @@ export function friendlyToolName(name: string, input?: Record<string, unknown>):
     }
     return TOOL_LABELS[name];
   }
-  // MCP tools: strip prefix (e.g., "mcp__clementine__memory_search" → "memory_search")
+  // MCP tools: strip prefix (e.g., "mcp__wcmdr__memory_search" → "memory_search")
   const short = name.includes('__') ? name.split('__').pop()! : name;
   return short.replace(/_/g, ' ');
 }

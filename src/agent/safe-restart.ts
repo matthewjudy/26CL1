@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Safe Restart Orchestrator.
+ * Watch Commander — Safe Restart Orchestrator.
  *
  * Central coordinator for source self-editing. Replaces bare SIGUSR1-based
  * source editing with a validated pipeline:
@@ -21,7 +21,7 @@ import { preflightSourceChange } from './source-preflight.js';
 import { recordSourceMod } from './source-mods.js';
 import type { RestartSentinel } from '../types.js';
 
-const logger = pino({ name: 'clementine.safe-restart' });
+const logger = pino({ name: 'wcmdr.safe-restart' });
 
 const SENTINEL_PATH = path.join(BASE_DIR, '.restart-sentinel.json');
 

@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Discord agent bot client.
+ * Watch Commander — Discord agent bot client.
  *
  * A discord.js Client wrapper for a single agent.
  * Handles: DMs + guild channel messages → gateway → stream response.
@@ -43,7 +43,7 @@ import { chunkText, DiscordStreamingMessage, friendlyToolName, sanitizeResponse 
 import { MODELS, SUPPRESS_AGENT_STARTUP_DM } from '../config.js';
 import { logActivity } from '../agent/agent-activity.js';
 
-const logger = pino({ name: 'clementine.agent-bot' });
+const logger = pino({ name: 'wcmdr.agent-bot' });
 
 // ── Slash commands shared by all agent bots ──────────────────────────
 

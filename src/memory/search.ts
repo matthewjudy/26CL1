@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Search result helpers.
+ * Watch Commander — Search result helpers.
  *
  * Utility functions for temporal decay, deduplication, and formatting
  * of search results for system prompt injection.

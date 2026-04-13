@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Gateway router and session management.
+ * Watch Commander — Gateway router and session management.
  *
  * Routes messages between channel adapters and the agent layer.
  * Manages per-user/channel sessions for conversation continuity.
@@ -17,7 +17,7 @@ import { AgentManager } from '../agent/agent-manager.js';
 import { TeamRouter } from '../agent/team-router.js';
 import { TeamBus } from '../agent/team-bus.js';
 
-const logger = pino({ name: 'clementine.gateway' });
+const logger = pino({ name: 'wcmdr.gateway' });
 
 /** Idle timeout for interactive chat messages (5 minutes).
  *  Resets on agent activity (text/tool calls). Only kills if truly stuck. */

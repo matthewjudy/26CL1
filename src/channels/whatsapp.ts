@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — WhatsApp channel adapter (via Twilio).
+ * Watch Commander — WhatsApp channel adapter (via Twilio).
  *
  * Uses Express for webhook receiving and Twilio REST API for sending.
  * Supports incoming messages with Twilio signature validation,
@@ -19,7 +19,7 @@ import {
 import type { NotificationDispatcher } from '../gateway/notifications.js';
 import type { Gateway } from '../gateway/router.js';
 
-const logger = pino({ name: 'clementine.whatsapp' });
+const logger = pino({ name: 'wcmdr.whatsapp' });
 
 const TWILIO_API_URL = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
 const WHATSAPP_MAX_LENGTH = 4096;

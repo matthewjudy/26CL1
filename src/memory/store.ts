@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — SQLite FTS5 memory store.
+ * Watch Commander — SQLite FTS5 memory store.
  *
  * Mirrors the Obsidian vault as a search-optimized index. The vault remains
  * the source of truth; this is a read-optimized cache.

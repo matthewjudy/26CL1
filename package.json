@@ -1,11 +1,11 @@
 {
-  "name": "clemmy-ts",
+  "name": "watchcommander-ts",
   "version": "1.0.0",
-  "description": "Clementine — Personal AI Assistant (TypeScript)",
+  "description": "Watch Commander — Personal AI Assistant (TypeScript)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "clementine": "dist/cli/index.js"
+    "wcmdr": "dist/cli/index.js"
   },
   "scripts": {
     "build": "rm -rf dist && tsc && chmod +x dist/cli/index.js",

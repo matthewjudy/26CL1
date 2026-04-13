@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Self-Improvement Loop Engine.
+ * Watch Commander — Self-Improvement Loop Engine.
  *
  * Implements Karpathy's autoresearch iterative loop for autonomous self-improvement:
  * hypothesize → execute → evaluate → keep/revert → repeat.
@@ -46,7 +46,7 @@ import type {
 } from '../types.js';
 import type { PersonalAssistant } from './assistant.js';
 
-const logger = pino({ name: 'clementine.self-improve' });
+const logger = pino({ name: 'wcmdr.self-improve' });
 
 // ── Defaults ─────────────────────────────────────────────────────────
 

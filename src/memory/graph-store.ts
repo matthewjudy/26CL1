@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — FalkorDBLite graph memory layer.
+ * Watch Commander — FalkorDBLite graph memory layer.
  *
  * Adds entity graph, typed relationships, and multi-hop traversal on top
  * of the existing SQLite FTS5 memory store. The vault remains the source
@@ -29,7 +29,7 @@ import type {
   TraversalResult,
 } from '../types.js';
 
-const logger = pino({ name: 'clementine.graph' });
+const logger = pino({ name: 'wcmdr.graph' });
 
 const GRAPH_NAME = 'clementine';
 const WIKILINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;

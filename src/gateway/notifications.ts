@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Notification dispatcher.
+ * Watch Commander — Notification dispatcher.
  *
  * Decouples heartbeat/cron DM sending from any specific channel.
  * Each channel adapter registers a sender function on startup;
@@ -9,7 +9,7 @@
 import pino from 'pino';
 import type { NotificationSender } from '../types.js';
 
-const logger = pino({ name: 'clementine.notifications' });
+const logger = pino({ name: 'wcmdr.notifications' });
 
 /** Safety cap — prevent runaway messages, but each channel handles its own chunking/limits. */
 const MAX_MESSAGE_LENGTH = 8000;

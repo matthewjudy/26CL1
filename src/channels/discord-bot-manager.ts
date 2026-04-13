@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Discord bot manager.
+ * Watch Commander — Discord bot manager.
  *
  * Orchestrates the lifecycle of agent bot clients. Agents with a
  * `discordToken` in their profile get their own dedicated discord.js Client.
@@ -13,7 +13,7 @@ import pino from 'pino';
 import type { Gateway } from '../gateway/router.js';
 import { AgentBotClient, type AgentBotStatus, type AgentActivity } from './discord-agent-bot.js';
 
-const logger = pino({ name: 'clementine.bot-manager' });
+const logger = pino({ name: 'wcmdr.bot-manager' });
 
 export interface BotManagerConfig {
   gateway: Gateway;

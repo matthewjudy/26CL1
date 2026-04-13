@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Team agent routing.
+ * Watch Commander — Team agent routing.
  *
  * Maps agent profiles to their team configuration (channelName, canMessage, etc.).
  * Bot-based agents manage their own Discord channels via AgentBotClient/BotManager.
@@ -10,7 +10,7 @@ import type { AgentProfile } from '../types.js';
 import type { AgentManager } from './agent-manager.js';
 import { TEAM_COMMS_CHANNEL } from '../config.js';
 
-const logger = pino({ name: 'clementine.team-router' });
+const logger = pino({ name: 'wcmdr.team-router' });
 
 export class TeamRouter {
   private profileManager: AgentManager;

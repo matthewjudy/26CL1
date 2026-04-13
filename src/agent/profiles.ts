@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Agent profile management.
+ * Watch Commander — Agent profile management.
  *
  * Profiles are Markdown files with YAML frontmatter stored in
  * Meta/Clementine/profiles/. Each profile defines a persona with its own

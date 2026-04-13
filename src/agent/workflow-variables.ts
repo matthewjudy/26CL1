@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Workflow template variable resolution.
+ * Watch Commander — Workflow template variable resolution.
  *
  * Pure functions for resolving {{...}} placeholders in workflow step prompts.
  */

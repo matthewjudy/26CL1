@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Tool loop detection system.
+ * Watch Commander — Tool loop detection system.
  *
  * Detects when the agent gets stuck in repetitive tool-call patterns:
  *   - generic_repeat: Same tool+input called repeatedly
@@ -49,7 +49,7 @@ interface ToolCallEntry {
 
 // ── Logger ──────────────────────────────────────────────────────────
 
-const logger = pino({ name: 'clementine.tool-loop-detector' });
+const logger = pino({ name: 'wcmdr.tool-loop-detector' });
 
 // ── Helpers ─────────────────────────────────────────────────────────
 

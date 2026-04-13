@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Source Modification Registry.
+ * Watch Commander — Source Modification Registry.
  *
  * Tracks self-improve source edits in ~/.clementine/ (not in git).
  * When `clementine update` pulls new code, the reconciliation step
@@ -23,7 +23,7 @@ import pino from 'pino';
 
 import { SOURCE_MODS_DIR, PKG_DIR , localISO } from '../config.js';
 
-const logger = pino({ name: 'clementine.source-mods' });
+const logger = pino({ name: 'wcmdr.source-mods' });
 
 // ── Types ────────────────────────────────────────────────────────────
 

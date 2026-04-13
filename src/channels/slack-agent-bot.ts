@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Slack agent bot client.
+ * Watch Commander — Slack agent bot client.
  *
  * A @slack/bolt App wrapper for a single agent.
  * Handles: DMs + channel messages → gateway → stream response.
@@ -21,7 +21,7 @@ import { mdToSlack, sendChunkedSlack, SlackStreamingMessage } from './slack-util
 import { friendlyToolName } from './discord-utils.js';
 import { appendActivityLog, writeConversationComplete } from './discord-agent-bot.js';
 
-const logger = pino({ name: 'clementine.slack-agent-bot' });
+const logger = pino({ name: 'wcmdr.slack-agent-bot' });
 
 export interface SlackAgentBotConfig {
   slug: string;

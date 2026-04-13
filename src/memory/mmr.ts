@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Maximal Marginal Relevance re-ranking.
+ * Watch Commander — Maximal Marginal Relevance re-ranking.
  *
  * Ensures search results are both relevant AND diverse by penalizing
  * results too similar to already-selected ones.

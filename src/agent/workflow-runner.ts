@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Workflow Runner.
+ * Watch Commander — Workflow Runner.
  *
  * Parses workflow definition files (markdown + YAML frontmatter),
  * validates the step DAG, and executes steps using the existing
@@ -23,7 +23,7 @@ import type {
 } from '../types.js';
 import { BASE_DIR , localISO } from '../config.js';
 
-const logger = pino({ name: 'clementine.workflow' });
+const logger = pino({ name: 'wcmdr.workflow' });
 
 const MAX_CONCURRENT_STEPS = 3;
 const RESULT_TRUNCATE_CHARS = 4000;

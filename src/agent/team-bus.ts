@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Inter-agent message bus.
+ * Watch Commander — Inter-agent message bus.
  *
  * Enables async message passing between team agents via gateway.injectContext.
  * Logs to JSONL and optionally mirrors to a Discord channel.
@@ -14,7 +14,7 @@ import type { Gateway } from '../gateway/router.js';
 import type { TeamRouter } from './team-router.js';
 import { localISO } from '../config.js';
 
-const logger = pino({ name: 'clementine.team-bus' });
+const logger = pino({ name: 'wcmdr.team-bus' });
 
 /** Max inter-agent message depth before rejection (anti-loop). */
 const MAX_DEPTH = 3;

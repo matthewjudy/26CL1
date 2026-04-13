@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Slack bot manager.
+ * Watch Commander — Slack bot manager.
  *
  * Orchestrates the lifecycle of Slack agent bot clients. Agents with both
  * `slackBotToken` AND `slackAppToken` in their profile get their own
@@ -12,7 +12,7 @@ import pino from 'pino';
 import type { Gateway } from '../gateway/router.js';
 import { SlackAgentBotClient, type SlackAgentBotStatus } from './slack-agent-bot.js';
 
-const logger = pino({ name: 'clementine.slack-bot-manager' });
+const logger = pino({ name: 'wcmdr.slack-bot-manager' });
 
 export interface SlackBotManagerConfig {
   gateway: Gateway;

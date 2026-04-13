@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — 5-layer prompt injection scanner.
+ * Watch Commander — 5-layer prompt injection scanner.
  *
  * All layers are synchronous, zero-dependency, and CPU-only.
  * Target overhead: <5ms per message.

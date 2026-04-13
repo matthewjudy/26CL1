@@ -9,9 +9,9 @@ try {
 }
 
 /**
- * Clementine CLI — launch, stop, restart, status, doctor, config.
+ * Watch Commander CLI — launch, stop, restart, status, doctor, config.
  *
- * Works from any directory. Data lives in ~/.clementine/ (or CLEMENTINE_HOME).
+ * Works from any directory. Data lives in ~/.watchcommander/ (or WATCHCOMMANDER_HOME / CLEMENTINE_HOME).
  * Code lives wherever npm installed the package.
  */
 
@@ -45,7 +45,9 @@ const __dirname = path.dirname(__filename);
 // ── Path resolution ─────────────────────────────────────────────────
 
 /** Data home — vault, .env, logs, sessions, PID file. */
-const BASE_DIR = process.env.CLEMENTINE_HOME || path.join(os.homedir(), '.clementine');
+const _newDir = path.join(os.homedir(), '.watchcommander');
+const _legacyDir = path.join(os.homedir(), '.clementine');
+const BASE_DIR = process.env.WATCHCOMMANDER_HOME || process.env.CLEMENTINE_HOME || (existsSync(_newDir) ? _newDir : existsSync(_legacyDir) ? _legacyDir : _newDir);
 
 /**
  * Package root (wherever npm installed the package).
@@ -66,16 +68,16 @@ function getAssistantName(): string {
     const match = content.match(/^ASSISTANT_NAME=(.+)$/m);
     if (match) return match[1].trim();
   }
-  return 'Clementine';
+  return 'Watch Commander';
 }
 
 function getPidFilePath(): string {
-  const name = getAssistantName().toLowerCase();
+  const name = getAssistantName().toLowerCase().replace(/\s+/g, '-');
   return path.join(BASE_DIR, `.${name}.pid`);
 }
 
 function getLaunchdLabel(): string {
-  return `com.${getAssistantName().toLowerCase()}.assistant`;
+  return `com.${getAssistantName().toLowerCase().replace(/\s+/g, '-')}.assistant`;
 }
 
 function getLaunchdPlistPath(): string {
@@ -221,13 +223,15 @@ function cmdLaunch(options: { foreground?: boolean; install?: boolean; uninstall
   <key>ThrottleInterval</key>
   <integer>5</integer>
   <key>StandardOutPath</key>
-  <string>${path.join(logDir, 'clementine.log')}</string>
+  <string>${path.join(logDir, 'watchcommander.log')}</string>
   <key>StandardErrorPath</key>
-  <string>${path.join(logDir, 'clementine-error.log')}</string>
+  <string>${path.join(logDir, 'watchcommander-error.log')}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
     <string>${buildLaunchdPath()}</string>
+    <key>WATCHCOMMANDER_HOME</key>
+    <string>${BASE_DIR}</string>
     <key>CLEMENTINE_HOME</key>
     <string>${BASE_DIR}</string>
   </dict>
@@ -255,7 +259,7 @@ function cmdLaunch(options: { foreground?: boolean; install?: boolean; uninstall
 
   if (!existsSync(ENV_PATH)) {
     console.log(`  No .env file found at ${ENV_PATH}`);
-    console.log('  Run: clementine config setup');
+    console.log('  Run: wcmdr config setup');
     console.log();
     return;
   }
@@ -269,6 +273,7 @@ function cmdLaunch(options: { foreground?: boolean; install?: boolean; uninstall
 
   if (options.foreground) {
     // Foreground mode: import and run the entry point directly
+    process.env.WATCHCOMMANDER_HOME = BASE_DIR;
     process.env.CLEMENTINE_HOME = BASE_DIR;
     import('../index.js').catch((err: unknown) => {
       console.error('Failed to start:', err);
@@ -283,14 +288,14 @@ function cmdLaunch(options: { foreground?: boolean; install?: boolean; uninstall
     mkdirSync(logDir, { recursive: true });
   }
 
-  const logFile = path.join(logDir, 'clementine.log');
+  const logFile = path.join(logDir, 'watchcommander.log');
   const logFd = openSync(logFile, 'a');
 
   const child = spawn('node', [DIST_ENTRY], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     cwd: BASE_DIR,
-    env: { ...process.env, CLEMENTINE_HOME: BASE_DIR },
+    env: { ...process.env, WATCHCOMMANDER_HOME: BASE_DIR, CLEMENTINE_HOME: BASE_DIR },
   });
 
   if (child.pid) {
@@ -536,7 +541,7 @@ function cmdDoctor(): void {
   if (existsSync(BASE_DIR)) {
     console.log(`  ${GREEN}OK${RESET}  Data home exists (${BASE_DIR})`);
   } else {
-    console.log(`  ${YELLOW}WARN${RESET}  Data home not found (run: clementine launch)`);
+    console.log(`  ${YELLOW}WARN${RESET}  Data home not found (run: wcmdr launch)`);
     issues++;
   }
 
@@ -544,7 +549,7 @@ function cmdDoctor(): void {
   if (existsSync(ENV_PATH)) {
     console.log(`  ${GREEN}OK${RESET}  .env file exists`);
   } else {
-    console.log(`  ${YELLOW}WARN${RESET}  .env file not found (run: clementine config setup)`);
+    console.log(`  ${YELLOW}WARN${RESET}  .env file not found (run: wcmdr config setup)`);
     issues++;
   }
 
@@ -607,7 +612,7 @@ function cmdDoctor(): void {
         issues++;
       }
     } else {
-      console.log(`  ${YELLOW}WARN${RESET}  LaunchAgent not installed (run: clementine launch --install)`);
+      console.log(`  ${YELLOW}WARN${RESET}  LaunchAgent not installed (run: wcmdr launch --install)`);
       issues++;
     }
   }
@@ -660,7 +665,7 @@ function cmdConfigGet(key: string): void {
 
 function cmdConfigList(): void {
   if (!existsSync(ENV_PATH)) {
-    console.log('  No .env file found. Run: clementine config setup');
+    console.log('  No .env file found. Run: wcmdr config setup');
     return;
   }
 
@@ -719,7 +724,7 @@ function cmdTools(): void {
   }
 
   if (mcpTools.length > 0) {
-    console.log(`  ${BOLD}Clementine MCP Tools${RESET} ${DIM}(${mcpTools.length} tools)${RESET}`);
+    console.log(`  ${BOLD}Watch Commander MCP Tools${RESET} ${DIM}(${mcpTools.length} tools)${RESET}`);
     console.log();
     const maxName = Math.max(...mcpTools.map((t) => t.name.length));
     for (const tool of mcpTools) {
@@ -827,8 +832,8 @@ function cmdTools(): void {
 const program = new Command();
 
 program
-  .name('clementine')
-  .description('Clementine Personal AI Assistant')
+  .name('wcmdr')
+  .description('Watch Commander Personal AI Assistant')
   .version('1.0.0');
 
 program
@@ -947,6 +952,8 @@ program
   <dict>
     <key>PATH</key>
     <string>${buildLaunchdPath()}</string>
+    <key>WATCHCOMMANDER_HOME</key>
+    <string>${BASE_DIR}</string>
     <key>CLEMENTINE_HOME</key>
     <string>${BASE_DIR}</string>
   </dict>
@@ -1001,6 +1008,7 @@ program
     const RESET = '\x1b[0m';
 
     try {
+      process.env.WATCHCOMMANDER_HOME = BASE_DIR;
       process.env.CLEMENTINE_HOME = BASE_DIR;
       delete process.env['CLAUDECODE'];
 
@@ -1107,7 +1115,7 @@ program
         return;
       }
     }
-    const BASE = process.env.CLEMENTINE_HOME || `${process.env.HOME}/.clementine`;
+    const BASE = process.env.WATCHCOMMANDER_HOME || process.env.CLEMENTINE_HOME || `${process.env.HOME}/.watchcommander`;
     const tokenPath = `${BASE}/.dashboard-token`;
     const statusPath = `${BASE}/.bot-status.json`;
     const hbPath = `${BASE}/.heartbeat_state.json`;
@@ -2018,7 +2026,7 @@ program
   .action(async () => {
     const { readFileSync, existsSync, readdirSync } = await import('node:fs');
     const pathMod = await import('node:path');
-    const BASE_DIR = process.env.CLEMENTINE_HOME || pathMod.default.join(process.env.HOME || '', '.clementine');
+    const BASE_DIR = process.env.WATCHCOMMANDER_HOME || process.env.CLEMENTINE_HOME || pathMod.default.join(process.env.HOME || '', '.watchcommander');
     const tokenPath = pathMod.default.join(BASE_DIR, '.dashboard-token');
 
     const c = {
@@ -2345,7 +2353,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
         cmdLaunch({});
         console.log(`  ${GREEN}OK${RESET}  Daemon restarted`);
       } catch {
-        console.error(`  ${YELLOW}WARN${RESET}  Could not restart daemon — run: clementine launch`);
+        console.error(`  ${YELLOW}WARN${RESET}  Could not restart daemon — run: wcmdr launch`);
       }
     }
     console.log();
@@ -2365,7 +2373,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
     console.log(`    ${S()} Restore local changes`);
     console.log(`    ${S()} Reconcile source modifications`);
     console.log(`    ${S()} Run vault migrations`);
-    console.log(`    ${S()} Run health check (clementine doctor)`);
+    console.log(`    ${S()} Run health check (wcmdr doctor)`);
     if (options.restart || wasRunning) {
       console.log(`    ${S()} Restart daemon`);
     }
@@ -2638,7 +2646,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
 
   // 11. Kill any running dashboard process so it picks up new code on next start
   try {
-    const dashPids = execSync("pgrep -f 'clementine.*dashboard' || true", { encoding: 'utf-8' }).trim();
+    const dashPids = execSync("pgrep -f 'watchcommander.*dashboard|clementine.*dashboard' || true", { encoding: 'utf-8' }).trim();
     if (dashPids) {
       for (const dp of dashPids.split('\n').filter(Boolean)) {
         const dpid = parseInt(dp, 10);
@@ -2646,7 +2654,7 @@ async function cmdUpdate(options: { restart?: boolean; dryRun?: boolean }): Prom
           try { process.kill(dpid, 'SIGTERM'); } catch { /* ignore */ }
         }
       }
-      console.log(`  ${GREEN}OK${RESET}  Stopped dashboard process (restart with: clementine restart -d)`);
+      console.log(`  ${GREEN}OK${RESET}  Stopped dashboard process (restart with: wcmdr restart -d)`);
     }
   } catch { /* no dashboard running */ }
 
@@ -2868,7 +2876,7 @@ workflowCmd
 
 const siCmd = program
   .command('self-improve')
-  .description('Manage Clementine self-improvement');
+  .description('Manage Watch Commander self-improvement');
 
 siCmd
   .command('status')
@@ -3063,6 +3071,8 @@ ${calendarEntries}
   <dict>
     <key>PATH</key>
     <string>${buildLaunchdPath()}</string>
+    <key>WATCHCOMMANDER_HOME</key>
+    <string>${BASE_DIR}</string>
     <key>CLEMENTINE_HOME</key>
     <string>${BASE_DIR}</string>
   </dict>
@@ -3172,7 +3182,7 @@ function formatLogLine(line: string): string {
     const color = levelColors[levelName] ?? '';
     const RESET = '\x1b[0m';
     const DIM = '\x1b[0;90m';
-    const component = entry.name ? entry.name.replace('clementine.', '') : '';
+    const component = entry.name ? entry.name.replace('wcmdr.', '') : '';
     const msg = entry.msg ?? '';
     return `${DIM}${ts}${RESET} ${color}${levelName.padEnd(5)}${RESET} ${DIM}[${component}]${RESET} ${msg}`;
   } catch {
@@ -3184,7 +3194,7 @@ function cmdLogs(opts: { follow?: boolean; lines?: string; filter?: string; cron
   const logDir = path.join(BASE_DIR, 'logs');
   const logFile = opts.cron
     ? path.join(logDir, 'cron.log')
-    : path.join(logDir, 'clementine.log');
+    : path.join(logDir, 'watchcommander.log');
 
   if (!existsSync(logFile)) {
     console.error(`Log file not found: ${logFile}`);

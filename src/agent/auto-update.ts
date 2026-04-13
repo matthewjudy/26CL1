@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Daemon-Driven Auto-Update.
+ * Watch Commander — Daemon-Driven Auto-Update.
  *
  * Checks for and applies upstream changes without requiring `clementine update`.
  * Source modifications from self-improve are tracked in ~/.clementine/ (not git),
@@ -15,7 +15,7 @@ import { BASE_DIR , localISO } from '../config.js';
 import { reconcileSourceMods } from './source-mods.js';
 import type { RestartSentinel } from '../types.js';
 
-const logger = pino({ name: 'clementine.auto-update' });
+const logger = pino({ name: 'wcmdr.auto-update' });
 
 const SENTINEL_PATH = path.join(BASE_DIR, '.restart-sentinel.json');
 

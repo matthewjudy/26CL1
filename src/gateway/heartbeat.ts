@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Heartbeat + Cron scheduler (autonomous execution).
+ * Watch Commander — Heartbeat + Cron scheduler (autonomous execution).
  *
  * HeartbeatScheduler: periodic general check-ins using setInterval
  * CronScheduler: precise scheduled tasks using node-cron
@@ -72,7 +72,7 @@ function logCronActivity(entry: {
 import { parseAllWorkflows as parseAllWorkflowsSync } from '../agent/workflow-runner.js';
 import { SelfImproveLoop } from '../agent/self-improve.js';
 
-const logger = pino({ name: 'clementine.heartbeat' });
+const logger = pino({ name: 'wcmdr.heartbeat' });
 
 /** Default timeout for standard cron jobs (10 minutes). */
 const CRON_STANDARD_TIMEOUT_MS = 10 * 60 * 1000;

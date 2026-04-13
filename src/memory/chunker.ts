@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Vault file chunker for memory indexing.
+ * Watch Commander — Vault file chunker for memory indexing.
  *
  * Parses Markdown files into chunks by ## headers, extracts frontmatter,
  * and splits oversized sections at paragraph boundaries.

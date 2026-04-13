@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Lane-based concurrency control.
+ * Watch Commander — Lane-based concurrency control.
  *
  * Separates work into independent concurrency pools so cron jobs
  * can't starve chat responses and vice versa.
@@ -7,7 +7,7 @@
 
 import pino from 'pino';
 
-const logger = pino({ name: 'clementine.lanes' });
+const logger = pino({ name: 'wcmdr.lanes' });
 
 export type Lane = 'chat' | 'cron' | 'heartbeat' | 'self-improve' | 'team';
 

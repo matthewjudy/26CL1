@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Core assistant (Agent Layer).
+ * Watch Commander — Core assistant (Agent Layer).
  *
  * Uses @anthropic-ai/claude-code query() with built-in tools + external MCP stdio server.
  * Features:
@@ -103,7 +103,7 @@ function getContextWindow(model: string): number {
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const logger = pino({ name: 'clementine.assistant' });
+const logger = pino({ name: 'wcmdr.assistant' });
 
 const _require = createRequire(import.meta.url);
 const CLAUDE_CLI_PATH = path.join(path.dirname(_require.resolve('@anthropic-ai/claude-agent-sdk')), 'cli.js');
@@ -2694,7 +2694,7 @@ If you make 5+ consecutive read-only tool calls (Read, Grep, Glob, memory_search
                 if (onText) onText(block.text);
               } else if (block.type === 'tool_use' && block.name) {
                 logToolUse(block.name, (block.input ?? {}) as Record<string, unknown>);
-                const toolLabel = block.name.replace(/^mcp__clementine-tools__/, '').replace(/_/g, ' ');
+                const toolLabel = block.name.replace(/^mcp__[^_]+-tools__/, '').replace(/_/g, ' ');
                 if (onText) onText(`\n[using ${toolLabel}...]\n`);
                 appendActivityLog({
                   agent: sdkOptions.env?.CLEMENTINE_TEAM_AGENT || 'clementine',

@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Configuration and paths.
+ * Watch Commander — Configuration and paths.
  *
  * Reads .env into a local record — never pollutes process.env.
  * The Claude Code SDK subprocess inherits process.env, so keeping
@@ -22,7 +22,9 @@ const __dirname = path.dirname(__filename);
 export const PKG_DIR = path.resolve(__dirname, '..');
 
 /** Data home — user data, vault, .env, logs, sessions. */
-export const BASE_DIR = process.env.CLEMENTINE_HOME || path.join(os.homedir(), '.clementine');
+const newDataDir = path.join(os.homedir(), '.watchcommander');
+const legacyDataDir = path.join(os.homedir(), '.clementine');
+export const BASE_DIR = process.env.WATCHCOMMANDER_HOME || process.env.CLEMENTINE_HOME || (existsSync(newDataDir) ? newDataDir : existsSync(legacyDataDir) ? legacyDataDir : newDataDir);
 
 // ── .env parser (never sets process.env) ────────────────────────────
 
@@ -112,8 +114,8 @@ export const PROJECTS_META_FILE = path.join(BASE_DIR, 'projects.json');
 
 // ── Assistant identity ───────────────────────────────────────────────
 
-export const ASSISTANT_NAME = getEnv('ASSISTANT_NAME', 'Clementine');
-export const ASSISTANT_NICKNAME = getEnv('ASSISTANT_NICKNAME', 'Clemmy');
+export const ASSISTANT_NAME = getEnv('ASSISTANT_NAME', 'Watch Commander');
+export const ASSISTANT_NICKNAME = getEnv('ASSISTANT_NICKNAME', 'WCMDR');
 export const OWNER_NAME = getEnv('OWNER_NAME');
 
 // ── Secrets (with macOS Keychain fallback) ───────────────────────────

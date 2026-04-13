@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Telegram channel adapter.
+ * Watch Commander — Telegram channel adapter.
  *
  * Uses grammY for long polling. Supports streaming message edits,
  * markdown conversion, message chunking, and voice message handling (placeholder).
@@ -14,7 +14,7 @@ import {
 import type { NotificationDispatcher } from '../gateway/notifications.js';
 import type { Gateway } from '../gateway/router.js';
 
-const logger = pino({ name: 'clementine.telegram' });
+const logger = pino({ name: 'wcmdr.telegram' });
 
 const STREAM_UPDATE_INTERVAL = 1500; // ms
 const TELEGRAM_MSG_LIMIT = 4096;

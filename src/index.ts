@@ -1,5 +1,5 @@
 /**
- * Clementine TypeScript — Main entry point.
+ * Watch Commander — Main entry point.
  *
  * Initializes all layers (agent, gateway, heartbeat, cron, channels)
  * and runs them concurrently.
