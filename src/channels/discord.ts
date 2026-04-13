@@ -1927,9 +1927,42 @@ export async function startDiscord(
     }
   }
 
+  // Ops channel notification sender — sends cron/heartbeat output to a dedicated
+  // server channel instead of Matthew's DM, so scheduled updates don't interrupt
+  // active conversations.
+  async function discordOpsNotify(text: string): Promise<void> {
+    const { DISCORD_OPS_CHANNEL_ID } = await import('../config.js');
+    if (!DISCORD_OPS_CHANNEL_ID) {
+      // Fall back to DM if no ops channel configured
+      return discordNotify(text);
+    }
+    try {
+      const channel = await client.channels.fetch(DISCORD_OPS_CHANNEL_ID);
+      if (channel && 'send' in channel) {
+        for (const chunk of chunkText(text, 1900)) {
+          await (channel as any).send(chunk);
+        }
+      } else {
+        // Channel not sendable — fall back to DM
+        return discordNotify(text);
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Ops channel notification failed — falling back to DM');
+      return discordNotify(text);
+    }
+  }
+
   // Register sender only after Discord client is ready
-  client.once(Events.ClientReady, () => {
-    dispatcher.register('discord', discordNotify);
+  client.once(Events.ClientReady, async () => {
+    const { DISCORD_OPS_CHANNEL_ID } = await import('../config.js');
+    if (DISCORD_OPS_CHANNEL_ID) {
+      // Route scheduled notifications to ops channel, not DM
+      dispatcher.register('discord', discordOpsNotify);
+      logger.info(`Cron/heartbeat notifications routed to ops channel ${DISCORD_OPS_CHANNEL_ID}`);
+    } else {
+      // No ops channel configured — keep DM behavior
+      dispatcher.register('discord', discordNotify);
+    }
   });
 
   logger.info('Starting Discord bot...');
