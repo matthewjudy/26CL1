@@ -1822,6 +1822,20 @@ async function graphPatch(endpoint: string, body: unknown): Promise<any> {
   return res.json();
 }
 
+async function graphDelete(endpoint: string): Promise<void> {
+  const token = await getGraphToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0${endpoint}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph API DELETE ${res.status}: ${text}`);
+  }
+}
+
 // ── 17. outlook_inbox ───────────────────────────────────────────────────
 
 server.tool(
@@ -1893,14 +1907,16 @@ server.tool(
     const start = localISO();
     const end = localISO(new Date(Date.now() + Math.min(days, 30) * 86400000));
     const data = await graphGet(
-      `/users/${userEmail}/calendarView?startDateTime=${start}&endDateTime=${end}&$select=subject,start,end,location,attendees,isAllDay&$orderby=start/dateTime&$top=50`
+      `/users/${userEmail}/calendarView?startDateTime=${start}&endDateTime=${end}&$select=id,subject,start,end,location,attendees,isAllDay,showAs&$orderby=start/dateTime&$top=50`
     );
     const events = (data.value ?? []).map((e: any) => ({
+      id: e.id,
       title: e.subject ?? '(untitled)',
       start: e.start?.dateTime,
       end: e.end?.dateTime,
       allDay: e.isAllDay ?? false,
       location: e.location?.displayName || null,
+      showAs: e.showAs || null,
       attendees: (e.attendees ?? []).map((a: any) => a.emailAddress?.name ?? a.emailAddress?.address).slice(0, 10),
     }));
     return externalResult(JSON.stringify(events, null, 2));
@@ -1978,6 +1994,108 @@ server.tool(
     parts.push(`ID: ${created.id?.slice(0, 20)}...`);
 
     return textResult(parts.join('\n'));
+  },
+);
+
+// ── 19b2. outlook_freebusy ─────────────────────────────────────────────
+
+server.tool(
+  'outlook_freebusy',
+  'Check free/busy availability for one or more people in the organization. Use this to find mutual open time slots for scheduling meetings. Returns availability status (free, tentative, busy, oof, workingElsewhere) for each person in the requested time range.',
+  {
+    emails: z.array(z.string()).describe('Email addresses to check availability for'),
+    start: z.string().describe('Start of time range in ISO 8601 format (e.g., "2026-04-16T08:00:00")'),
+    end: z.string().describe('End of time range in ISO 8601 format (e.g., "2026-04-16T18:00:00")'),
+    timezone: z.string().optional().default('Eastern Standard Time').describe('Timezone (default: Eastern Standard Time)'),
+    interval: z.number().optional().default(30).describe('Availability interval in minutes (default: 30)'),
+  },
+  async ({ emails, start, end, timezone, interval }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const data = await graphPost(`/users/${userEmail}/calendar/getSchedule`, {
+      schedules: emails,
+      startTime: { dateTime: start, timeZone: timezone },
+      endTime: { dateTime: end, timeZone: timezone },
+      availabilityViewInterval: interval,
+    });
+
+    const schedules = (data.value ?? []).map((s: any) => {
+      const items = (s.scheduleItems ?? []).map((item: any) => ({
+        status: item.status,
+        subject: item.subject || null,
+        start: item.start?.dateTime,
+        end: item.end?.dateTime,
+        location: item.location || null,
+      }));
+      return {
+        email: s.scheduleId,
+        availabilityView: s.availabilityView,
+        items,
+      };
+    });
+
+    return externalResult(JSON.stringify(schedules, null, 2));
+  },
+);
+
+// ── 19c. outlook_update_event ──────────────────────────────────────────
+
+server.tool(
+  'outlook_update_event',
+  'Update an existing calendar event. Use outlook_calendar to find the event ID first. Any field not provided is left unchanged.',
+  {
+    event_id: z.string().describe('The event ID (from outlook_calendar or outlook_create_event)'),
+    subject: z.string().optional().describe('New event title'),
+    start: z.string().optional().describe('New start date-time in ISO 8601 format'),
+    end: z.string().optional().describe('New end date-time in ISO 8601 format'),
+    timezone: z.string().optional().default('Eastern Standard Time').describe('Timezone for start/end'),
+    location: z.string().optional().describe('New meeting location'),
+    body: z.string().optional().describe('New event description (plain text)'),
+    show_as: z.enum(['free', 'tentative', 'busy', 'oof', 'workingElsewhere']).optional().describe('Show as status (free, tentative, busy, oof, workingElsewhere)'),
+    is_cancelled: z.boolean().optional().describe('Set to true to cancel the event'),
+  },
+  async ({ event_id, subject, start, end, timezone, location, body, show_as, is_cancelled }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const FONT_STYLE = 'font-family:Aptos,Calibri,sans-serif;font-size:11pt';
+
+    const update: Record<string, unknown> = {};
+    if (subject) update.subject = subject;
+    if (start) update.start = { dateTime: start, timeZone: timezone };
+    if (end) update.end = { dateTime: end, timeZone: timezone };
+    if (location) update.location = { displayName: location };
+    if (body) {
+      const htmlBody = body.split('\n').map((l: string) =>
+        l.trim() ? `<p style="${FONT_STYLE}">${l}</p>` : `<p style="${FONT_STYLE}"><br></p>`
+      ).join('\n');
+      update.body = { contentType: 'HTML', content: htmlBody };
+    }
+    if (show_as) update.showAs = show_as;
+    if (is_cancelled) update.isCancelled = true;
+
+    const updated = await graphPatch(`/users/${userEmail}/events/${event_id}`, update);
+
+    const parts = [`Event updated: "${updated.subject}"`];
+    parts.push(`Start: ${updated.start?.dateTime}`);
+    parts.push(`End: ${updated.end?.dateTime}`);
+    if (updated.location?.displayName) parts.push(`Location: ${updated.location.displayName}`);
+    if (updated.showAs) parts.push(`Show as: ${updated.showAs}`);
+    if (updated.webLink) parts.push(`Web link: ${updated.webLink}`);
+
+    return textResult(parts.join('\n'));
+  },
+);
+
+// ── 19d. outlook_delete_event ──────────────────────────────────────────
+
+server.tool(
+  'outlook_delete_event',
+  'Delete a calendar event. Use outlook_calendar to find the event ID first. This sends cancellation notices to attendees.',
+  {
+    event_id: z.string().describe('The event ID to delete (from outlook_calendar or outlook_create_event)'),
+  },
+  async ({ event_id }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    await graphDelete(`/users/${userEmail}/events/${event_id}`);
+    return textResult('Event deleted successfully.');
   },
 );
 
@@ -2168,6 +2286,85 @@ server.tool(
   },
 );
 
+// ── 22c. outlook_list_folders ─────────────────────────────────────────
+server.tool(
+  'outlook_list_folders',
+  'List all mail folders in the Outlook mailbox. Returns folder names, IDs, and unread counts. Use this to discover the folder structure before moving emails.',
+  {},
+  async () => {
+    const response = await graphGet('/me/mailFolders?$top=50&$select=id,displayName,unreadItemCount,totalItemCount,parentFolderId');
+    const folders = (response.value || []).map((f: any) => ({
+      id: f.id,
+      name: f.displayName,
+      unread: f.unreadItemCount,
+      total: f.totalItemCount,
+      parentId: f.parentFolderId,
+    }));
+    return textResult(JSON.stringify(folders, null, 2));
+  }
+);
+
+// ── 22d. outlook_move_email ─────────────────────────────────────────────
+server.tool(
+  'outlook_move_email',
+  'Move an email to a specific folder by folder ID. Use outlook_list_folders to find the folder ID. Does not send any notification to recipients.',
+  {
+    messageId: z.string().describe('The email message ID (from outlook_inbox or outlook_search)'),
+    destinationFolderId: z.string().describe('The target folder ID (from outlook_list_folders)'),
+  },
+  async ({ messageId, destinationFolderId }) => {
+    await graphPost(`/me/messages/${messageId}/move`, {
+      destinationId: destinationFolderId,
+    });
+    return textResult(`Moved email ${String(messageId).slice(0, 16)}... to folder ${String(destinationFolderId).slice(0, 16)}...`);
+  }
+);
+
+// ── 22e. outlook_mark_read ──────────────────────────────────────────────
+server.tool(
+  'outlook_mark_read',
+  'Mark an email as read or unread. Does not move or delete the email.',
+  {
+    messageId: z.string().describe('The email message ID'),
+    isRead: z.boolean().describe('true to mark as read, false to mark as unread'),
+  },
+  async ({ messageId, isRead }) => {
+    await graphPatch(`/me/messages/${messageId}`, { isRead });
+    return textResult(`Marked ${String(messageId).slice(0, 16)}... as ${isRead ? 'read' : 'unread'}`);
+  }
+);
+
+// ── 22f. outlook_archive_email ──────────────────────────────────────────
+server.tool(
+  'outlook_archive_email',
+  'Archive an email (moves to Archive folder). Safer than delete. Does not send notifications.',
+  {
+    messageId: z.string().describe('The email message ID'),
+  },
+  async ({ messageId }) => {
+    const folders = await graphGet(`/me/mailFolders?$filter=displayName eq 'Archive'&$select=id,displayName`);
+    const archiveFolder = (folders.value || [])[0];
+    if (!archiveFolder) {
+      return textResult('ERROR: No Archive folder found in mailbox. Use outlook_move_email with a specific folder ID instead.');
+    }
+    await graphPost(`/me/messages/${messageId}/move`, { destinationId: archiveFolder.id });
+    return textResult(`Archived email ${String(messageId).slice(0, 16)}...`);
+  }
+);
+
+// ── 22g. outlook_delete_email ───────────────────────────────────────────
+server.tool(
+  'outlook_delete_email',
+  'Soft-delete an email (moves to Deleted Items). Use outlook_archive_email as the safer default; this is only for clear noise that should not be kept.',
+  {
+    messageId: z.string().describe('The email message ID'),
+  },
+  async ({ messageId }) => {
+    await graphDelete(`/me/messages/${messageId}`);
+    return textResult(`Deleted email ${String(messageId).slice(0, 16)}... (moved to Deleted Items)`);
+  }
+);
+
 // ── Microsoft Teams ─────────────────────────────────────────────────────
 
 server.tool(
@@ -2180,7 +2377,7 @@ server.tool(
     const userEmail = env['MS_USER_EMAIL'] ?? '';
     const limit = Math.min(count, 50);
     const data = await graphGet(
-      `/users/${userEmail}/chats?$top=${limit}&$expand=members($select=displayName,userId)&$orderby=lastUpdatedDateTime desc&$select=id,topic,chatType,lastUpdatedDateTime,createdDateTime`
+      `/users/${userEmail}/chats?$top=${limit}&$expand=members($select=displayName,email)&$orderby=lastUpdatedDateTime desc&$select=id,topic,chatType,lastUpdatedDateTime,createdDateTime`
     );
     const chats = (data.value ?? []).map((c: any) => {
       const members = (c.members ?? []).map((m: any) => m.displayName || m.email || 'unknown');
@@ -2229,39 +2426,63 @@ server.tool(
 
 server.tool(
   'teams_search_messages',
-  'Search Teams messages across all chats by keyword. Searches message body content.',
+  'Search Teams messages across recent chats by keyword. Scans the most recent chats and filters messages client-side. Use for finding specific conversations or topics.',
   {
-    query: z.string().describe('Search query (keywords, names, topics)'),
-    count: z.number().optional().default(15).describe('Max results (max 25)'),
+    query: z.string().describe('Search query (keywords to match in message body, case-insensitive)'),
+    count: z.number().optional().default(15).describe('Max results to return (max 25)'),
+    chats_to_scan: z.number().optional().default(20).describe('Number of recent chats to scan (max 50, more = slower but broader)'),
+    messages_per_chat: z.number().optional().default(30).describe('Messages to check per chat (max 50)'),
   },
-  async ({ query, count }) => {
+  async ({ query, count, chats_to_scan, messages_per_chat }) => {
     const userEmail = env['MS_USER_EMAIL'] ?? '';
-    const limit = Math.min(count, 25);
-    const region = env['MS_REGION'] ?? 'NAM';
-    // Use the Graph search API for Teams messages
-    const data = await graphPost('/search/query', {
-      requests: [{
-        entityTypes: ['chatMessage'],
-        query: { queryString: query },
-        from: 0,
-        size: limit,
-        region,
-      }],
-    });
-    const hits = data.value?.[0]?.hitsContainers?.[0]?.hits ?? [];
-    const results = hits.map((hit: any) => {
-      const resource = hit.resource ?? {};
-      const bodyText = (resource.body?.content ?? resource.summary ?? '').replace(/<[^>]*>/g, '').trim();
-      return {
-        chatId: resource.chatId ?? null,
-        channelId: resource.channelIdentity?.channelId ?? null,
-        teamId: resource.channelIdentity?.teamId ?? null,
-        from: resource.from?.user?.displayName ?? resource.from?.emailAddress?.name ?? 'unknown',
-        body: bodyText.slice(0, 500),
-        date: resource.createdDateTime,
-        summary: hit.summary ? hit.summary.replace(/<[^>]*>/g, '').trim().slice(0, 200) : undefined,
-      };
-    });
+    const maxResults = Math.min(count, 25);
+    const chatLimit = Math.min(chats_to_scan, 50);
+    const msgLimit = Math.min(messages_per_chat, 50);
+
+    // Step 1: List recent chats
+    const chatData = await graphGet(
+      `/users/${userEmail}/chats?$top=${chatLimit}&$expand=members($select=displayName,email)&$orderby=lastUpdatedDateTime desc&$select=id,topic,chatType`
+    );
+    const chats = chatData.value ?? [];
+
+    // Step 2: Search messages in each chat
+    const queryLower = query.toLowerCase();
+    const queryTerms = queryLower.split(/\s+/).filter((t: string) => t.length > 0);
+    const results: any[] = [];
+
+    for (const chat of chats) {
+      if (results.length >= maxResults) break;
+      try {
+        const msgData = await graphGet(
+          `/chats/${chat.id}/messages?$top=${msgLimit}&$orderby=createdDateTime desc&$select=id,from,body,createdDateTime,messageType`
+        );
+        const messages = (msgData.value ?? []).filter((m: any) => m.messageType === 'message');
+        for (const msg of messages) {
+          if (results.length >= maxResults) break;
+          const bodyText = (msg.body?.content ?? '').replace(/<[^>]*>/g, '').trim();
+          const bodyLower = bodyText.toLowerCase();
+          // Match if ALL query terms appear in the message body
+          if (queryTerms.every((term: string) => bodyLower.includes(term))) {
+            const members = (chat.members ?? []).map((m: any) => m.displayName || m.email || 'unknown');
+            results.push({
+              chatId: chat.id,
+              chatName: chat.topic || members.filter((n: string) => n !== 'unknown').join(', ') || '(unnamed)',
+              chatType: chat.chatType,
+              from: msg.from?.user?.displayName ?? msg.from?.application?.displayName ?? 'unknown',
+              body: bodyText.slice(0, 500),
+              date: msg.createdDateTime,
+            });
+          }
+        }
+      } catch {
+        // Skip chats we can't read (e.g., meeting chats with restricted access)
+        continue;
+      }
+    }
+
+    if (results.length === 0) {
+      return textResult(`No messages matching "${query}" found in the ${chatLimit} most recent chats.`);
+    }
     return externalResult(JSON.stringify(results, null, 2));
   },
 );
