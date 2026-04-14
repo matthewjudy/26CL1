@@ -1674,6 +1674,61 @@ export async function startDiscord(
     }
 
     const customId = button.customId; // e.g. "plan_plan-123_approve", "plan_plan-123_revise"
+
+    // ── Email action buttons — Sasha's inbox workflow ───────────────
+    if (customId.startsWith('email_')) {
+      const parts = customId.split('_');
+      // Format: email_{action}_{shortId} — action may contain hyphens like file-followup
+      const action = parts[1];
+      const shortId = parts.slice(2).join('_');
+
+      // Disable buttons immediately — reconstruct components with disabled:true
+      try {
+        await button.deferUpdate();
+        const rawComponents = (button.message.components as any[]).map((row: any) => ({
+          type: 1,
+          components: (row.components ?? []).map((comp: any) => ({
+            type: comp.type ?? 2,
+            style: comp.style,
+            label: comp.label,
+            custom_id: comp.customId ?? comp.custom_id,
+            disabled: true,
+          })),
+        }));
+        const originalContent = button.message.content ?? '';
+        await button.editReply({
+          content: (originalContent + `\n\n\u2713 Action: ${action} — queued`).slice(0, 2000),
+          components: rawComponents as any,
+        });
+      } catch (err) {
+        logger.warn({ err }, 'Failed to disable email action buttons');
+      }
+
+      // Write decision to pending-actions state file
+      const stateFile = path.join(
+        VAULT_DIR, 'Meta', 'Clementine', 'state', 'email-pending-actions.jsonl'
+      );
+      const entry = {
+        timestamp: new Date().toISOString(),
+        shortId,
+        action,
+        userId: button.user.id,
+        channelId: button.channelId,
+        messageId: button.message.id,
+      };
+      try {
+        const fs = await import('node:fs');
+        fs.appendFileSync(stateFile, JSON.stringify(entry) + '\n');
+      } catch (err) {
+        logger.error({ err }, 'Failed to write email pending action');
+        try {
+          await button.followUp({ content: 'Failed to record your decision. Please try again.', ephemeral: true });
+        } catch { /* ignore */ }
+        return;
+      }
+      return;
+    }
+
     const isApprove = customId.endsWith('_approve');
     const isDeny = customId.endsWith('_deny');
     const isRevise = customId.endsWith('_revise');
