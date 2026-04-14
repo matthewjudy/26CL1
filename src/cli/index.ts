@@ -24,6 +24,7 @@ import {
   closeSync,
   readSync,
   readFileSync,
+  readdirSync,
   writeFileSync,
   unlinkSync,
   mkdirSync,
@@ -131,14 +132,77 @@ function killPid(pid: number): void {
   }
 }
 
+/**
+ * Scan ~/Library/LaunchAgents for plists owned by this package (assistant, cron, dashboard).
+ * Matches by filename role (`com.*.{assistant,cron,dashboard}.plist`) AND by content reference
+ * to PACKAGE_ROOT, so we catch plists installed under a legacy ASSISTANT_NAME (e.g. leftover
+ * `com.19q1.assistant.plist` after a rename) while ignoring unrelated LaunchAgents.
+ */
+function findAssistantOwnedPlists(): string[] {
+  if (process.platform !== 'darwin') return [];
+  const home = process.env.HOME;
+  if (!home) return [];
+  const dir = path.join(home, 'Library', 'LaunchAgents');
+  if (!existsSync(dir)) return [];
+  const hits: string[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const roleRe = /^com\..+\.(assistant|cron|dashboard)\.plist$/;
+  for (const name of entries) {
+    if (!roleRe.test(name)) continue;
+    const full = path.join(dir, name);
+    try {
+      const content = readFileSync(full, 'utf-8');
+      if (content.includes(PACKAGE_ROOT)) hits.push(full);
+    } catch {
+      // unreadable — skip
+    }
+  }
+  return hits;
+}
+
+/**
+ * Find running assistant-owned processes: the main daemon (dist/index.js), the cron runner
+ * (`cli/index.js cron ...`), and the dashboard (`cli/index.js dashboard ...`). Excludes the
+ * current process and deliberately does NOT match `mcp-server.js` or ad-hoc CLI commands —
+ * those should not be killed as collateral. Returns unique PIDs.
+ */
+function findAssistantOwnedPids(): number[] {
+  const cliEntry = path.join(PACKAGE_ROOT, 'dist', 'cli', 'index.js');
+  const patterns = [
+    DIST_ENTRY,
+    `${cliEntry} cron`,
+    `${cliEntry} dashboard`,
+  ];
+  const pids = new Set<number>();
+  for (const pat of patterns) {
+    try {
+      const out = execSync(`pgrep -f "${pat}" || true`, { encoding: 'utf-8' }).trim();
+      if (!out) continue;
+      for (const line of out.split('\n')) {
+        const p = parseInt(line.trim(), 10);
+        if (!isNaN(p) && p !== process.pid) pids.add(p);
+      }
+    } catch {
+      // pgrep failed — skip this pattern
+    }
+  }
+  return [...pids];
+}
+
 /** Stop the daemon safely: unload LaunchAgent first (prevents respawn), then kill the process. */
 function stopDaemon(pid: number): void {
-  // Unload LaunchAgent BEFORE killing — otherwise launchd respawns it immediately
+  // Unload the derived-label plist BEFORE killing — otherwise launchd respawns immediately.
+  // (Broader plist/orphan cleanup happens in cmdStop.)
   if (process.platform === 'darwin') {
-    const plist = getLaunchdPlistPath();
-    if (existsSync(plist)) {
+    const derived = getLaunchdPlistPath();
+    if (existsSync(derived)) {
       try {
-        execSync(`launchctl unload "${plist}"`, { stdio: 'pipe' });
+        execSync(`launchctl unload "${derived}"`, { stdio: 'pipe' });
       } catch {
         // not loaded — that's fine
       }
@@ -314,20 +378,51 @@ function cmdStop(options?: { dashboard?: boolean; all?: boolean }): void {
 
   if (doDaemon) {
     const pid = readPid();
-    if (!pid) {
-      console.log('  No running daemon found.');
-    } else if (!isProcessAlive(pid)) {
-      console.log(`  PID ${pid} is not running. Cleaning up PID file.`);
-      try { unlinkSync(getPidFilePath()); } catch { /* ignore */ }
-    } else {
+    if (pid && isProcessAlive(pid)) {
       console.log(`  Stopping ${getAssistantName()} (PID ${pid})...`);
       stopDaemon(pid);
       if (isProcessAlive(pid)) {
         console.log('  Daemon did not exit cleanly.');
       } else {
         console.log('  Daemon stopped.');
-        try { unlinkSync(getPidFilePath()); } catch { /* ignore */ }
       }
+    } else if (pid) {
+      console.log(`  PID ${pid} is not running. Cleaning up PID file.`);
+    }
+    // Always clean up the PID file if it exists — stale or not.
+    try { unlinkSync(getPidFilePath()); } catch { /* ignore */ }
+
+    // Full shutdown: unload every assistant-owned launchd plist (assistant + cron + dashboard,
+    // including legacy labels), then kill any surviving assistant-owned process. This guarantees
+    // no token-consuming process remains — cron jobs fire agents, so leaving cron alive would
+    // violate "no token usage after stop". Unload is session-scoped (no -w), so a reboot brings
+    // everything back automatically.
+    let unloadedPlists = 0;
+    if (process.platform === 'darwin') {
+      const derived = getLaunchdPlistPath();
+      for (const plist of findAssistantOwnedPlists()) {
+        if (plist === derived) continue; // already handled by stopDaemon()
+        try {
+          execSync(`launchctl unload "${plist}"`, { stdio: 'pipe' });
+          console.log(`  Unloaded LaunchAgent: ${path.basename(plist)}`);
+          unloadedPlists++;
+        } catch {
+          // not loaded — fine
+        }
+      }
+    }
+    const survivors = findAssistantOwnedPids().filter((p) => p !== pid);
+    if (survivors.length > 0) {
+      console.log(`  Found ${survivors.length} running process(es): ${survivors.join(', ')}. Killing...`);
+      for (const op of survivors) killPid(op);
+      const remaining = findAssistantOwnedPids().filter((p) => p !== pid);
+      if (remaining.length > 0) {
+        console.log(`  Warning: ${remaining.length} process(es) still alive: ${remaining.join(', ')}`);
+      } else {
+        console.log('  All assistant processes stopped.');
+      }
+    } else if (!pid && unloadedPlists === 0) {
+      console.log('  No running daemon found.');
     }
   }
 
