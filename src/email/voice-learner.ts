@@ -80,6 +80,11 @@ export async function runVoiceLearner(options: {
 
   if (updatedProfile.trim()) {
     vault.writeVoiceProfile(updatedProfile.trim());
+    vault.appendDailyLog(
+      new Intl.DateTimeFormat('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()),
+      'Voice Learner',
+      `Voice profile updated from ${sentEmails.length} sent email${sentEmails.length !== 1 ? 's' : ''}.`
+    );
     logger.info({ sentCount: sentEmails.length }, 'Voice profile updated');
   }
 }

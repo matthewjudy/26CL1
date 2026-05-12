@@ -18,5 +18,16 @@
     "noUnusedParameters": false
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/cli/chat.ts",
+    "src/cli/cron.ts",
+    "src/cli/dashboard.ts",
+    "src/cli/index.ts",
+    "src/channels/discord.ts",
+    "src/agent/assistant.ts",
+    "src/agent/prompt-cache.ts",
+    "src/tools/mcp-server.ts"
+  ]
 }

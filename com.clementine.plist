@@ -6,7 +6,7 @@
   <string>com.clementine</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
+    <string>/Users/mjudy/.nvm/versions/node/v24.13.0/bin/node</string>
     <string>/Users/mjudy/clementine/dist/index.js</string>
   </array>
   <key>WorkingDirectory</key>

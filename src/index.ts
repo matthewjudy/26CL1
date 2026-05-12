@@ -2,7 +2,7 @@
  * Clementine — Mac Mini always-on agent.
  *
  * Two agents, two schedules:
- *   Email Agent: hourly on the hour, 7am–7pm Eastern
+ *   Email Agent: hourly on the hour, 7am–6pm Eastern (7am–7pm window, hour 19 discarded by guard)
  *   Voice Learner: nightly 9pm
  *   Scheduler Agent: Thursday 7am (lsvr + localact-export)
  */

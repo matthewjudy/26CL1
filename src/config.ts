@@ -150,7 +150,7 @@ export const MODEL = MODELS[DEFAULT_MODEL_TIER] ?? MODELS.sonnet;
 // ── Discord ──────────────────────────────────────────────────────────
 
 export const DISCORD_TOKEN = getSecret('DISCORD_TOKEN');
-export const DISCORD_OWNER_ID = getEnv('DISCORD_OWNER_ID', '0');
+export const DISCORD_OWNER_ID = getEnv('DISCORD_OWNER_ID', '');
 export const DISCORD_OPS_CHANNEL_ID = getEnv('DISCORD_OPS_CHANNEL_ID', '');
 export const DISCORD_EMAIL_CHANNEL_ID = getEnv('DISCORD_EMAIL_CHANNEL_ID', '');
 export const DISCORD_WATCHED_CHANNELS: string[] = getEnv('DISCORD_WATCHED_CHANNELS')
