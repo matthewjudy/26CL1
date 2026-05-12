@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.clementine</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/mjudy/clementine/dist/index.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/mjudy/2026 FCI</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TZ</key>
+    <string>America/New_York</string>
+    <key>WATCHCOMMANDER_HOME</key>
+    <string>/Users/mjudy/.watchcommander</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/mjudy/.watchcommander/logs/clementine.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mjudy/.watchcommander/logs/clementine.err</string>
+</dict>
+</plist>
