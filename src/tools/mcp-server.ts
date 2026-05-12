@@ -15,8 +15,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import express from 'express';
 import pino from 'pino';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
@@ -2159,6 +2157,86 @@ server.tool(
   },
 );
 
+// ── 20b. outlook_update_draft ────────────────────────────────────────────
+
+server.tool(
+  'outlook_update_draft',
+  'Update an existing draft email in Outlook. Can change the body, subject, to, or cc. Only updates the fields you provide — omitted fields stay unchanged. The draft must already exist (use outlook_draft to create one first).',
+  {
+    draftId: z.string().describe('The message ID of the existing draft (from outlook_draft response or outlook_search)'),
+    body: z.string().optional().describe('New email body (plain text — replaces entire body). Do NOT include a signature.'),
+    subject: z.string().optional().describe('New subject line'),
+    to: z.string().optional().describe('New recipient email address (replaces existing To)'),
+    cc: z.string().optional().describe('New CC email address (replaces existing CC)'),
+  },
+  async ({ draftId, body, subject, to, cc }) => {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+
+    const patch: any = {};
+
+    if (body !== undefined) {
+      const FONT_STYLE = 'font-family:Aptos,Calibri,sans-serif;font-size:11pt';
+      // For reply drafts, we need to preserve the quoted thread below our content.
+      // Read the existing draft first to check for quoted content.
+      const existing = await graphGet(`/users/${userEmail}/messages/${draftId}?$select=body`);
+      const existingHtml = existing.body?.content ?? '';
+
+      const htmlBody = body.split('\n').map((l: string) =>
+        l.trim() ? `<p style="${FONT_STYLE}">${l}</p>` : `<p style="${FONT_STYLE}"><br></p>`
+      ).join('\n');
+
+      // Look for the divider that separates reply content from quoted thread
+      // Common patterns: <div id="divRplyFwdMsg">, <div id="appendonsend">, <hr style=...>
+      const dividerMatch = existingHtml.match(/<div\s+id="(?:divRplyFwdMsg|appendonsend)"[^>]*>/i)
+        ?? existingHtml.match(/<hr\s+style="display:inline-block[^"]*"[^>]*>/i);
+
+      if (dividerMatch && dividerMatch.index !== undefined) {
+        // Reply draft — preserve everything from the divider onward (quoted thread)
+        const beforeDivider = existingHtml.slice(0, dividerMatch.index);
+        const quotedThread = existingHtml.slice(dividerMatch.index);
+        // Find the <body> tag in the pre-divider content to insert after it
+        const bodyTagMatch = beforeDivider.match(/<body[^>]*>/i);
+        if (bodyTagMatch) {
+          const insertPos = beforeDivider.indexOf(bodyTagMatch[0]) + bodyTagMatch[0].length;
+          patch.body = {
+            contentType: 'HTML',
+            content: beforeDivider.slice(0, insertPos) + '\n' + htmlBody + '\n' + quotedThread,
+          };
+        } else {
+          patch.body = { contentType: 'HTML', content: htmlBody + '\n' + quotedThread };
+        }
+      } else {
+        // Standalone draft — just replace the body
+        patch.body = { contentType: 'HTML', content: htmlBody };
+      }
+    }
+
+    if (subject !== undefined) {
+      patch.subject = subject;
+    }
+    if (to !== undefined) {
+      patch.toRecipients = [{ emailAddress: { address: to } }];
+    }
+    if (cc !== undefined) {
+      patch.ccRecipients = [{ emailAddress: { address: cc } }];
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return textResult('No fields to update. Provide at least one of: body, subject, to, cc.');
+    }
+
+    await graphPatch(`/users/${userEmail}/messages/${draftId}`, patch);
+
+    const updated: string[] = [];
+    if (body !== undefined) updated.push('body');
+    if (subject !== undefined) updated.push('subject');
+    if (to !== undefined) updated.push('to');
+    if (cc !== undefined) updated.push('cc');
+
+    return textResult(`Draft updated (${updated.join(', ')}): ${String(draftId).slice(0, 20)}...`);
+  },
+);
+
 // ── 21. outlook_send ────────────────────────────────────────────────────
 
 server.tool(
@@ -2292,7 +2370,8 @@ server.tool(
   'List all mail folders in the Outlook mailbox. Returns folder names, IDs, and unread counts. Use this to discover the folder structure before moving emails.',
   {},
   async () => {
-    const response = await graphGet('/me/mailFolders?$top=50&$select=id,displayName,unreadItemCount,totalItemCount,parentFolderId');
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const response = await graphGet(`/users/${userEmail}/mailFolders?$top=50&$select=id,displayName,unreadItemCount,totalItemCount,parentFolderId`);
     const folders = (response.value || []).map((f: any) => ({
       id: f.id,
       name: f.displayName,
@@ -2313,7 +2392,8 @@ server.tool(
     destinationFolderId: z.string().describe('The target folder ID (from outlook_list_folders)'),
   },
   async ({ messageId, destinationFolderId }) => {
-    await graphPost(`/me/messages/${messageId}/move`, {
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    await graphPost(`/users/${userEmail}/messages/${messageId}/move`, {
       destinationId: destinationFolderId,
     });
     return textResult(`Moved email ${String(messageId).slice(0, 16)}... to folder ${String(destinationFolderId).slice(0, 16)}...`);
@@ -2329,7 +2409,8 @@ server.tool(
     isRead: z.boolean().describe('true to mark as read, false to mark as unread'),
   },
   async ({ messageId, isRead }) => {
-    await graphPatch(`/me/messages/${messageId}`, { isRead });
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    await graphPatch(`/users/${userEmail}/messages/${messageId}`, { isRead });
     return textResult(`Marked ${String(messageId).slice(0, 16)}... as ${isRead ? 'read' : 'unread'}`);
   }
 );
@@ -2342,12 +2423,13 @@ server.tool(
     messageId: z.string().describe('The email message ID'),
   },
   async ({ messageId }) => {
-    const folders = await graphGet(`/me/mailFolders?$filter=displayName eq 'Archive'&$select=id,displayName`);
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    const folders = await graphGet(`/users/${userEmail}/mailFolders?$filter=displayName eq 'Archive'&$select=id,displayName`);
     const archiveFolder = (folders.value || [])[0];
     if (!archiveFolder) {
       return textResult('ERROR: No Archive folder found in mailbox. Use outlook_move_email with a specific folder ID instead.');
     }
-    await graphPost(`/me/messages/${messageId}/move`, { destinationId: archiveFolder.id });
+    await graphPost(`/users/${userEmail}/messages/${messageId}/move`, { destinationId: archiveFolder.id });
     return textResult(`Archived email ${String(messageId).slice(0, 16)}...`);
   }
 );
@@ -2360,7 +2442,8 @@ server.tool(
     messageId: z.string().describe('The email message ID'),
   },
   async ({ messageId }) => {
-    await graphDelete(`/me/messages/${messageId}`);
+    const userEmail = env['MS_USER_EMAIL'] ?? '';
+    await graphDelete(`/users/${userEmail}/messages/${messageId}`);
     return textResult(`Deleted email ${String(messageId).slice(0, 16)}... (moved to Deleted Items)`);
   }
 );
@@ -3075,40 +3158,59 @@ server.tool(
 
 server.tool(
   'discord_channel_send_buttons',
-  'Send a message to a Discord channel with approve/deny action buttons. Returns the message ID for tracking.',
+  'Send a message to a Discord channel with action buttons. Supports two modes: (1) Simple approve/deny with custom_id_prefix, or (2) Custom buttons array for full control over labels, custom_ids, and styles. For email workflows, use buttons array with custom_ids like "email_draft_{shortId}", "email_skip_{shortId}", etc.',
   {
     channel_id: z.string().describe('Discord channel ID to post to'),
     message: z.string().describe('Message content (Discord markdown)'),
-    approve_label: z.string().optional().describe('Label for approve button (default: Approve)'),
-    deny_label: z.string().optional().describe('Label for deny button (default: Deny)'),
-    custom_id_prefix: z.string().optional().describe('Prefix for button custom IDs (default: audit). Buttons will be {prefix}_approve and {prefix}_deny'),
+    approve_label: z.string().optional().describe('Label for approve button (default: Approve). Ignored if buttons array is provided.'),
+    deny_label: z.string().optional().describe('Label for deny button (default: Deny). Ignored if buttons array is provided.'),
+    custom_id_prefix: z.string().optional().describe('Prefix for button custom IDs (default: audit). Buttons will be {prefix}_approve and {prefix}_deny. Ignored if buttons array is provided.'),
+    buttons: z.array(z.object({
+      label: z.string().describe('Button label text (max 80 chars)'),
+      custom_id: z.string().describe('Unique custom_id for the button (e.g. "email_draft_PfW8vMAA")'),
+      style: z.number().optional().describe('Discord button style: 1=Primary/blue, 2=Secondary/grey, 3=Success/green, 4=Danger/red (default: 2)'),
+    })).min(1).max(5).optional().describe('Custom buttons array. When provided, overrides approve/deny defaults. Max 5 buttons per message.'),
   },
-  async ({ channel_id, message, approve_label, deny_label, custom_id_prefix }) => {
+  async ({ channel_id, message, approve_label, deny_label, custom_id_prefix, buttons }) => {
     const token = env['DISCORD_TOKEN'] ?? '';
     if (!token) throw new Error('DISCORD_TOKEN not configured');
     if (!channel_id) throw new Error('channel_id is required');
 
-    const prefix = custom_id_prefix ?? 'audit';
+    let buttonComponents: any[];
+
+    if (buttons && buttons.length > 0) {
+      // Custom buttons mode
+      buttonComponents = buttons.slice(0, 5).map((btn) => ({
+        type: 2, // BUTTON
+        style: btn.style ?? 2, // Default to SECONDARY
+        label: btn.label.slice(0, 80),
+        custom_id: btn.custom_id,
+      }));
+    } else {
+      // Legacy approve/deny mode
+      const prefix = custom_id_prefix ?? 'audit';
+      buttonComponents = [
+        {
+          type: 2, // BUTTON
+          style: 3, // SUCCESS (green)
+          label: approve_label ?? '✅ Approve',
+          custom_id: `${prefix}_approve`,
+        },
+        {
+          type: 2, // BUTTON
+          style: 4, // DANGER (red)
+          label: deny_label ?? '❌ Deny',
+          custom_id: `${prefix}_deny`,
+        },
+      ];
+    }
 
     const payload = {
       content: message.slice(0, 2000),
       components: [
         {
           type: 1, // ACTION_ROW
-          components: [
-            {
-              type: 2, // BUTTON
-              style: 3, // SUCCESS (green)
-              label: approve_label ?? '✅ Approve',
-              custom_id: `${prefix}_approve`,
-            },
-            {
-              type: 2, // BUTTON
-              style: 4, // DANGER (red)
-              label: deny_label ?? '❌ Deny',
-              custom_id: `${prefix}_deny`,
-            },
-          ],
+          components: buttonComponents,
         },
       ],
     };
@@ -5254,83 +5356,10 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  const httpPort = process.env.MCP_HTTP_PORT ? parseInt(process.env.MCP_HTTP_PORT, 10) : 0;
-
-  if (httpPort > 0) {
-    // ── HTTP+SSE mode for remote access (e.g. over Tailscale) ──────────
-    const authToken = process.env.MCP_AUTH_TOKEN ?? '';
-    const app = express();
-    app.use(express.json());
-
-    // Optional bearer token auth
-    if (authToken) {
-      app.use((req, res, next) => {
-        if (req.path === '/health') return next(); // health check is public
-        const header = req.headers.authorization ?? '';
-        if (header !== `Bearer ${authToken}`) {
-          res.status(401).json({ error: 'Unauthorized' });
-          return;
-        }
-        next();
-      });
-    }
-
-    // Health check
-    app.get('/health', (_req, res) => {
-      res.json({ status: 'ok', transport: 'sse', tools: (server as any)._registeredTools?.size ?? 'unknown' });
-    });
-
-    // Track active SSE transports by session ID
-    const transports = new Map<string, SSEServerTransport>();
-
-    // SSE endpoint — client connects here to establish the event stream.
-    // The module-level `server` has all tools registered. McpServer binds 1:1
-    // with a transport, so only one SSE client at a time. New connections
-    // replace the previous one (fine for single-user Tailscale access).
-    app.get('/sse', async (req, res) => {
-      logger.info({ remoteAddr: req.ip }, 'New SSE connection');
-
-      // Close any prior SSE connection
-      for (const [id, old] of transports) {
-        logger.info({ sessionId: id }, 'Closing previous SSE session');
-        transports.delete(id);
-        try { await old.close(); } catch { /* already closed */ }
-      }
-
-      const transport = new SSEServerTransport('/messages', res);
-      transports.set(transport.sessionId, transport);
-
-      res.on('close', () => {
-        logger.info({ sessionId: transport.sessionId }, 'SSE connection closed');
-        transports.delete(transport.sessionId);
-        transport.close();
-      });
-
-      // server.connect() calls transport.start() internally — don't call start() separately
-      await server.connect(transport);
-    });
-
-    // Message endpoint — client POSTs JSON-RPC messages here
-    app.post('/messages', async (req, res) => {
-      const sessionId = req.query.sessionId as string;
-      const transport = transports.get(sessionId);
-      if (!transport) {
-        res.status(400).json({ error: 'Unknown or expired session. Connect to /sse first.' });
-        return;
-      }
-      await transport.handlePostMessage(req, res);
-    });
-
-    app.listen(httpPort, '0.0.0.0', () => {
-      logger.info({ port: httpPort, auth: authToken ? 'enabled' : 'disabled' }, 'MCP SSE server listening');
-      console.error(`MCP SSE server listening on 0.0.0.0:${httpPort} (auth: ${authToken ? 'enabled' : 'disabled'})`);
-    });
-  } else {
-    // ── Default: stdio mode ────────────────────────────────────────────
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    logger.info('MCP server connected via stdio');
-  }
+  // ── stdio mode (only supported transport) ─────────────────────────
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  logger.info('MCP server connected via stdio');
 }
 
 main().catch(err => {

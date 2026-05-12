@@ -158,41 +158,6 @@ export const DISCORD_WATCHED_CHANNELS: string[] = getEnv('DISCORD_WATCHED_CHANNE
   .map((s) => s.trim())
   .filter(Boolean);
 
-// ── Slack ────────────────────────────────────────────────────────────
-
-export const SLACK_BOT_TOKEN = getSecret('SLACK_BOT_TOKEN');
-export const SLACK_APP_TOKEN = getSecret('SLACK_APP_TOKEN');
-export const SLACK_OWNER_USER_ID = getEnv('SLACK_OWNER_USER_ID');
-
-// ── Telegram ─────────────────────────────────────────────────────────
-
-export const TELEGRAM_BOT_TOKEN = getSecret('TELEGRAM_BOT_TOKEN');
-export const TELEGRAM_OWNER_ID = getEnv('TELEGRAM_OWNER_ID', '0');
-
-// ── WhatsApp (Twilio) ────────────────────────────────────────────────
-
-export const TWILIO_ACCOUNT_SID = getSecret('TWILIO_ACCOUNT_SID');
-export const TWILIO_AUTH_TOKEN = getSecret('TWILIO_AUTH_TOKEN');
-export const WHATSAPP_OWNER_PHONE = getEnv('WHATSAPP_OWNER_PHONE');
-export const WHATSAPP_FROM_PHONE = getEnv('WHATSAPP_FROM_PHONE');
-export const WHATSAPP_WEBHOOK_PORT = parseInt(getEnv('WHATSAPP_WEBHOOK_PORT', '8421'), 10);
-
-// ── Webhook ──────────────────────────────────────────────────────────
-
-export const WEBHOOK_ENABLED = getEnv('WEBHOOK_ENABLED', 'false').toLowerCase() === 'true';
-export const WEBHOOK_PORT = parseInt(getEnv('WEBHOOK_PORT', '8420'), 10);
-export const WEBHOOK_SECRET = getSecret('WEBHOOK_SECRET');
-
-// ── Voice ────────────────────────────────────────────────────────────
-
-export const GROQ_API_KEY = getSecret('GROQ_API_KEY');
-export const ELEVENLABS_API_KEY = getSecret('ELEVENLABS_API_KEY');
-export const ELEVENLABS_VOICE_ID = getEnv('ELEVENLABS_VOICE_ID');
-
-// ── Video ────────────────────────────────────────────────────────────
-
-export const GOOGLE_API_KEY = getSecret('GOOGLE_API_KEY');
-
 // ── Outlook (Microsoft Graph) ───────────────────────────────────────
 
 export const MS_TENANT_ID = getEnv('MS_TENANT_ID');
@@ -200,25 +165,25 @@ export const MS_CLIENT_ID = getEnv('MS_CLIENT_ID');
 export const MS_CLIENT_SECRET = getSecret('MS_CLIENT_SECRET');
 export const MS_USER_EMAIL = getEnv('MS_USER_EMAIL');
 
+// ── PMSC ─────────────────────────────────────────────────────────────
+
+export const PMSC_BASE_URL = getEnv('PMSC_BASE_URL', 'https://pmsc.fcifloors.com');
+export const PMSC_API_TOKEN = getSecret('PMSC_API_TOKEN');
+export const PMSC_USER_ID = getEnv('PMSC_USER_ID');
+
+// ── Email Agent ───────────────────────────────────────────────────────
+
+export const EMAIL_AGENT_START_HOUR = parseInt(getEnv('EMAIL_AGENT_START_HOUR', '7'), 10);
+export const EMAIL_AGENT_END_HOUR = parseInt(getEnv('EMAIL_AGENT_END_HOUR', '19'), 10);
+
+// ── Voice Profile ────────────────────────────────────────────────────
+
+export const VOICE_PROFILE_FILE = path.join(SYSTEM_DIR, 'voice-patterns.md');
+export const PENDING_UPLOADS_DIR = path.join(SYSTEM_DIR, 'pending-uploads');
+
 // ── Security ─────────────────────────────────────────────────────────
 
 export const ALLOW_ALL_USERS = getEnv('ALLOW_ALL_USERS', 'false').toLowerCase() === 'true';
-
-// ── Heartbeat ────────────────────────────────────────────────────────
-
-export const HEARTBEAT_INTERVAL_MINUTES = parseInt(getEnv('HEARTBEAT_INTERVAL_MINUTES', '30'), 10);
-export const HEARTBEAT_ACTIVE_START = parseInt(getEnv('HEARTBEAT_ACTIVE_START', '8'), 10);
-export const HEARTBEAT_ACTIVE_END = parseInt(getEnv('HEARTBEAT_ACTIVE_END', '22'), 10);
-export const HEARTBEAT_MAX_TURNS = parseInt(getEnv('HEARTBEAT_MAX_TURNS', '5'), 10);
-
-// ── Unleashed mode ──────────────────────────────────────────────────
-
-/** Max turns per phase in unleashed mode before checkpointing. */
-export const UNLEASHED_PHASE_TURNS = 75;
-/** Default max duration for unleashed tasks (hours). */
-export const UNLEASHED_DEFAULT_MAX_HOURS = 6;
-/** Max phases before forcing completion. */
-export const UNLEASHED_MAX_PHASES = 50;
 
 // ── Workspace ───────────────────────────────────────────────────────
 
@@ -235,10 +200,6 @@ export const SUPPRESS_AGENT_STARTUP_DM = getEnv('SUPPRESS_AGENT_STARTUP_DM', 'fa
 // ── Channel availability flags ───────────────────────────────────────
 
 export const CHANNEL_DISCORD = Boolean(DISCORD_TOKEN);
-export const CHANNEL_SLACK = Boolean(SLACK_BOT_TOKEN && SLACK_APP_TOKEN);
-export const CHANNEL_TELEGRAM = Boolean(TELEGRAM_BOT_TOKEN);
-export const CHANNEL_WHATSAPP = Boolean(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && WHATSAPP_OWNER_PHONE);
-export const CHANNEL_WEBHOOK = WEBHOOK_ENABLED && Boolean(WEBHOOK_SECRET);
 export const CHANNEL_OUTLOOK = Boolean(MS_TENANT_ID && MS_CLIENT_ID && MS_CLIENT_SECRET && MS_USER_EMAIL);
 
 // ── Fail-closed secret validation ───────────────────────────────────
@@ -255,10 +216,6 @@ interface SecretValidation {
 
 const SECRET_VALIDATIONS: SecretValidation[] = [
   { key: 'DISCORD_TOKEN', channel: 'Discord' },
-  { key: 'SLACK_BOT_TOKEN', channel: 'Slack', requiredWith: ['SLACK_APP_TOKEN'] },
-  { key: 'SLACK_APP_TOKEN', channel: 'Slack', requiredWith: ['SLACK_BOT_TOKEN'] },
-  { key: 'TELEGRAM_BOT_TOKEN', channel: 'Telegram' },
-  { key: 'TWILIO_ACCOUNT_SID', channel: 'WhatsApp', requiredWith: ['TWILIO_AUTH_TOKEN', 'WHATSAPP_OWNER_PHONE'] },
   { key: 'ANTHROPIC_API_KEY', channel: 'API' },
 ];
 
@@ -297,11 +254,6 @@ export function validateSecrets(): string[] {
   return warnings;
 }
 
-// ── Team ────────────────────────────────────────────────────────────
-
-export const TEAM_COMMS_CHANNEL = getEnv('TEAM_COMMS_CHANNEL');
-export const TEAM_COMMS_LOG = path.join(BASE_DIR, 'logs', 'team-comms.jsonl');
-
 // ── Memory / Search ──────────────────────────────────────────────────
 
 export const MEMORY_DB_PATH = path.join(BASE_DIR, '.memory.db');
@@ -321,11 +273,6 @@ export const INJECTED_CONTEXT_MAX_CHARS = 6000;
 export const TEMPORAL_DECAY_HALF_LIFE_DAYS = 30;
 export const EPISODIC_DECAY_HALF_LIFE_DAYS = 7;
 
-// ── Self-Improvement ─────────────────────────────────────────────────
-
-export const SELF_IMPROVE_DIR = path.join(BASE_DIR, 'self-improve');
-export const SOURCE_MODS_DIR = path.join(SELF_IMPROVE_DIR, 'source-mods');
-
 // ── Goals & Cron Progress ───────────────────────────────────────────
 
 export const GOALS_DIR = path.join(BASE_DIR, 'goals');
@@ -335,10 +282,6 @@ export const DELEGATIONS_DIR = path.join(SYSTEM_DIR, 'agents');
 export const HANDOFFS_DIR = path.join(BASE_DIR, 'handoffs');
 export const PLAN_STATE_DIR = path.join(BASE_DIR, 'plan-state');
 export const VAULT_MIGRATIONS_STATE = path.join(BASE_DIR, '.vault-migrations.json');
-
-// ── Source Self-Edit Staging ─────────────────────────────────────────
-
-export const STAGING_DIR = path.join(BASE_DIR, 'staging');
 
 // ── Task ID Generator ────────────────────────────────────────────────
 // Format: YYYYMMDD00XXXX (e.g., 20260331000001)

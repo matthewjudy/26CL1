@@ -24,8 +24,6 @@ import type {
   TranscriptTurn,
   WikilinkConnection,
 } from '../types.js';
-import { chunkFile } from './chunker.js';
-import { mmrRerank } from './mmr.js';
 import { deduplicateResults } from './search.js';
 
 const WIKILINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
@@ -308,7 +306,8 @@ export class MemoryStore {
     // Process changed/new files
     for (const filePath of filesToUpdate) {
       const rel = path.relative(this.vaultDir, filePath);
-      const chunks = chunkFile(filePath, this.vaultDir);
+      // chunkFile removed — vault indexing will be re-implemented in a later task
+      const chunks: Chunk[] = [];
       if (chunks.length === 0) continue;
 
       // Delete old chunks for this file
@@ -372,8 +371,8 @@ export class MemoryStore {
     // Delete old chunks
     this.deleteFileChunks(relPath);
 
-    // Re-chunk
-    const chunks = chunkFile(fullPath, this.vaultDir);
+    // chunkFile removed — vault indexing will be re-implemented in a later task
+    const chunks: Chunk[] = [];
     if (chunks.length === 0) return;
 
     // Insert new chunks
@@ -571,7 +570,7 @@ export class MemoryStore {
 
     // 3. Merge and deduplicate (FTS results first, so they win on ties)
     const merged = [...ftsResults, ...recentResults];
-    return mmrRerank(deduplicateResults(merged), 0.7, limit + recencyLimit);
+    return deduplicateResults(merged).slice(0, limit + recencyLimit);
   }
 
   // ── Wikilink Graph ────────────────────────────────────────────────
