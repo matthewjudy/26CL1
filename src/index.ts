@@ -56,7 +56,6 @@ async function emailAgentRun(): Promise<void> {
 
   const { pmsc, vault, graph } = buildClients();
   const sinceDate = lastEmailScan;
-  lastEmailScan = now;
 
   try {
     const goals = await pmsc.fetchGoals().catch(() => []);
@@ -70,6 +69,7 @@ async function emailAgentRun(): Promise<void> {
       vaultPath: VAULT_DIR,
       modelSonnet: MODELS.sonnet,
     });
+    lastEmailScan = now;
   } catch (err) {
     logger.error({ err }, 'Email Agent run failed');
   }
