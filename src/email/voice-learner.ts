@@ -45,7 +45,14 @@ export async function runVoiceLearner(options: {
   const since = new Date();
   since.setHours(0, 0, 0, 0);
 
-  const sentEmails = await graphClient.getSentSince(since);
+  let sentEmails;
+  try {
+    sentEmails = await graphClient.getSentSince(since);
+  } catch (err) {
+    logger.error({ err }, 'Failed to fetch sent emails — skipping voice learning');
+    return;
+  }
+
   if (sentEmails.length === 0) {
     logger.info('No sent emails today — skipping voice learning');
     return;
@@ -55,15 +62,20 @@ export async function runVoiceLearner(options: {
   const prompt = buildVoiceLearnerPrompt(sentEmails, existingProfile);
 
   let updatedProfile = '';
-  for await (const msg of query({
-    prompt,
-    options: { model: modelHaiku, maxTurns: 1, cwd: vaultPath },
-  })) {
-    if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-      for (const block of msg.message.content) {
-        if (block.type === 'text') updatedProfile += block.text;
+  try {
+    for await (const msg of query({
+      prompt,
+      options: { model: modelHaiku, maxTurns: 1, cwd: vaultPath },
+    })) {
+      if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
+        for (const block of msg.message.content) {
+          if (block.type === 'text') updatedProfile += block.text;
+        }
       }
     }
+  } catch (err) {
+    logger.error({ err }, 'Voice learner Claude query failed');
+    return;
   }
 
   if (updatedProfile.trim()) {
