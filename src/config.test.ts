@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 describe('config', () => {
   it('exports PMSC_BASE_URL', async () => {
     const { PMSC_BASE_URL } = await import('./config.js');
-    expect(typeof PMSC_BASE_URL).toBe('string');
+    expect(PMSC_BASE_URL).toBe('https://pmsc.fcifloors.com');
   });
 
   it('exports EMAIL_AGENT_START_HOUR and EMAIL_AGENT_END_HOUR', async () => {

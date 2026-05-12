@@ -368,12 +368,14 @@ export class MemoryStore {
       return;
     }
 
-    // Delete old chunks
-    this.deleteFileChunks(relPath);
-
     // chunkFile removed — vault indexing will be re-implemented in a later task
+    // Guard: only delete existing chunks if we have new ones to replace them with.
+    // Deleting before confirming non-empty chunks would silently erase the index.
     const chunks: Chunk[] = [];
     if (chunks.length === 0) return;
+
+    // Delete old chunks (only reached if chunks is non-empty)
+    this.deleteFileChunks(relPath);
 
     // Insert new chunks
     const insertStmt = this.conn.prepare(

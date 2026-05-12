@@ -179,7 +179,7 @@ export const EMAIL_AGENT_END_HOUR = parseInt(getEnv('EMAIL_AGENT_END_HOUR', '19'
 // ── Voice Profile ────────────────────────────────────────────────────
 
 export const VOICE_PROFILE_FILE = path.join(SYSTEM_DIR, 'voice-patterns.md');
-export const PENDING_UPLOADS_DIR = path.join(SYSTEM_DIR, 'pending-uploads');
+export const PENDING_UPLOADS_DIR = path.join(BASE_DIR, 'pending-uploads');
 
 // ── Security ─────────────────────────────────────────────────────────
 

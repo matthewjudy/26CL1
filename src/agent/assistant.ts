@@ -40,16 +40,12 @@ import {
   OWNER_NAME,
   MODEL,
   MODELS,
-  HEARTBEAT_MAX_TURNS,
   SEARCH_CONTEXT_LIMIT,
   SEARCH_RECENCY_LIMIT,
   SYSTEM_PROMPT_MAX_CONTEXT_CHARS,
   SESSION_EXCHANGE_HISTORY_SIZE,
   SESSION_EXCHANGE_MAX_CHARS,
   INJECTED_CONTEXT_MAX_CHARS,
-  UNLEASHED_PHASE_TURNS,
-  UNLEASHED_DEFAULT_MAX_HOURS,
-  UNLEASHED_MAX_PHASES,
   PROJECTS_META_FILE,
   GOALS_DIR,
   CRON_PROGRESS_DIR,
@@ -57,6 +53,12 @@ import {
   HANDOFFS_DIR,
   localISO,
 } from '../config.js';
+
+// Constants removed from config.ts in Task 2 — defined locally to keep defaults stable
+const HEARTBEAT_MAX_TURNS = 75;
+const UNLEASHED_PHASE_TURNS = 6;
+const UNLEASHED_DEFAULT_MAX_HOURS = 50;
+const UNLEASHED_MAX_PHASES = 5;
 import type { AgentProfile, OnTextCallback, OnToolActivityCallback, SessionData, VerboseLevel } from '../types.js';
 import { appendActivityLog } from '../channels/discord-agent-bot.js';
 import {

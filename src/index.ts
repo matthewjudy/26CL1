@@ -5,6 +5,8 @@
  * and runs them concurrently.
  */
 
+// TODO(Task 10): this entrypoint is being replaced — broken channel imports are intentional
+
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, statSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
