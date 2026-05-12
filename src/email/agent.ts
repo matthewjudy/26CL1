@@ -101,7 +101,7 @@ export async function runEmailAgent(options: {
       cwd: vaultPath,
     },
   })) {
-    if (msg.type === 'assistant' && msg.message.content) {
+    if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
       for (const block of msg.message.content) {
         if (block.type === 'text') resultJson += block.text;
       }
@@ -110,8 +110,10 @@ export async function runEmailAgent(options: {
 
   let result: AgentResult;
   try {
-    const jsonMatch = resultJson.match(/\{[\s\S]*\}/);
-    result = JSON.parse(jsonMatch?.[0] ?? '{}') as AgentResult;
+    const start = resultJson.indexOf('{');
+    const end = resultJson.lastIndexOf('}');
+    const jsonStr = start !== -1 && end > start ? resultJson.slice(start, end + 1) : '{}';
+    result = JSON.parse(jsonStr) as AgentResult;
   } catch {
     logger.error({ resultJson }, 'Failed to parse agent JSON response');
     return;
