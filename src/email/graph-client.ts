@@ -107,6 +107,7 @@ export class GraphEmailClient {
   }
 
   async saveDraft(draft: DraftInput): Promise<string> {
+    // TODO: wire draft.replyToId into reply thread linkage when needed
     const body = {
       subject: draft.subject,
       body: { contentType: 'Text', content: draft.body },
