@@ -11,9 +11,9 @@ export class PmscClient {
     const res = await fetch(`${this.baseUrl}/api${path}`, {
       ...init,
       headers: {
+        ...(init.headers ?? {}),
         'Authorization': `Bearer ${this.token}`,
         'Content-Type': 'application/json',
-        ...(init.headers ?? {}),
       },
     });
 
