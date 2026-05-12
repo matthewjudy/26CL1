@@ -10,15 +10,33 @@ export function createLocalActExportJob(): ScheduledJob {
         const proc = spawn('claude', ['--print', '/localact-export'], {
           cwd: process.env.HOME,
           env: { ...process.env },
-          timeout: 15 * 60 * 1000,
         });
+
+        let settled = false;
+
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          proc.kill();
+          reject(new Error('localact-export timed out after 15 minutes'));
+        }, 15 * 60 * 1000);
 
         let stdout = '';
         let stderr = '';
         proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
         proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
 
+        proc.on('error', (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+
         proc.on('close', (code) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           if (code !== 0) {
             reject(new Error(`localact-export exited ${code}: ${stderr}`));
           } else {
