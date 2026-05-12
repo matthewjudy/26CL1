@@ -33,3 +33,9 @@ logs/
 # Bot status files (runtime state)
 .bot-status.json
 .slack-bot-status.json
+
+# Superpowers plugin state
+.superpowers/
+
+# Stray vault files (created when cwd is wrong)
+src/Users/

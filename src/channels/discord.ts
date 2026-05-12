@@ -1682,6 +1682,28 @@ export async function startDiscord(
       const action = parts[1];
       const shortId = parts.slice(2).join('_');
 
+      // Validate: must have a recognized action and a non-empty shortId
+      const VALID_ACTIONS = new Set([
+        'send', 'edit', 'archive', 'skip', 'draft',
+        'file-followup', 'file-reference', 'file-fzcomms', 'file-receipts',
+        'delegate-michael', 'delegate-davis', 'delegate-nate', 'delegate-olivia',
+        'delegate-sasha', 'delegate-quinn',
+      ]);
+
+      if (!action || !shortId || !VALID_ACTIONS.has(action)) {
+        // Legacy approve/deny button or malformed ID — reject gracefully
+        try {
+          await button.reply({
+            content: `This button has an outdated format (${customId}). The email triage will repost with updated buttons on its next run.`,
+            ephemeral: true,
+          });
+        } catch {
+          try { await button.deferUpdate(); } catch { /* ignore */ }
+        }
+        logger.warn({ customId, action, shortId }, 'Rejected invalid email button click');
+        return;
+      }
+
       // Disable buttons immediately — reconstruct components with disabled:true
       try {
         await button.deferUpdate();
@@ -1697,7 +1719,7 @@ export async function startDiscord(
         }));
         const originalContent = button.message.content ?? '';
         await button.editReply({
-          content: (originalContent + `\n\n\u2713 Action: ${action} — queued`).slice(0, 2000),
+          content: (originalContent + `\n\n\u2713 **${action}** — queued`).slice(0, 2000),
           components: rawComponents as any,
         });
       } catch (err) {
