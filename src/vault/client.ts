@@ -19,7 +19,7 @@ export class VaultClient {
   }
 
   private todayPath(): string {
-    const date = new Date().toISOString().slice(0, 10);
+    const date = new Intl.DateTimeFormat('en-CA').format(new Date());
     return path.join(this.dailyDir, `${date}.md`);
   }
 
@@ -40,7 +40,8 @@ export class VaultClient {
     }
 
     const content = readFileSync(filePath, 'utf-8');
-    if (content.includes('## Log')) {
+    if (/^## Log$/m.test(content)) {
+      // Append at end of file; Log section is expected to be the final section in daily notes
       writeFileSync(filePath, content.trimEnd() + '\n\n' + entry);
     } else {
       appendFileSync(filePath, '\n\n## Log\n\n' + entry);
@@ -59,8 +60,8 @@ export class VaultClient {
 
   writePendingUpload(pendingUploadsDir: string, jobName: string, data: Record<string, unknown>): string {
     mkdirSync(pendingUploadsDir, { recursive: true });
-    const date = new Date().toISOString().slice(0, 10);
-    const filename = `${date}-${jobName}.json`;
+    const date = new Intl.DateTimeFormat('en-CA').format(new Date());
+    const filename = `${date}-${jobName}-${Date.now()}.json`;
     const filePath = path.join(pendingUploadsDir, filename);
     writeFileSync(filePath, JSON.stringify({ jobName, data, savedAt: new Date().toISOString() }, null, 2));
     return filePath;
