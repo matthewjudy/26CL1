@@ -8,13 +8,18 @@ let client: Client | null = null;
 async function getClient(token: string): Promise<Client> {
   if (client?.isReady()) return client;
 
-  client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages] });
-  await client.login(token);
+  const newClient = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages] });
+  try {
+    await newClient.login(token);
+    await new Promise<void>((resolve) => {
+      newClient.once('ready', () => resolve());
+    });
+  } catch (err) {
+    await newClient.destroy().catch(() => {});
+    throw err;
+  }
 
-  await new Promise<void>((resolve) => {
-    client!.once('ready', () => resolve());
-  });
-
+  client = newClient;
   return client;
 }
 
